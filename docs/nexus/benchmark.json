@@ -1,0 +1,32 @@
+{
+  "kind": "offline_control_flow_only",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "measured_at": "2026-09-27T17:19:16.086630+00:00",
+  "limits": "Stubbed provider with zero network/model latency; baseline action is stubbed. No live Gemini, Windows, audio, RAM or iGPU benchmark.",
+  "baseline_commit": "5fca0ac3e8cf4e9031072f9d27da8d83f6941e0e",
+  "legacy": {
+    "iterations": 500,
+    "median_ms": 0.009975,
+    "p95_ms": 0.01316,
+    "provider_calls_total": 1000,
+    "provider_calls_per_command": 2.0,
+    "evidence_receipts_per_command": 0
+  },
+  "model": {
+    "iterations": 500,
+    "median_ms": 0.029589499999999998,
+    "p95_ms": 0.049685,
+    "provider_calls_total": 500,
+    "provider_calls_per_command": 1.0,
+    "evidence_receipts_per_command": 1
+  },
+  "reflex": {
+    "iterations": 500,
+    "median_ms": 0.0196845,
+    "p95_ms": 0.022694,
+    "provider_calls_total": 0,
+    "provider_calls_per_command": 0.0,
+    "evidence_receipts_per_command": 1
+  }
+}

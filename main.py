@@ -1178,12 +1178,33 @@ class JarvisLive:
         self._tour_active = False
 
     def _on_text_command(self, text: str):
+        if self._handle_reflex_text(text):
+            return
         if not self._loop or not self.session:
             return
         asyncio.run_coroutine_threadsafe(self.send_text(text), self._loop)
 
+    def _handle_reflex_text(self, text: str) -> bool:
+        """Typed clock commands use the native route even without a Live session."""
+        from agent.reflex import reflex_plan
+
+        if reflex_plan(text) is None:
+            return False
+        if self._shutdown_requested.is_set() or getattr(self.ui, "operational_ready", True) is False:
+            return True
+        from agent.executor import AgentExecutor
+
+        executor = AgentExecutor()
+        message = executor.execute(text, cancel_flag=self._shutdown_requested)
+        self.last_action_receipts = executor.last_action_receipts
+        self.ui.write_log(message)
+        self.ui.show_subtitle(message)
+        return True
+
     async def send_text(self, text: str) -> bool:
         """Send a text turn from either the desktop callback or a web client."""
+        if self._handle_reflex_text(text):
+            return True
         if not self.session:
             return False
         self._current_input_transcript = str(text or "").strip()

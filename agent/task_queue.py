@@ -1,6 +1,7 @@
 import threading
 import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Any
@@ -39,6 +40,7 @@ class Task:
     phase:       str        = field(compare=False, default="Queued")
     artifacts:   list[str]  = field(compare=False, default_factory=list)
     warnings:    list[str]  = field(compare=False, default_factory=list)
+    action_receipts: list[dict] = field(compare=False, default_factory=list)
     user_id:     str | None = field(compare=False, default=None)
     cancel_flag: threading.Event = field(compare=False, default_factory=threading.Event)
 
@@ -57,10 +59,9 @@ class TaskQueue:
         self._awareness      = awareness
 
     def _get_executor(self):
-        if self._executor is None:
-            from agent.executor import AgentExecutor
-            self._executor = AgentExecutor(awareness=self._awareness)
-        return self._executor
+        # Concurrent tasks must not share receipts, outcomes or provider state.
+        from agent.executor import AgentExecutor
+        return AgentExecutor(awareness=self._awareness)
 
     def start(self) -> None:
         if self._running:
@@ -207,6 +208,7 @@ class TaskQueue:
                 "phase": task.phase,
                 "artifacts": list(task.artifacts),
                 "warnings": list(task.warnings),
+                "action_receipts": deepcopy(task.action_receipts),
             }
 
     def get_all_statuses(self) -> list[dict]:
@@ -271,6 +273,7 @@ class TaskQueue:
     def _run_task_inner(self, task: Task) -> None:
         print(f"[TaskQueue] ▶️ Running: [{task.task_id}] {task.goal[:60]}")
         try:
+            agent_status = None
             def update_progress(
                 percent: int | None = None,
                 phase: str | None = None,
@@ -301,6 +304,8 @@ class TaskQueue:
                     speak=task.speak,
                     cancel_flag=task.cancel_flag,
                 )
+                agent_status = executor.last_status
+                task.action_receipts = [r.to_dict() for r in executor.last_action_receipts]
                 step_results = getattr(executor, "last_step_results", {}) or {}
                 if step_results:
                     step_result_text = "\n".join(
@@ -311,8 +316,14 @@ class TaskQueue:
                     task.result = result
 
             with self._lock:
-                if task.cancel_flag.is_set():
+                from core.action_contracts import ActionStatus
+                if task.cancel_flag.is_set() or agent_status is ActionStatus.CANCELLED:
                     task.status = TaskStatus.CANCELLED
+                    task.phase = "Cancelled"
+                elif agent_status is not None and agent_status is not ActionStatus.SUCCEEDED:
+                    task.status = TaskStatus.FAILED
+                    task.phase = agent_status.value.capitalize()
+                    task.error = str(result)
                 else:
                     task.status = TaskStatus.COMPLETED
                     task.result = task.result or result
@@ -327,11 +338,12 @@ class TaskQueue:
                     print(f"[TaskQueue] ⚠️ on_complete callback error: {e}")
 
             if not task.cancel_flag.is_set():
-                completion_msg = (
-                    str(task.result)[:500]
-                    if task.kind in {"presentation", "research"} and task.result
-                    else f"Task completed: {task.goal[:90]}"
-                )
+                if agent_status is not None:
+                    completion_msg = str(result)[:500]
+                elif task.kind in {"presentation", "research"} and task.result:
+                    completion_msg = str(task.result)[:500]
+                else:
+                    completion_msg = f"Task completed: {task.goal[:90]}"
 
                 # Push completion into awareness so UI/state knows it finished.
                 if self._awareness and task.kind != "research":
@@ -360,7 +372,7 @@ class TaskQueue:
                 except Exception as e:
                     print(f"[TaskQueue] ⚠️ task history save failed: {e}")
 
-            print(f"[TaskQueue] ✅ Completed: [{task.task_id}]")
+            print(f"[TaskQueue] {task.status.value}: [{task.task_id}]")
 
         except Exception as e:
             with self._lock:

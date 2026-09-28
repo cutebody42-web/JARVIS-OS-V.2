@@ -1,0 +1,21 @@
+name: NEXUS architecture contracts
+
+on:
+  pull_request:
+  push:
+    branches: [nexus/phase-1-provider-action-contracts]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install google-genai
+      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route
