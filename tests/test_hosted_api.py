@@ -127,11 +127,18 @@ class HostedApiTests(unittest.TestCase):
         )
         call = SimpleNamespace(id="tenant-call", name="web_search", args={"query": "test"})
 
-        with patch.object(main, "web_search_action", side_effect=lambda **_kwargs: get_current_user_id()):
-            with tenant_scope(self.user_id):
-                response = asyncio.run(jarvis._execute_tool(call))
-
-        self.assertEqual(response.response["result"], self.user_id)
+        from core.action_contracts import ToolResult, ActionStatus
+        with tenant_scope(self.user_id):
+            response = asyncio.run(jarvis._execute_tool(call))
+        pending = response.response["receipt"]
+        self.assertEqual(pending["authorization_decision"], "REQUIRE_CONFIRMATION")
+        runtime = jarvis.owner_runtime
+        ticket = runtime.owner.approve(pending["request_id"], pending["normalized_argument_digest"])
+        with patch("agent.action_kernel._dispatch", side_effect=lambda *_: ToolResult(
+            ActionStatus.UNVERIFIED, get_current_user_id()
+        )):
+            receipt = runtime.execute_approved(pending["request_id"], ticket.ticket_id)
+        self.assertEqual(receipt.result.message, self.user_id)
 
     def test_authenticated_websocket_streams_engine_events(self):
         raw_key = "AIza" + "B" * 35

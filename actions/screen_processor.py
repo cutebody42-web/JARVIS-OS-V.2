@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.action_gateway import guarded_entrypoint
+
 import asyncio
 import base64
 import io
@@ -468,6 +470,7 @@ def _ensure_session(player=None) -> None:
             _session._player = player
 
 
+@guarded_entrypoint('screen_process')
 def screen_process(
     parameters:     dict,
     response=None,

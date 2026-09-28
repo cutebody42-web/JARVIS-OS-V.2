@@ -8,6 +8,8 @@ approval. Pending drafts live in memory only.
 
 from __future__ import annotations
 
+from core.action_gateway import guarded_entrypoint
+
 import base64
 import asyncio
 import html
@@ -1200,6 +1202,7 @@ def _open_default_draft(draft: dict[str, str]) -> str:
         return f"Could not open the email draft: {exc}"
 
 
+@guarded_entrypoint('email_control')
 def email_control(parameters: dict | None = None, response=None, player=None, session_memory=None) -> str:
     params = parameters or {}
     action = str(params.get("action", "inbox")).lower().strip().replace("-", "_").replace(" ", "_")

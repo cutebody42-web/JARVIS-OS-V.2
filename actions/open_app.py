@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import time
 import subprocess
 import platform
@@ -99,7 +101,8 @@ def _launch_windows(app_name: str) -> bool:
             pass
 
     try:
-        import pyautogui
+        from core.desktop_dependency import load_pyautogui
+        pyautogui = load_pyautogui()
         pyautogui.PAUSE = 0.1
         pyautogui.press("win")
         time.sleep(0.7)
@@ -149,7 +152,8 @@ def _launch_macos(app_name: str) -> bool:
             pass
 
     try:
-        import pyautogui
+        from core.desktop_dependency import load_pyautogui
+        pyautogui = load_pyautogui()
         pyautogui.hotkey("command", "space")
         time.sleep(0.6)
         pyautogui.write(app_name, interval=0.05)
@@ -215,6 +219,7 @@ _OS_LAUNCHERS = {
     "Linux":   _launch_linux,
 }
 
+@guarded_entrypoint('open_app')
 def open_app(
     parameters=None,
     response=None,

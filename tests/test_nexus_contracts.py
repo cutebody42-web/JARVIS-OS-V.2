@@ -179,9 +179,14 @@ class ReceiptTests(unittest.TestCase):
             module = SimpleNamespace(web_search=lambda **kwargs: value)
             with patch.dict(sys.modules, {"actions.web_search": module}):
                 executor = AgentExecutor(provider=FakeProvider("web_search", {"query": "read"}))
-                message = executor.execute("find information")
-            self.assertEqual(executor.last_status, ActionStatus.UNVERIFIED)
-            self.assertTrue(message.startswith("Unverified tool output; completion is not confirmed:"))
+                executor.execute("find information")
+                self.assertEqual(executor.last_status, ActionStatus.REQUIRE_CONFIRMATION)
+                pending = executor.last_action_receipts[-1]
+                runtime = executor.owner_runtime
+                ticket = runtime.owner.approve(pending.request_id, pending.normalized_argument_digest)
+                receipt = runtime.execute_approved(pending.request_id, ticket.ticket_id)
+            self.assertEqual(receipt.result.status, ActionStatus.UNVERIFIED)
+            self.assertFalse(receipt.result.evidence)
 
     def test_denied_cancelled_and_failed_receipts_have_distinct_outcomes(self):
         denied = self.run_action("generated_code")
@@ -279,7 +284,7 @@ class ReflexAndPolicyTests(unittest.TestCase):
         task_id = queue.submit("lookup", speak=announcements.append)
         task = queue._tasks[task_id]
         queue._active_count = 1
-        executor = AgentExecutor(provider=FakeProvider("web_search", {"query": "lookup"}))
+        executor = AgentExecutor(provider=FakeProvider("system_time", {}))
         with patch.object(queue, "_get_executor", return_value=executor), patch("agent.action_kernel._dispatch", return_value=ToolResult(ActionStatus.UNVERIFIED, "Done")), patch("agent.task_queue.record_task"):
             queue._run_task_inner(task)
         self.assertEqual(task.status, TaskStatus.FAILED)

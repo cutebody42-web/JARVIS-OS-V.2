@@ -248,7 +248,7 @@ class QAModeSafetyTests(unittest.TestCase):
         jarvis.set_tour_active(False)
         self.assertFalse(jarvis._tour_active)
 
-    def test_independent_tool_batch_executes_concurrently_and_preserves_order(self):
+    def test_tool_batch_preserves_proposal_order_through_central_gateway(self):
         import main
 
         jarvis = main.JarvisLive.__new__(main.JarvisLive)
@@ -266,7 +266,7 @@ class QAModeSafetyTests(unittest.TestCase):
         results = asyncio.run(jarvis._execute_tool_batch(calls))
         elapsed = time.perf_counter() - started
         self.assertEqual(results, ["weather_report", "web_search"])
-        self.assertLess(elapsed, 0.105)
+        self.assertGreaterEqual(elapsed, 0.11)
 
     def test_mutating_tool_batch_remains_sequential(self):
         import main
@@ -340,9 +340,12 @@ class ToolContractTests(unittest.TestCase):
         self.assertEqual(len(tools), len(set(tools)))
 
     def test_every_declared_tool_has_a_dispatch_path(self):
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        from core.capability_registry import TOOL_CAPABILITIES, REGISTRY
         for name in declared_tools(ROOT / "main.py"):
-            self.assertIn(f'name == "{name}"', source, name)
+            self.assertIn(name, TOOL_CAPABILITIES)
+            mapping = TOOL_CAPABILITIES[name]
+            for cid in [mapping] if isinstance(mapping, str) else mapping.values():
+                self.assertIn(cid, REGISTRY)
 
     def test_live_tool_schemas_have_names_parameters_and_properties(self):
         import main

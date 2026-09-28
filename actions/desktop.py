@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 #desktop.py
 import os
 import sys
@@ -12,7 +14,8 @@ from datetime import datetime
 from actions.jarvis_file_stamp import mark_created_file
 
 try:
-    import pyautogui
+    from core.desktop_dependency import load_pyautogui
+    pyautogui = load_pyautogui()
     _PYAUTOGUI = True
 except ImportError:
     _PYAUTOGUI = False
@@ -414,6 +417,7 @@ def get_desktop_stats() -> str:
         f"  Path    : {desktop}"
     )
 
+@guarded_entrypoint('desktop_control')
 def desktop_control(
     parameters: dict = None,
     response=None,

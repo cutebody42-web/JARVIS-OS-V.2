@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.action_gateway import guarded_entrypoint
+
 import os
 import platform
 import shutil
@@ -194,7 +196,8 @@ def _generic_media_key(action: str) -> str:
         "previous": "prevtrack",
     }
     try:
-        import pyautogui
+        from core.desktop_dependency import load_pyautogui
+        pyautogui = load_pyautogui()
 
         pyautogui.press(key_map[action])
         return f"System media {action} command sent."
@@ -202,6 +205,7 @@ def _generic_media_key(action: str) -> str:
         return f"System media control is unavailable: {exc}"
 
 
+@guarded_entrypoint('media_control')
 def media_control(parameters: dict | None = None, response=None, player=None, session_memory=None) -> str:
     """Control Spotify, Apple Music, YouTube Music, or the active system player."""
     params = parameters or {}

@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import subprocess
 import sys
 import json
@@ -95,7 +97,8 @@ def _has_error(output: str) -> bool:
 
 def _take_screenshot() -> Path | None:
     try:
-        import pyautogui
+        from core.desktop_dependency import load_pyautogui
+        pyautogui = load_pyautogui()
         screenshot_path = Path.home() / "Desktop" / f"jarvis_debug_{int(time.time())}.png"
         screenshot = pyautogui.screenshot()
         screenshot.save(str(screenshot_path))
@@ -516,6 +519,7 @@ Be specific and actionable. If you see an error message, quote it exactly."""
         return f"Screen analysis failed: {e}"
 
 
+@guarded_entrypoint('code_helper')
 def code_helper(
     parameters: dict,
     response=None,

@@ -16,6 +16,8 @@ Supported types:
   pptx    → summarize, extract_text, to_pdf
 """
 
+from core.action_gateway import guarded_entrypoint
+
 import os
 import re
 import json
@@ -981,6 +983,7 @@ def _process_unknown(path: Path, action: str, params: dict, speak=None) -> str:
         )
 
 
+@guarded_entrypoint('file_processor')
 def file_processor(parameters: dict, player=None, speak=None) -> str:
     file_path_str = parameters.get("file_path", "").strip()
     if not file_path_str:

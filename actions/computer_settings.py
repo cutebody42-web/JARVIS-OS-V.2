@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import os
 #computer_settings.py
 import json
@@ -9,7 +11,8 @@ import platform
 from pathlib import Path
 
 try:
-    import pyautogui
+    from core.desktop_dependency import load_pyautogui
+    pyautogui = load_pyautogui()
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
@@ -660,6 +663,7 @@ Rules:
         print(f"[Settings] Intent detection failed: {e}")
         return {"action": description.lower().replace(" ", "_"), "value": None}
 
+@guarded_entrypoint('computer_settings')
 def computer_settings(
     parameters: dict = None,
     response=None,

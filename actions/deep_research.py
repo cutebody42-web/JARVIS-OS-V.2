@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.action_gateway import guarded_entrypoint
+
 import json
 import os
 import re
@@ -690,6 +692,7 @@ def build_deep_research(
     return ResearchResult(request.question, final_markdown, evidence_payload, sources, warnings)
 
 
+@guarded_entrypoint('deep_research')
 def queue_deep_research(
     parameters: dict,
     player=None,
@@ -820,6 +823,7 @@ def _take_pending(parameters: dict) -> dict | None:
     return None
 
 
+@guarded_entrypoint('deep_research')
 def request_deep_research(parameters: dict, player=None, speak=None) -> str:
     """Ask for execution preference, or start a previously confirmed request."""
     params = dict(parameters or {})
@@ -849,6 +853,7 @@ def request_deep_research(parameters: dict, player=None, speak=None) -> str:
     )
 
 
+@guarded_entrypoint('deep_research')
 def deep_research(parameters: dict, response=None, player=None, session_memory=None) -> str:
     try:
         return request_deep_research(parameters or {}, player=player)

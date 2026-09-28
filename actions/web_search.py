@@ -20,6 +20,9 @@ def _get_api_key() -> str:
     stored_key = get_gemini_key()
     if stored_key:
         return stored_key
+    from core.tenant import get_current_user_id
+    if get_current_user_id():
+        raise ValueError("No search key configured for this owner.")
     env_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if env_key:
         return env_key

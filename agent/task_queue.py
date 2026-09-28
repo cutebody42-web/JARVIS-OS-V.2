@@ -14,6 +14,7 @@ class TaskStatus(Enum):
     COMPLETED  = "completed"
     FAILED     = "failed"
     CANCELLED  = "cancelled"
+    REQUIRE_CONFIRMATION = "require_confirmation"
 
 
 class TaskPriority(Enum):
@@ -42,6 +43,9 @@ class Task:
     warnings:    list[str]  = field(compare=False, default_factory=list)
     action_receipts: list[dict] = field(compare=False, default_factory=list)
     user_id:     str | None = field(compare=False, default=None)
+    owner_runtime: Any = field(compare=False, default=None, repr=False)
+    action_request: Any = field(compare=False, default=None)
+    ticket_id: str | None = field(compare=False, default=None, repr=False)
     cancel_flag: threading.Event = field(compare=False, default_factory=threading.Event)
 
 
@@ -88,11 +92,14 @@ class TaskQueue:
         speak:       Callable | None = None,
         on_complete: Callable | None = None,
         immediate:   bool = False,
+        owner_runtime=None,
     ) -> str:
 
         from core.tenant import get_current_user_id
 
-        task_id = str(uuid.uuid4())[:8]
+        from core.action_gateway import current_runtime
+        owner_runtime = owner_runtime or current_runtime()
+        task_id = str(uuid.uuid4())
         task    = Task(
             priority    = priority.value,
             created_at  = time.time(),
@@ -101,10 +108,14 @@ class TaskQueue:
             speak       = speak,
             on_complete = on_complete,
             user_id     = get_current_user_id(),
+            owner_runtime = owner_runtime,
         )
 
         start_now = False
         with self._condition:
+            if sum(t.status in {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.REQUIRE_CONFIRMATION}
+                   and self._task_owner(t) == self._task_owner(task) for t in self._tasks.values()) >= 16:
+                raise ValueError("Owner task queue capacity reached.")
             self._queue.append(task)
             self._queue.sort(key=lambda t: (t.priority, t.created_at))
             self._tasks[task_id] = task
@@ -137,11 +148,14 @@ class TaskQueue:
         on_complete: Callable | None = None,
         on_cancel: Callable | None = None,
         kind: str = "presentation",
+        owner_runtime=None,
     ) -> str:
-        """Submit a specialized callable without routing it through AgentExecutor."""
+        """Retained API: arbitrary runners are denied and never invoked by workers."""
         from core.tenant import get_current_user_id
 
-        task_id = str(uuid.uuid4())[:8]
+        from core.action_gateway import current_runtime
+        owner_runtime = owner_runtime or current_runtime()
+        task_id = str(uuid.uuid4())
         task = Task(
             priority=priority.value,
             created_at=time.time(),
@@ -153,6 +167,7 @@ class TaskQueue:
             runner=runner,
             kind=kind,
             user_id=get_current_user_id(),
+            owner_runtime=owner_runtime,
         )
         with self._condition:
             self._queue.append(task)
@@ -162,11 +177,35 @@ class TaskQueue:
         print(f"[TaskQueue] 📥 {kind} job queued: [{task_id}] {goal[:60]}")
         return task_id
 
-    def cancel(self, task_id: str) -> bool:
+    def submit_action(self, request, *, owner_runtime, ticket_id=None) -> str:
+        """Trusted host queues a snapshot; authority is checked at execution time."""
+        # Hold the condition through insertion so a worker cannot see a partial task.
+        task_id = str(uuid.uuid4())
+        task = Task(TaskPriority.NORMAL.value, time.time(), task_id, "Exact action request",
+                    owner_runtime=owner_runtime, action_request=request, ticket_id=ticket_id,
+                    kind="action", user_id=None)
+        with self._condition:
+            if len(self._queue) >= 128:
+                raise ValueError("Queue capacity reached.")
+            self._queue.append(task)
+            self._tasks[task_id] = task
+            self._condition.notify()
+        return task_id
+
+    @staticmethod
+    def _task_owner(task):
+        return task.owner_runtime.gateway.context.owner_id if task.owner_runtime else task.user_id or "local-owner"
+
+    @staticmethod
+    def _caller_owner(owner_id):
+        from core.tenant import get_current_user_id
+        return owner_id or get_current_user_id() or "local-owner"
+
+    def cancel(self, task_id: str, *, owner_id=None) -> bool:
         on_cancel = None
         with self._lock:
             task = self._tasks.get(task_id)
-            if not task:
+            if not task or self._task_owner(task) != self._caller_owner(owner_id):
                 return False
             if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
                 return False
@@ -174,7 +213,7 @@ class TaskQueue:
             task.cancel_flag.set()
             task.status = TaskStatus.CANCELLED
             task.phase = "Cancelled"
-            on_cancel = task.on_cancel
+            on_cancel = task.on_cancel if task.runner is None else None
             if task in self._queue:
                 self._queue.remove(task)
             print(f"[TaskQueue] 🚫 Task cancelled: [{task_id}]")
@@ -192,10 +231,10 @@ class TaskQueue:
         return False
 
 
-    def get_status(self, task_id: str) -> dict | None:
+    def get_status(self, task_id: str, *, owner_id=None) -> dict | None:
         with self._lock:
             task = self._tasks.get(task_id)
-            if not task:
+            if not task or self._task_owner(task) != self._caller_owner(owner_id):
                 return None
             return {
                 "task_id": task.task_id,
@@ -211,7 +250,7 @@ class TaskQueue:
                 "action_receipts": deepcopy(task.action_receipts),
             }
 
-    def get_all_statuses(self) -> list[dict]:
+    def get_all_statuses(self, *, owner_id=None) -> list[dict]:
         with self._lock:
             return [
                 {
@@ -222,7 +261,7 @@ class TaskQueue:
                     "progress": t.progress,
                     "phase": t.phase,
                 }
-                for t in self._tasks.values()
+                for t in self._tasks.values() if self._task_owner(t) == self._caller_owner(owner_id)
             ]
 
     def pending_count(self) -> int:
@@ -262,13 +301,13 @@ class TaskQueue:
         return None
 
     def _run_task(self, task: Task) -> None:
-        if task.user_id:
-            from core.tenant import tenant_scope
-
-            with tenant_scope(task.user_id):
-                self._run_task_inner(task)
-            return
-        self._run_task_inner(task)
+        from core.action_gateway import runtime_scope, current_runtime
+        from core.tenant import tenant_scope
+        runtime = task.owner_runtime or current_runtime()
+        task.owner_runtime = runtime
+        owner_id = runtime.gateway.context.owner_id
+        with runtime_scope(runtime), tenant_scope(None if owner_id == "local-owner" else owner_id):
+            self._run_task_inner(task)
 
     def _run_task_inner(self, task: Task) -> None:
         print(f"[TaskQueue] ▶️ Running: [{task.task_id}] {task.goal[:60]}")
@@ -290,15 +329,23 @@ class TaskQueue:
                     if warnings is not None:
                         task.warnings = [str(item) for item in warnings]
 
-            if task.runner:
-                update_progress(1, "Starting")
-                raw_result = task.runner(task.cancel_flag, update_progress)
-                task.result = str(raw_result)
-                task.artifacts = list(getattr(raw_result, "artifacts", task.artifacts) or task.artifacts)
-                task.warnings = list(getattr(raw_result, "warnings", task.warnings) or task.warnings)
-                result = task.result
+            from core.action_gateway import current_runtime
+            runtime = task.owner_runtime or current_runtime()
+            if task.runner or task.action_request is not None:
+                if task.runner:
+                    receipt = runtime.gateway.run_tool("specialized_runner", {}, route="background",
+                                                       runtime=runtime, cancel_flag=task.cancel_flag,
+                                                       task_id=task.task_id)
+                else:
+                    receipt = runtime.gateway.run_request(task.action_request, route="background",
+                                                          runtime=runtime, ticket_id=task.ticket_id,
+                                                          cancel_flag=task.cancel_flag, task_id=task.task_id)
+                agent_status = receipt.result.status
+                task.action_receipts = [receipt.to_dict()]
+                result = task.result = receipt.result.message
             else:
                 executor = self._get_executor()
+                executor.owner_runtime = runtime
                 result = executor.execute(
                     goal=task.goal,
                     speak=task.speak,
@@ -320,6 +367,9 @@ class TaskQueue:
                 if task.cancel_flag.is_set() or agent_status is ActionStatus.CANCELLED:
                     task.status = TaskStatus.CANCELLED
                     task.phase = "Cancelled"
+                elif agent_status is ActionStatus.REQUIRE_CONFIRMATION:
+                    task.status = TaskStatus.REQUIRE_CONFIRMATION
+                    task.phase = "Awaiting exact owner approval"
                 elif agent_status is not None and agent_status is not ActionStatus.SUCCEEDED:
                     task.status = TaskStatus.FAILED
                     task.phase = agent_status.value.capitalize()
@@ -331,7 +381,7 @@ class TaskQueue:
                     task.phase = "Completed"
                 self._active_count -= 1
 
-            if task.on_complete and not task.cancel_flag.is_set():
+            if task.on_complete and task.runner is None and task.status is TaskStatus.COMPLETED:
                 try:
                     task.on_complete(task.task_id, result)
                 except Exception as e:
@@ -354,7 +404,7 @@ class TaskQueue:
                         print(f"[TaskQueue] ⚠️ awareness completion update failed: {e}")
 
                 # Tell the live assistant/user that the background task finished.
-                if task.speak:
+                if task.speak and task.runner is None:
                     try:
                         task.speak(completion_msg)
                     except Exception as e:
@@ -394,7 +444,7 @@ class TaskQueue:
                 except Exception as ae:
                     print(f"[TaskQueue] ⚠️ awareness failure update failed: {ae}")
 
-            if task.speak and not cancelled:
+            if task.speak and task.runner is None and not cancelled:
                 try:
                     task.speak(failure_msg)
                 except Exception as se:
