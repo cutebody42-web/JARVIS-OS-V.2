@@ -2,6 +2,7 @@
 
 Target: `main` from `nexus/phase-1-provider-action-contracts`.
 Tracking epic: [#1](https://github.com/cutebody42-web/JARVIS-OS-V.2/issues/1).
+Published as [draft PR #2](https://github.com/cutebody42-web/JARVIS-OS-V.2/pull/2).
 Status: keep draft until required QA gates pass and the owner reviews the spike.
 
 ## Why
@@ -43,9 +44,17 @@ and claims of success, preventing a safe local-first NEXUS architecture.
 The full runner includes loader failures: missing PortAudio and DISPLAY prevent
 some modules from collecting. Existing UI intro/tour symbols are also absent in
 the base. The existing backend CI command was attempted and fails at the same
-PortAudio import; PostgreSQL/Redis and remote GitHub CI are not certified.
+PortAudio import; PostgreSQL/Redis integration tests remain uncertified.
 Reproduction commands, baseline failure IDs and gate statuses are in
 `docs/nexus/validation.json`. No merge while required gates remain red.
+
+Remote CI on implementation commit `2e15296990eadce3bdf6c5678d021dccff7391f2`:
+
+- [NEXUS contract CI](https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36373238811): 30 tests passed.
+- [Existing CI](https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36373238852): frontend typecheck, lint and build passed. Backend installed dependencies and applied the PostgreSQL migration, then failed before test collection with `OSError: PortAudio library not found`, matching the local baseline blocker.
+
+The follow-up publication commit changes only documentation and recorded evidence.
+The PR remains draft; this spike does not repair the existing backend/QA gates.
 
 Offline benchmark, 500 samples/path, zero simulated model/network latency:
 

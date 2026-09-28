@@ -137,4 +137,8 @@ audio, startup RAM and integrated-GPU performance were not benchmarked.
   grants, temporal memory, and resource budgets remain future phases.
 - GitHub App authorization was repaired on 2026-09-28 for this repository only.
   The planning epic is [#1](https://github.com/cutebody42-web/JARVIS-OS-V.2/issues/1).
-  Remote CI evidence must be recorded separately from the local baseline tests.
+  [Draft PR #2](https://github.com/cutebody42-web/JARVIS-OS-V.2/pull/2) publishes the
+  spike. Remote contract CI passed all 30 tests and frontend CI passed. Existing
+  backend CI applied the PostgreSQL migration, then failed before test collection
+  because PortAudio is missing, matching the local baseline blocker. Run URLs and
+  the tested commit are recorded separately in `validation.json`.

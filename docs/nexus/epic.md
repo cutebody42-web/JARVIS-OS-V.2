@@ -1,6 +1,7 @@
 # Epic: Taby V2.0 / NEXUS
 
 Tracking epic: [#1](https://github.com/cutebody42-web/JARVIS-OS-V.2/issues/1).
+Architecture spike: [draft PR #2](https://github.com/cutebody42-web/JARVIS-OS-V.2/pull/2).
 GitHub App authorization was repaired on 2026-09-28 with access limited to this
 repository. Issues were enabled to host the requested planning epic.
 
@@ -38,7 +39,7 @@ Base: `5fca0ac3e8cf4e9031072f9d27da8d83f6941e0e` (`main`).
 - [x] Offline baseline/new benchmark with declared measurement limits.
 - [x] Existing QA/test suite run and baseline comparison recorded.
 - [x] Create this main epic on GitHub.
-- [ ] Publish the implementation and open a draft PR on the requested branch.
+- [x] Publish the implementation and open a draft PR on the requested branch.
 - [ ] Full required CI green and owner review before any merge.
 
 ## Next phases (planning only)

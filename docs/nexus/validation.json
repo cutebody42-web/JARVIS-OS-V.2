@@ -199,7 +199,35 @@
     "ui.py": "unchanged",
     "web/": "unchanged"
   },
-  "remote_ci": "pending publication; GitHub write authorization repaired on 2026-09-28",
+  "remote_ci": {
+    "tested_commit": "2e15296990eadce3bdf6c5678d021dccff7391f2",
+    "observed_date": "2026-09-28",
+    "nexus_contracts": {
+      "status": "passed",
+      "tests": 30,
+      "job_id": 108773723214,
+      "run_url": "https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36373238811"
+    },
+    "existing_frontend": {
+      "status": "passed",
+      "checks": [
+        "typecheck",
+        "lint",
+        "build"
+      ],
+      "job_id": 108773723329,
+      "run_url": "https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36373238852"
+    },
+    "existing_backend": {
+      "status": "failed",
+      "job_id": 108773723323,
+      "run_url": "https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36373238852",
+      "migration": "passed against PostgreSQL",
+      "tests": "not collected",
+      "reason": "OSError: PortAudio library not found while importing main through tests.test_phase1_decoupling; same local baseline blocker. PostgreSQL/Redis integration tests remain uncertified."
+    },
+    "publication_followup": "Documentation/evidence changes only; no runtime or test changes after the tested implementation commit."
+  },
   "ready_to_merge": false,
   "commands": [
     "python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route",
