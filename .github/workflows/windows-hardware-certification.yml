@@ -1,0 +1,20 @@
+name: NEXUS Windows hardware certification (deferred)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  physical-windows-gate:
+    # Intentionally never dispatched during this cloud spike. A hosted Windows
+    # VM is not certification of the owner's microphone, camera or iGPU.
+    runs-on: [self-hosted, Windows, nexus-hardware]
+    timeout-minutes: 5
+    steps:
+      - name: Gate remains closed pending a deployable build and supervised probes
+        shell: pwsh
+        run: |
+          Write-Error 'NOT CERTIFIED: implement and review the supervised Windows checklist in docs/nexus/windows-hardware-gate.md after a deployable build exists.'
+          exit 1

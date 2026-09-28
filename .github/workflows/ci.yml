@@ -41,8 +41,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
       - run: pip install -r requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
       - run: alembic upgrade head
-      - run: python -m unittest -v tests.test_phase1_decoupling tests.test_hosted_api tests.test_core_resilience
+      - run: python scripts/cloud_validation.py --suite core --output artifacts/cloud-tests.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cloud-application-security-evidence
+          path: artifacts/cloud-tests.json
 
   frontend:
     runs-on: ubuntu-latest
