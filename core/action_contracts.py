@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import Enum
 import json
 import math
+from core.authority_contracts import AuthorizationDecision, argument_digest, canonical_arguments
 
 
 class ActionStatus(str, Enum):
@@ -13,6 +14,7 @@ class ActionStatus(str, Enum):
     DENIED = "denied"
     CANCELLED = "cancelled"
     UNVERIFIED = "unverified"
+    REQUIRE_CONFIRMATION = "require_confirmation"
 
 
 def _aware_timestamp(value: str) -> None:
@@ -64,11 +66,18 @@ class ActionReceipt:
     duration_ms: float
     result: ToolResult
     schema_version: int = 1
+    request_id: str = ""
+    authorization_decision: AuthorizationDecision | None = None
+    capability_id: str = ""
+    policy_rule: str = ""
+    normalized_argument_digest: str = ""
+    confirmation_ticket_id: str | None = None
+    authorization_evidence: tuple[Evidence, ...] = ()
 
     def __post_init__(self):
         if not self.action_id or not self.task_id or not self.tool:
             raise ValueError("Receipts require action, task, and tool identities.")
-        if self.route not in {"reflex", "model"}:
+        if self.route not in {"reflex", "model", "live", "background", "owner", "legacy"}:
             raise ValueError("Unknown cognition route.")
         _aware_timestamp(self.started_at)
         _aware_timestamp(self.finished_at)
@@ -78,9 +87,23 @@ class ActionReceipt:
             raise ValueError("Receipt parameters must be a JSON object.")
         if not isinstance(self.result, ToolResult):
             raise TypeError("Receipts require a ToolResult.")
+        if self.schema_version == 2:
+            canonical = canonical_arguments(json.loads(self.parameters_json))
+            if canonical != self.parameters_json or argument_digest(canonical) != self.normalized_argument_digest:
+                raise ValueError("Receipt digest must match the exact normalized arguments.")
+            if not all((self.request_id, self.capability_id, self.policy_rule, self.normalized_argument_digest)):
+                raise ValueError("V2 receipts require authorization identities and digest.")
+            if not isinstance(self.authorization_decision, AuthorizationDecision) or not self.authorization_evidence:
+                raise ValueError("V2 receipts require an owner-kernel decision and evidence.")
+            if self.authorization_decision is not AuthorizationDecision.ALLOW and self.result.status is ActionStatus.SUCCEEDED:
+                raise ValueError("An unauthorized action cannot be successful.")
+        if not isinstance(self.authorization_evidence, tuple) or any(not isinstance(e, Evidence) for e in self.authorization_evidence):
+            raise TypeError("Authorization evidence must be an immutable evidence tuple.")
 
     def to_dict(self) -> dict:
         payload = asdict(self)
         payload["parameters"] = json.loads(payload.pop("parameters_json"))
         payload["result"] = self.result.to_dict()
+        if self.authorization_decision is not None:
+            payload["authorization_decision"] = self.authorization_decision.value
         return payload
