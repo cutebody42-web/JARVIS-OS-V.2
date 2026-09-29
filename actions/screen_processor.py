@@ -17,7 +17,6 @@ from typing import Optional
 from memory.config_manager import get_gemini_key
 
 import numpy as np
-import sounddevice as sd
 
 def _get_voice_name() -> str:
     """Read voice name dynamically so it picks up runtime changes."""
@@ -435,6 +434,9 @@ class _VisionSession:
                 raise
 
     async def _play_loop(self) -> None:
+        # Audio is optional for image helpers and headless cloud processes.
+        # Load the native PortAudio backend only when playback is requested.
+        import sounddevice as sd
         stream = sd.RawOutputStream(
             samplerate=_RECEIVE_SAMPLE_RATE,
             channels=_CHANNELS,

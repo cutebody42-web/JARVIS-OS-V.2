@@ -249,6 +249,14 @@ def qcol(h: str, a: int = 255) -> QColor:
     c = QColor(h); c.setAlpha(a); return c
 
 
+def qss_rgba(color: str, alpha: int) -> str:
+    """Qt stylesheets require explicit RGBA, not a CSS hex-alpha suffix."""
+    value = QColor(color)
+    if not value.isValid() or not 0 <= alpha <= 255:
+        raise ValueError("Invalid stylesheet color or alpha")
+    return f"rgba({value.red()}, {value.green()}, {value.blue()}, {alpha})"
+
+
 # ---------------------------------------------------------------------------
 # ThemeManager — dynamic color theming with presets
 # ---------------------------------------------------------------------------
@@ -496,7 +504,7 @@ class ChatBubbleWidget(QWidget):
             QLineEdit {{
                 background: {C.DARK};
                 color: {C.WHITE};
-                border: 1px solid {C.ENERGY}55;
+                border: 1px solid {qss_rgba(C.ENERGY, 0x55)};
                 border-radius: 4px;
                 padding: 4px 10px;
             }}
@@ -518,13 +526,13 @@ class ChatBubbleWidget(QWidget):
         send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         send_btn.setStyleSheet(f"""
             QPushButton {{
-                background: {C.ENERGY}22;
+                background: {qss_rgba(C.ENERGY, 0x22)};
                 color: {C.ENERGY};
-                border: 1px solid {C.ENERGY}66;
+                border: 1px solid {qss_rgba(C.ENERGY, 0x66)};
                 border-radius: 4px;
             }}
             QPushButton:hover {{
-                background: {C.ENERGY}44;
+                background: {qss_rgba(C.ENERGY, 0x44)};
                 border: 1px solid {C.ENERGY};
                 color: {C.WHITE};
             }}
@@ -599,7 +607,7 @@ class ChatBubbleWidget(QWidget):
         lbl = QLabel(partial + '▌')
         lbl.setFont(QFont(UI_FONT, 9))
         lbl.setWordWrap(True)
-        lbl.setStyleSheet(f'color: {C.PRI}; background: {C.PRI_GHO}; border: 1px solid {C.PRI}44; border-radius: 6px; padding: 6px 10px;')
+        lbl.setStyleSheet(f'color: {C.PRI}; background: {C.PRI_GHO}; border: 1px solid {qss_rgba(C.PRI, 0x44)}; border-radius: 6px; padding: 6px 10px;')
         self._c_lay.addWidget(lbl)
         self._typing_bubble = lbl
         sb = self._scroll.verticalScrollBar()
@@ -1187,8 +1195,8 @@ class ToolProgressWidget(QWidget):
         self.setFixedHeight(28)
         self.setStyleSheet(f"""
             QWidget {{
-                background: {C.PURPLE}18;
-                border: 1px solid {C.PURPLE}44;
+                background: {qss_rgba(C.PURPLE, 0x18)};
+                border: 1px solid {qss_rgba(C.PURPLE, 0x44)};
                 border-radius: 4px;
             }}
         """)
@@ -1476,19 +1484,19 @@ class BasePopup(QWidget):
         
         # Styling based on popup type
         bg_colors = {
-            PopupType.MICRO: f"{C.PRI_GHO}cc",
-            PopupType.INFORMATION: f"{C.BORDER}aa",
-            PopupType.ACTION: f"{C.ACC}15",
-            PopupType.RESEARCH: f"{C.PURPLE}15",
-            PopupType.CRITICAL: f"{C.RED}20",
+            PopupType.MICRO: f"{qss_rgba(C.PRI_GHO, 0xcc)}",
+            PopupType.INFORMATION: f"{qss_rgba(C.BORDER, 0xaa)}",
+            PopupType.ACTION: f"{qss_rgba(C.ACC, 0x15)}",
+            PopupType.RESEARCH: f"{qss_rgba(C.PURPLE, 0x15)}",
+            PopupType.CRITICAL: f"{qss_rgba(C.RED, 0x20)}",
         }
         
         border_colors = {
-            PopupType.MICRO: f"{C.PRI}44",
-            PopupType.INFORMATION: f"{C.BORDER}88",
-            PopupType.ACTION: f"{C.ACC}88",
-            PopupType.RESEARCH: f"{C.PURPLE}88",
-            PopupType.CRITICAL: f"{C.RED}cc",
+            PopupType.MICRO: f"{qss_rgba(C.PRI, 0x44)}",
+            PopupType.INFORMATION: f"{qss_rgba(C.BORDER, 0x88)}",
+            PopupType.ACTION: f"{qss_rgba(C.ACC, 0x88)}",
+            PopupType.RESEARCH: f"{qss_rgba(C.PURPLE, 0x88)}",
+            PopupType.CRITICAL: f"{qss_rgba(C.RED, 0xcc)}",
         }
         
         text_colors = {
@@ -1499,8 +1507,8 @@ class BasePopup(QWidget):
             PopupType.CRITICAL: C.RED,
         }
         
-        bg = bg_colors.get(popup_type, f"{C.PRI_GHO}cc")
-        border = border_colors.get(popup_type, f"{C.PRI}44")
+        bg = bg_colors.get(popup_type, f"{qss_rgba(C.PRI_GHO, 0xcc)}")
+        border = border_colors.get(popup_type, f"{qss_rgba(C.PRI, 0x44)}")
         text_color = text_colors.get(popup_type, C.WHITE)
         
         self.setStyleSheet(f"""
@@ -1775,7 +1783,11 @@ class PopupManager(QObject):
     def dismiss_all_popups(self):
         """Dismiss all popups immediately."""
         for popup in self.active_popups[:]:  # Copy list
-            popup._dismiss()
+            try:
+                popup._dismiss()
+            except RuntimeError as exc:
+                if "has been deleted" not in str(exc):
+                    raise
         self.active_popups.clear()
 
 
@@ -4834,7 +4846,9 @@ class SetupOverlay(QWidget):
         from core.api_key_validator import normalize_gemini_api_key
 
         normalized = normalize_gemini_api_key(key)
+        self._verified_key = ""
         self._key_input.setText(normalized)
+        self._key_input.setEnabled(False)
         self._validation_pending = True
         self._purge_saved_on_failure = purge_saved_on_failure
         self._init_btn.setEnabled(False)
@@ -4843,20 +4857,36 @@ class SetupOverlay(QWidget):
         self._validation_lbl.setStyleSheet(f"color: {C.ACC2}; background: transparent;")
 
         def _validate():
-            from core.api_key_validator import validate_gemini_api_key
-            result = validate_gemini_api_key(normalized)
-            self.validation_finished.emit(result.valid, result.message, normalized, remember_key)
+            from core.api_key_validator import ApiKeyValidationResult, validate_gemini_api_key
+            try:
+                result = validate_gemini_api_key(normalized)
+            except Exception:
+                result = ApiKeyValidationResult(False, "Key verification failed. Please retry.")
+            try:
+                self.validation_finished.emit(result.valid, result.message, normalized, remember_key)
+            except RuntimeError:
+                # The owner may close the window while verification is in flight.
+                pass
 
         threading.Thread(target=_validate, daemon=True).start()
 
     def _on_validation_finished(self, valid: bool, message: str, key: str, remember_key: bool):
         self._validation_pending = False
+        self._key_input.setEnabled(True)
         self._init_btn.setEnabled(True)
         self._init_btn.setText("▸  INITIALISE SYSTEMS")
 
         if not valid:
+            self._verified_key = ""
             if os.environ.get("GEMINI_API_KEY", "").strip() == key:
                 os.environ.pop("GEMINI_API_KEY", None)
+            if self._purge_saved_on_failure:
+                try:
+                    store = get_secret_store()
+                    if store.get("gemini_api_key") == key:
+                        store.delete("gemini_api_key")
+                except Exception:
+                    pass
             self._validation_lbl.setText(message)
             self._validation_lbl.setStyleSheet(f"color: {C.RED}; background: transparent;")
             self._key_input.setStyleSheet(f"""
@@ -5242,7 +5272,7 @@ class SettingsOverlay(_OverlayBase):
                 letter-spacing: 1px;
             }}
             QPushButton:hover {{
-                background: {C.PRI}22;
+                background: {qss_rgba(C.PRI, 0x22)};
                 border: 1px solid {C.PRI};
                 color: {C.ENERGY};
             }}
@@ -5332,7 +5362,7 @@ class SettingsOverlay(_OverlayBase):
                 btn.setStyleSheet(f"""
                     QPushButton {{
                         background: transparent; color: {C.WHITE_DIM};
-                        border: 1px solid {C.BORDER}44; border-radius: 3px; padding: 0 8px;
+                        border: 1px solid {qss_rgba(C.BORDER, 0x44)}; border-radius: 3px; padding: 0 8px;
                     }}
                     QPushButton:hover {{ color: {C.PRI}; background: {C.PRI_GHO};
                                          border: 1px solid {C.BORDER_B}; }}
@@ -5866,7 +5896,7 @@ class VoiceSelectorOverlay(_OverlayBase):
                 letter-spacing: 1px;
             }}
             QPushButton:hover {{
-                background: {C.PRI}22;
+                background: {qss_rgba(C.PRI, 0x22)};
                 border: 1px solid {C.PRI};
                 color: {C.ENERGY};
             }}
@@ -5931,7 +5961,7 @@ class VoiceSelectorOverlay(_OverlayBase):
                 btn.setStyleSheet(f"""
                     QPushButton {{
                         background: {C.DARK}; color: {C.TEXT_MED};
-                        border: 1px solid {C.BORDER}55; border-radius: 4px;
+                        border: 1px solid {qss_rgba(C.BORDER, 0x55)}; border-radius: 4px;
                         border-top: 1px solid {C.BORDER};
                     }}
                     QPushButton:hover {{ color: {C.PRI}; border: 1px solid {C.BORDER_B};
@@ -6576,6 +6606,10 @@ class VisionPreviewWindow(QWidget):
 
 
 class MainWindow(QMainWindow):
+    @property
+    def operational_ready(self) -> bool:
+        return bool(getattr(self, "_ready", False) and getattr(self, "_overlay", None) is None)
+
 
 
 
@@ -6829,7 +6863,7 @@ class MainWindow(QMainWindow):
         try:
             from pathlib import Path
             import json
-            cfg_file = Path.home() / ".jarvis" / "config" / "settings.json"
+            cfg_file = UI_SETTINGS_FILE
             if cfg_file.exists():
                 cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
                 saved_theme = cfg.get("theme", "")
@@ -7200,9 +7234,9 @@ class MainWindow(QMainWindow):
             widget.update()
 
         try:
-            settings_dir = Path.home() / ".jarvis" / "config"
+            settings_dir = UI_SETTINGS_FILE.parent
             settings_dir.mkdir(parents=True, exist_ok=True)
-            settings_file = settings_dir / "settings.json"
+            settings_file = UI_SETTINGS_FILE
             try:
                 settings = json.loads(settings_file.read_text(encoding="utf-8")) if settings_file.exists() else {}
             except Exception:
@@ -7383,7 +7417,7 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         cw = self.centralWidget()
-        if self._overlay and self._overlay.isVisible():
+        if self._overlay and not self._overlay.isHidden():
             ow, oh = 460, 420
             self._overlay.setGeometry(
                 (cw.width()  - ow) // 2,
@@ -8327,6 +8361,8 @@ class MainWindow(QMainWindow):
         )
 
     def _on_file_selected(self, path: str):
+        if not self.operational_ready:
+            return
         self._current_file = path
         p    = Path(path)
         cat  = _file_category(p)
@@ -8420,6 +8456,8 @@ class MainWindow(QMainWindow):
 
     def _send(self, txt: str = ""):
         """Handle command submission. Called via ChatBubbleWidget signal."""
+        if not self.operational_ready:
+            return
         try:
             txt = str(txt or "").strip()
             if not txt:
@@ -8581,7 +8619,7 @@ class MainWindow(QMainWindow):
                 break
 
         # Tool log feeding — forward SYS/tool lines to tool widget
-        if any(text.startswith(p) for p in ("SYS:", "ERR:", "FILE:")):
+        if any(text.startswith(p) for p in ("ERR:", "FILE:")):
             try:
                 self._tool_sig.emit(text)
             except Exception:
@@ -8978,6 +9016,10 @@ class MainWindow(QMainWindow):
             cfg = {}
         cfg["tts_provider"] = provider
         cfg["tts_voice_id"] = voice_id
+        if provider == "gemini" and voice_id in VOICE_VALUE_TO_LABEL:
+            cfg["voice_name"] = voice_id
+            os.environ["GEMINI_VOICE_NAME"] = voice_id
+        cfg.pop("gemini_api_key", None)
         cfg.pop("tts_api_key",  None)   # scrub any legacy plain-text key
         cfg.pop("tts_preset",   None)   # scrub old preset field
         try:
@@ -9043,6 +9085,14 @@ class _RootShim:
 
 
 class JarvisUI:
+    @property
+    def operational_ready(self) -> bool:
+        return self._win.operational_ready
+
+    @property
+    def interaction_gated(self) -> bool:
+        return not self.operational_ready
+
 
     def __init__(self, face_path: str, size=None):
         self._app = QApplication.instance() or QApplication(sys.argv)
@@ -9110,7 +9160,7 @@ class JarvisUI:
         self._win._parse_log_for_context(text)
 
     def wait_for_api_key(self):
-        while not self._win._ready:
+        while not self.operational_ready:
             time.sleep(0.1)
 
     def start_speaking(self):

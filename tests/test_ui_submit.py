@@ -10,11 +10,20 @@ import ui
 class UISubmitTests(unittest.TestCase):
     def _window_stub(self, callback=None):
         return SimpleNamespace(
+            operational_ready=True,
             _log=SimpleNamespace(append_log=MagicMock()),
             _log_sig=SimpleNamespace(emit=MagicMock()),
             _set_command_center=MagicMock(),
             on_text_command=callback,
         )
+
+    def test_unready_window_never_dispatches(self):
+        callback = MagicMock()
+        window = self._window_stub(callback)
+        window.operational_ready = False
+        ui.MainWindow._send(window, "Send a message")
+        callback.assert_not_called()
+        window._log.append_log.assert_not_called()
 
     def test_command_center_message_no_longer_crashes_normalization(self):
         window = self._window_stub()
