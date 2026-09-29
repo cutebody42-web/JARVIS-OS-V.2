@@ -22,3 +22,19 @@ For local model transport set `NEXUS_MODEL_PROVIDER=ollama`, `NEXUS_OLLAMA_MODEL
 Future certification must use a deployable build on an explicitly authorized Windows device: cold/warm launch, UIA read/write and postcondition, reparse points, DPI/multimonitor changes, permission prompts, pause/cancel, crash recovery, wake false accepts/rejects, English/Arabic recognition, offline egress capture, model cold/warm RSS and p95 response, thermal load and battery. Publish machine/build/model hashes, raw observations and failures. The existing manual Windows gate stays closed until that harness exists; this work does not dispatch it or pretend it passed.
 
 Publish small commits and stacked **draft** PRs. New required failures must be fixed before presenting the slice as passing. Unresolved baseline release failures forbid merge/deployment. Nothing in this work modifies branch protection or automatically merges drafts.
+
+## Full QA repair after Phase 3
+
+The historical failures in the Phase 2/3 evidence remain accurate for those commits.
+The stacked `nexus/fix-cloud-qa-regressions` repair is documented in
+[ADR 004: contract migration](qa-contract-migration.md) and
+[measured repair evidence](qa-regression-evidence.json). It restores cloud collection,
+fixes shipped startup/configuration defects, and explicitly replaces unsupported
+UI specifications. Full local discovery: **367/367, zero skips**; minimal contracts:
+**79/79**. The full legacy workflow still fails on real errors and now also requires
+the cloud checklist and installed localhost Chromium. Hardware remains deferred.
+
+The physical Windows gate is unchanged; green cloud CI is not release/hardware
+certification. Broad exception handling and hard-coded theme colors remain static
+P2 review observations, not failed executable checks. No new model/dependency
+integration or visible UI redesign is part of this repair.
