@@ -1,0 +1,24 @@
+# Research frontier — September 28–29, 2026
+
+Primary-source search covered personal agents, local inference, multimodal/computer use, GUI world models, action verification, temporal memory, skill learning and active perception. Popularity is not a selection metric. Newer does not establish superior correctness or laptop suitability. No upstream benchmark was reproduced here; no research code or model weights are bundled.
+
+| Source | Finding / decision | Experiment before adoption |
+|---|---|---|
+| [OpenClaw](https://github.com/openclaw/openclaw), [approval handler](https://github.com/openclaw/openclaw/blob/6b9da9dc0287/src/gateway/server-methods/exec-approvals.ts) | Current personal gateway, explicit approvals and device/channel ecosystem; reference for pairing. Very large TypeScript platform, not a replacement core. | Compare exact-argument ticket attacks and disconnected-device revocation; do not inherit an upstream permission override. |
+| [Hermes](https://github.com/NousResearch/hermes-agent) | Experience-to-skill loop is relevant; reference only. Do not import automatic skill/config mutation as authority. Source/CI sampled; one pinned license/core-file fetch failed, so integration remains blocked pending complete license review. | Replay held-out tasks, negative examples and owner promotion; compare with ordinary context. |
+| [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) | AutoGen's own README directs new users here; typed checkpoint protocol is a useful successor reference. No extra orchestrator dependency now. | Recovery conformance, checkpoint compatibility, cancellation and explicit permission revalidation. |
+| [SuperLocalMemory](https://github.com/qualixar/superlocalmemory), [paper](https://arxiv.org/abs/2608.08253) | AGPL-3.0 governed local memory; provenance/workspace lifecycle ideas. README distinguishes earlier research benchmarks from current package evidence. Research reference only. | Tenant poisoning, stale claims, contradiction and deletion propagation; verify current package, not paper numbers. |
+| [OmniAgent](https://github.com/HarryHsing/OmniAgent), [paper](https://arxiv.org/abs/2606.19341) | 2026 active video perception, Apache-2.0 code; model/data license and GPU cost separate. Research reference only; 7B multimodal is not assumed suitable for always-on iGPU use. | Frame/observation budget versus event-triggered native context; missing-observation controls and latency/RAM. |
+| [CUWM](https://www.microsoft.com/en-us/research/publication/computer-using-world-model/), [paper](https://arxiv.org/abs/2602.17365) | Predict next UI state from state/action; text then visual prediction is experimental planning evidence, not proof of execution. | Fixed action candidates; compare predicted versus observed postconditions; never skip actual verifier. |
+| [ContinualSkillBench](https://arxiv.org/abs/2608.03874) | Explicit skill maintenance is not consistently better than context adaptation in reported experiments. Research reference only. | Held-out transfer, failure rate, skill count/fragmentation, runtime and token savings against context-only baseline. |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp), [Ollama](https://github.com/ollama/ollama) | Current portable inference/server options. Choose optional Ollama API first; llama-server is a replacement candidate, not an additional resident model service. | Same model/context on CPU then certified iGPU; cold load, warm p95, RSS/KV cache and actual offline traffic. |
+
+## Predict-before-act experiment design
+
+Use an immutable `Prediction` experiment record: observation IDs, candidate ActionRequest digest, expected facts, confidence, model/build ID, budget and creation time. After ordinary authorization/execution, attach actual verifier observations and classify match/mismatch/insufficient evidence. Keep predictions outside ActionReceipt evidence. Begin with simulated file-state fixtures; later supervised UIA traces. Report calibration and recovery success, not just screenshot similarity. Model-predicted success cannot transition a mission to succeeded.
+
+## Reflex compilation experiment design
+
+Capture only owner-consented, redacted trajectories. Derive an inert candidate skill with exact input schema, bounded capabilities, resource locks, cancellation points and postconditions. Sandbox replay includes denied/changed arguments, stale state, partial effects and injected web/email/file/memory content. Promote only after test evidence, latency benefit and owner approval; preserve rollback/version provenance. Generated scripts are never loaded from retrieved content or executed by the current runtime.
+
+World knowledge updates and memory ranking can suggest work but cannot activate devices, authorize sending, widen scopes or change policy. Current implementation is deliberately a foundation; these R&D lanes remain disabled.
