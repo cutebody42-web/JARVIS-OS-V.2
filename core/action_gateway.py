@@ -13,7 +13,8 @@ import time
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
-from core.action_contracts import ActionReceipt, ActionStatus, Evidence, ToolResult
+from core.action_contracts import (ActionReceipt, ActionStatus, Evidence, ToolResult,
+                                   VerifierResult, VerificationStatus)
 from core.authority_contracts import (
     ActionRequest, AuthorizationDecision as A, AuthorizationResult, PolicyContext,
     canonical_arguments,
@@ -123,6 +124,11 @@ class ActionGateway:
             policy_rule=auth.policy_rule, normalized_argument_digest=request.arguments_digest,
             confirmation_ticket_id=auth.confirmation_ticket_id,
             authorization_evidence=(Evidence("nexus.owner_kernel", f"{POLICY_VERSION}: {auth.policy_rule}: {auth.decision.value}", start),),
+            # Envelope for the static adapter's existing postcondition evidence.
+            # This does not invent an independent external-service verifier.
+            verifier_result=VerifierResult(
+                VerificationStatus.PASS if result.status is ActionStatus.SUCCEEDED else VerificationStatus.UNKNOWN,
+                "nexus.trusted_adapter", result.evidence),
         )
         with self.__receipt_lock:
             self.__receipts.append(receipt)

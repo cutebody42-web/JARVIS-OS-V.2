@@ -53,6 +53,27 @@ class ToolResult:
         return {**asdict(self), "status": self.status.value}
 
 
+class VerificationStatus(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class VerifierResult:
+    status: VerificationStatus
+    verifier: str
+    evidence: tuple[Evidence, ...] = ()
+
+    def __post_init__(self):
+        if not isinstance(self.status, VerificationStatus) or not self.verifier.strip():
+            raise ValueError("Verification requires a typed status and verifier identity.")
+        if not isinstance(self.evidence, tuple) or any(not isinstance(e, Evidence) for e in self.evidence):
+            raise TypeError("Verifier evidence must be an immutable Evidence tuple.")
+        if self.status is VerificationStatus.PASS and not self.evidence:
+            raise ValueError("Passing verification requires observed evidence.")
+
+
 @dataclass(frozen=True)
 class ActionReceipt:
     action_id: str
@@ -73,6 +94,7 @@ class ActionReceipt:
     normalized_argument_digest: str = ""
     confirmation_ticket_id: str | None = None
     authorization_evidence: tuple[Evidence, ...] = ()
+    verifier_result: VerifierResult | None = None
 
     def __post_init__(self):
         if not self.action_id or not self.task_id or not self.tool:
@@ -87,6 +109,11 @@ class ActionReceipt:
             raise ValueError("Receipt parameters must be a JSON object.")
         if not isinstance(self.result, ToolResult):
             raise TypeError("Receipts require a ToolResult.")
+        if self.verifier_result is not None:
+            if not isinstance(self.verifier_result, VerifierResult):
+                raise TypeError("Expected a VerifierResult.")
+            if self.result.status is ActionStatus.SUCCEEDED and self.verifier_result.status is not VerificationStatus.PASS:
+                raise ValueError("Success cannot contradict verification.")
         if self.schema_version == 2:
             canonical = canonical_arguments(json.loads(self.parameters_json))
             if canonical != self.parameters_json or argument_digest(canonical) != self.normalized_argument_digest:
@@ -106,4 +133,6 @@ class ActionReceipt:
         payload["result"] = self.result.to_dict()
         if self.authorization_decision is not None:
             payload["authorization_decision"] = self.authorization_decision.value
+        if self.verifier_result is not None:
+            payload["verifier_result"]["status"] = self.verifier_result.status.value
         return payload

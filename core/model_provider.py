@@ -34,6 +34,13 @@ class ModelProvider(Protocol):
 
 def default_provider() -> ModelProvider:
     # Resolve per invocation: no shared SDK configuration or cross-tenant client.
+    import os
+    selected = os.environ.get("NEXUS_MODEL_PROVIDER", "gemini")
+    if selected == "ollama":
+        from core.providers.ollama import OllamaProvider
+        return OllamaProvider.from_env()
+    if selected != "gemini":
+        raise ValueError("Unknown model provider; no fallback permitted.")
     from core.providers.gemini import GeminiProvider
 
     return GeminiProvider()
