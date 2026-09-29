@@ -1,0 +1,27 @@
+{
+  "kind": "cloud_native_sqlite_overhead",
+  "measured_at": "2026-09-29T04:23:52.695744+00:00",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "baseline_commit": "fffb487cc79adb827d21918ade107bebcdc2c03c",
+  "limits": "Native clock, real SQLite WAL/FULL commits, 10 warmups. Model-free; no laptop/Windows/iGPU/audio or real inference benchmark. Durable case includes creation, execution and journal reads.",
+  "hardware_certified": false,
+  "phase2_bare_reflex": {
+    "samples": 500,
+    "median_ms": 0.047635,
+    "p95_ms": 0.087128,
+    "provider_calls": 0
+  },
+  "phase3_bare_reflex": {
+    "samples": 500,
+    "median_ms": 0.0502085,
+    "p95_ms": 0.144172,
+    "provider_calls": 0
+  },
+  "phase3_durable_reflex": {
+    "samples": 500,
+    "median_ms": 0.3730325,
+    "p95_ms": 0.686158,
+    "provider_calls": 0
+  }
+}

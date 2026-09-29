@@ -3,7 +3,7 @@ name: NEXUS architecture contracts
 on:
   pull_request:
   push:
-    branches: [nexus/phase-1-provider-action-contracts, nexus/phase-2-sovereign-owner-kernel]
+    branches: [nexus/phase-1-provider-action-contracts, nexus/phase-2-sovereign-owner-kernel, nexus/phase-3-durable-mission-slice]
 
 permissions:
   contents: read
@@ -18,4 +18,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install google-genai
-      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_owner_kernel
+      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_owner_kernel tests.test_local_provider tests.test_missions
+      - uses: actions/checkout@v4
+        with:
+          ref: fffb487cc79adb827d21918ade107bebcdc2c03c
+          path: .baseline-phase2
+      - run: python scripts/benchmark_missions.py --baseline-dir .baseline-phase2 --output artifacts/mission-benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mission-benchmark
+          path: artifacts/mission-benchmark.json

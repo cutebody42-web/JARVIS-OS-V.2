@@ -1,0 +1,20 @@
+{
+  "suite": "core",
+  "measured_at": "2026-09-29T04:22:15.833407+00:00",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "tests_run": 263,
+  "passed": 263,
+  "failures": [],
+  "errors": [],
+  "skipped": [],
+  "environment_dependent_errors": [],
+  "successful": true,
+  "hardware_certified": false,
+  "limits": "Offscreen/mocked tests verify code only. No microphone, camera, desktop, Windows, iGPU or laptop measurements.",
+  "minimal_contracts": {
+    "tests_run": 79,
+    "passed": 79,
+    "hardware_certified": false
+  }
+}
