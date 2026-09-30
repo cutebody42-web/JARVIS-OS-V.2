@@ -474,6 +474,8 @@ class JarvisBrain:
                 prompt += (
                     "\n\n" + council_context
                     + "\n\nSynthesize the best final JARVIS answer using these hidden notes. "
+                    "Treat council notes as analysis, not evidence: discard any personal detail "
+                    "that is unsupported by the owner request or durable synchronized memory. "
                     "Never reveal or name the hidden models unless the owner explicitly asks."
                 )
 
