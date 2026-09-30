@@ -261,6 +261,7 @@ class JarvisBrain:
     ):
         self.policy = policy or BrainPolicy()
         self._lock = threading.RLock()
+        self._turn_lock = threading.Lock()
         self._lane = BrainLane.GENERAL
         self._history: list[tuple[str, str]] = []
         self._history_limit = 16
@@ -410,18 +411,23 @@ class JarvisBrain:
         speak=None,
         cancel_flag=None,
     ) -> str:
-        """Single public entry point: chat by default, act only on explicit intent."""
-        intent = classify_intent(message)
-        if intent is BrainIntent.ACTION:
-            return self.execute(
-                message,
-                task=task,
-                speak=speak,
-                cancel_flag=cancel_flag,
-            )
-        response = self.respond(message, task=task)
-        if speak:
-            speak(response)
-        return response
+        """Single public entry point: chat by default, act only on explicit intent.
+
+        Desktop and paired companion requests share this turn lock so lane state
+        and transient conversation history remain one coherent JARVIS session.
+        """
+        with self._turn_lock:
+            intent = classify_intent(message)
+            if intent is BrainIntent.ACTION:
+                return self.execute(
+                    message,
+                    task=task,
+                    speak=speak,
+                    cancel_flag=cancel_flag,
+                )
+            response = self.respond(message, task=task)
+            if speak:
+                speak(response)
+            return response
 
     ask = respond
