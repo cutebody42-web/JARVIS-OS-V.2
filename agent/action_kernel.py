@@ -35,10 +35,13 @@ def run_action(tool: str, parameters: dict, *, task_id: str, step_id: str,
     # Preserve QA as an additional restrictive gate, never a source of grants.
     qa = guard_tool_call(tool, parameters) if isinstance(parameters, dict) else None
     denial = qa.reason if qa is not None and not qa.allowed else ""
+    denial_rule = "preflight.denied"
     if allowed_tools is not None and tool not in frozenset(allowed_tools):
         denial = "Capability is not admitted by the active persona."
+        denial_rule = "persona.denied"
     return runtime.gateway.run_tool(
         tool, parameters, task_id=task_id, step_id=step_id, route=route,
         cancel_flag=cancel_flag, additional_denial=denial,
+        additional_denial_rule=denial_rule,
         runtime=runtime,
     )
