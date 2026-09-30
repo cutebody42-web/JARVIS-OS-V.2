@@ -88,6 +88,7 @@ class JarvisIdentityTests(unittest.TestCase):
         self.assertEqual(
             aliases,
             {
+                "jarvis-core-1b",
                 "jarvis-brain-fast",
                 "jarvis-brain-engineering",
                 "jarvis-brain-lite",
