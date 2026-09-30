@@ -79,6 +79,26 @@ class PairingOffer:
             "expires_at": self.expires_at,
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "PairingOffer":
+        if not isinstance(value, Mapping):
+            raise TypeError("pairing offer must be an object")
+        required = {
+            "version", "pairing_id", "inviter_device", "inviter_public_key",
+            "inviter_endpoint", "secret", "expires_at",
+        }
+        if set(value) != required:
+            raise ValueError("pairing offer schema mismatch")
+        return cls(
+            version=value["version"],
+            pairing_id=value["pairing_id"],
+            inviter_device=value["inviter_device"],
+            inviter_public_key=value["inviter_public_key"],
+            inviter_endpoint=value["inviter_endpoint"],
+            secret=value["secret"],
+            expires_at=value["expires_at"],
+        )
+
 
 @dataclass(frozen=True)
 class PairingRequest:
