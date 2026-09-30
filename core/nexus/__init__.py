@@ -19,6 +19,13 @@ from .sync_daemon import (
     SyncReport,
     SyncTransport,
 )
+from .pairing import (
+    PAIRING_VERSION,
+    PairingManager,
+    PairingOffer,
+    PairingRequest,
+    PendingPairing,
+)
 from .peer_auth import (
     AUTH_VERSION,
     DeviceSigner,
@@ -61,6 +68,11 @@ __all__ = [
     "MergePolicySpec",
     "MEDIA_TYPE",
     "NexusSyncNode",
+    "PAIRING_VERSION",
+    "PairingManager",
+    "PairingOffer",
+    "PairingRequest",
+    "PendingPairing",
     "PeerAuthenticator",
     "PeerRegistry",
     "PeerSchedule",
