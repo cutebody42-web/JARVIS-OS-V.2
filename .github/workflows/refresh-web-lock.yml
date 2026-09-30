@@ -4,6 +4,7 @@ on:
   push:
     branches: ["product/**"]
     paths:
+      - "web/package.json"
       - ".github/workflows/refresh-web-lock.yml"
 
 concurrency:
