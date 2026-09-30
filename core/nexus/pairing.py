@@ -405,6 +405,76 @@ class PairingManager:
             created_at=updated,
         )
 
+    def status_for_request(self, request: PairingRequest) -> str:
+        """Authenticate a candidate's polling request and return pairing state."""
+        if not isinstance(request, PairingRequest):
+            raise TypeError("request must be PairingRequest")
+        if request.version != PAIRING_VERSION:
+            raise ValueError("unsupported pairing request version")
+
+        endpoint = _normalize_candidate_endpoint(
+            request.candidate_role,
+            request.candidate_endpoint,
+        )
+        now = self._now()
+        with self.registry._store._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM nexus_pairing_sessions WHERE pairing_id=?",
+                (request.pairing_id,),
+            ).fetchone()
+            if row is None:
+                db.rollback()
+                raise PermissionError("pairing offer is absent")
+
+            unsigned = {
+                "version": request.version,
+                "pairing_id": request.pairing_id,
+                "candidate_device": request.candidate_device,
+                "candidate_public_key": request.candidate_public_key,
+                "candidate_role": request.candidate_role.value,
+                "candidate_endpoint": endpoint,
+            }
+            expected_proof = hmac.new(
+                row["secret_hash"].encode("ascii"),
+                _canonical(unsigned),
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(expected_proof, request.proof):
+                db.rollback()
+                raise PermissionError("pairing proof is invalid")
+
+            if row["candidate_device"] is not None:
+                if (
+                    row["candidate_device"] != request.candidate_device
+                    or row["candidate_public_key"] != request.candidate_public_key
+                    or row["candidate_role"] != request.candidate_role.value
+                    or (row["candidate_endpoint"] or None) != endpoint
+                ):
+                    db.rollback()
+                    raise PermissionError(
+                        "pairing request does not match the enrolled candidate"
+                    )
+
+            state = row["state"]
+            if state not in {"approved", "cancelled", "expired"} and now > _ts(row["expires_at"]):
+                db.execute(
+                    """
+                    UPDATE nexus_pairing_sessions
+                    SET state='expired', updated_at=?
+                    WHERE pairing_id=?
+                    """,
+                    (
+                        now.isoformat().replace("+00:00", "Z"),
+                        request.pairing_id,
+                    ),
+                )
+                db.commit()
+                return "expired"
+
+            db.rollback()
+            return state
+
     def pending(self) -> tuple[PendingPairing, ...]:
         with self.registry._store._connect() as db:
             rows = db.execute(
