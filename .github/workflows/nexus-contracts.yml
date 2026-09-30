@@ -3,7 +3,7 @@ name: NEXUS architecture contracts
 on:
   pull_request:
   push:
-    branches: [nexus/phase-1-provider-action-contracts, nexus/phase-2-sovereign-owner-kernel, nexus/phase-3-durable-mission-slice]
+    branches: ["nexus/**"]
 
 permissions:
   contents: read
@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install google-genai
-      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_owner_kernel tests.test_local_provider tests.test_missions
+      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_owner_kernel tests.test_local_provider tests.test_missions tests.test_hardware_profile tests.test_model_runtime tests.test_model_router tests.test_personas tests.test_nexus_event_store tests.test_nexus_merge tests.test_nexus_merge_applier tests.test_nexus_sync_daemon
       - uses: actions/checkout@v4
         with:
           ref: fffb487cc79adb827d21918ade107bebcdc2c03c
