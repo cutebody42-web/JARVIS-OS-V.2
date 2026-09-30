@@ -1,12 +1,16 @@
-"""Explicit one-time pairing for adding a phone or another NEXUS device.
+"""Explicit one-time pairing for NEXUS nodes and client-only companions.
 
 Pairing is an invitation flow, not ambient trust:
 1. desktop creates a short-lived offer with a one-time secret;
-2. candidate device proves knowledge of that secret and presents its public key;
+2. candidate proves knowledge of that secret and presents its Ed25519 public key;
 3. owner explicitly approves the pending candidate;
-4. only then is the peer written to PeerRegistry.
+4. only then is the device written to PeerRegistry.
 
-The one-time secret is stored only as a SHA-256 hash in local.db.
+NODE peers expose an inbound sync endpoint.
+COMPANION peers (phones/tablets) are client-only and expose no inbound endpoint.
+
+Only SHA-256(secret) is stored in local.db; the plaintext pairing secret is
+present only in the short-lived QR/deep-link offer.
 """
 
 from __future__ import annotations
@@ -17,7 +21,6 @@ import hashlib
 import hmac
 import json
 import secrets
-import sqlite3
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -59,6 +62,21 @@ def _secret_hash(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
+def _normalize_candidate_endpoint(
+    role: PeerRole,
+    endpoint: str | None,
+) -> str | None:
+    if role is PeerRole.NODE:
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            raise ValueError("node pairing requires a sync endpoint")
+        return normalize_peer_endpoint(endpoint)
+    if role is PeerRole.COMPANION:
+        if endpoint not in {None, ""}:
+            raise ValueError("companion pairing does not accept an inbound endpoint")
+        return None
+    raise ValueError("unsupported pairing role")
+
+
 @dataclass(frozen=True)
 class PairingOffer:
     version: int
@@ -85,17 +103,24 @@ class PairingOffer:
         if not isinstance(value, Mapping):
             raise TypeError("pairing offer must be an object")
         required = {
-            "version", "pairing_id", "inviter_device", "inviter_public_key",
-            "inviter_endpoint", "secret", "expires_at",
+            "version",
+            "pairing_id",
+            "inviter_device",
+            "inviter_public_key",
+            "inviter_endpoint",
+            "secret",
+            "expires_at",
         }
         if set(value) != required:
             raise ValueError("pairing offer schema mismatch")
+        if value["version"] != PAIRING_VERSION:
+            raise ValueError("unsupported pairing offer version")
         return cls(
             version=value["version"],
             pairing_id=value["pairing_id"],
             inviter_device=value["inviter_device"],
             inviter_public_key=value["inviter_public_key"],
-            inviter_endpoint=value["inviter_endpoint"],
+            inviter_endpoint=normalize_peer_endpoint(value["inviter_endpoint"]),
             secret=value["secret"],
             expires_at=value["expires_at"],
         )
@@ -119,7 +144,6 @@ class PairingRequest:
             "candidate_public_key": self.candidate_public_key,
             "candidate_role": self.candidate_role.value,
             "candidate_endpoint": self.candidate_endpoint,
-            "candidate_role": self.candidate_role.value,
             "proof": self.proof,
         }
 
@@ -128,18 +152,30 @@ class PairingRequest:
         if not isinstance(value, Mapping):
             raise TypeError("pairing request must be an object")
         required = {
-            "version", "pairing_id", "candidate_device",
-            "candidate_public_key", "candidate_role", "candidate_endpoint", "proof",
+            "version",
+            "pairing_id",
+            "candidate_device",
+            "candidate_public_key",
+            "candidate_role",
+            "candidate_endpoint",
+            "proof",
         }
         if set(value) != required:
             raise ValueError("pairing request schema mismatch")
+        if value["version"] != PAIRING_VERSION:
+            raise ValueError("unsupported pairing request version")
+        try:
+            role = PeerRole(value["candidate_role"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid pairing candidate role") from exc
+        endpoint = _normalize_candidate_endpoint(role, value["candidate_endpoint"])
         return cls(
             version=value["version"],
             pairing_id=value["pairing_id"],
             candidate_device=value["candidate_device"],
             candidate_public_key=value["candidate_public_key"],
-            candidate_role=PeerRole(value["candidate_role"]),
-            candidate_endpoint=value["candidate_endpoint"],
+            candidate_role=role,
+            candidate_endpoint=endpoint,
             proof=value["proof"],
         )
 
@@ -171,6 +207,7 @@ class PairingManager:
         self.local_device = local_device
         self.signer = signer
         self._clock = clock
+
         with self.registry._store._connect() as db:
             db.executescript(
                 """
@@ -198,15 +235,6 @@ class PairingManager:
                     "ALTER TABLE nexus_pairing_sessions "
                     "ADD COLUMN candidate_role TEXT NOT NULL DEFAULT 'node'"
                 )
-            columns = {
-                row["name"]
-                for row in db.execute("PRAGMA table_info(nexus_pairing_sessions)")
-            }
-            if "candidate_role" not in columns:
-                db.execute(
-                    "ALTER TABLE nexus_pairing_sessions "
-                    "ADD COLUMN candidate_role TEXT NOT NULL DEFAULT 'node'"
-                )
 
     def _now(self) -> datetime:
         now = self._clock()
@@ -220,7 +248,7 @@ class PairingManager:
         if not 0 < ttl_seconds <= MAX_PAIRING_SECONDS:
             raise ValueError("pairing TTL exceeds the allowed bound")
 
-        endpoint = normalize_peer_endpoint(endpoint)
+        normalized_endpoint = normalize_peer_endpoint(endpoint)
         now = self._now()
         expires = datetime.fromtimestamp(now.timestamp() + ttl_seconds, timezone.utc)
         pairing_id = uuid4().hex
@@ -243,7 +271,7 @@ class PairingManager:
             pairing_id,
             self.local_device,
             self.signer.public_b64,
-            endpoint,
+            normalized_endpoint,
             secret,
             expires_at,
         )
@@ -263,35 +291,31 @@ class PairingManager:
             raise ValueError("unsupported pairing offer version")
         if not isinstance(candidate_signer, DeviceSigner):
             raise TypeError("candidate_signer must be DeviceSigner")
-
         if not isinstance(candidate_role, PeerRole):
             raise TypeError("candidate_role must be PeerRole")
-        if candidate_role is PeerRole.NODE:
-            candidate_endpoint = normalize_peer_endpoint(candidate_endpoint)
-        else:
-            if candidate_endpoint not in {None, ""}:
-                raise ValueError("companion pairing does not accept a sync endpoint")
-            candidate_endpoint = None
+
+        endpoint = _normalize_candidate_endpoint(candidate_role, candidate_endpoint)
         unsigned = {
             "version": PAIRING_VERSION,
             "pairing_id": offer.pairing_id,
             "candidate_device": candidate_device,
             "candidate_public_key": candidate_signer.public_b64,
             "candidate_role": candidate_role.value,
-            "candidate_endpoint": candidate_endpoint,
+            "candidate_endpoint": endpoint,
         }
         proof = hmac.new(
             _secret_hash(offer.secret).encode("ascii"),
             _canonical(unsigned),
             hashlib.sha256,
         ).hexdigest()
+
         return PairingRequest(
-            version=unsigned["version"],
-            pairing_id=unsigned["pairing_id"],
-            candidate_device=unsigned["candidate_device"],
-            candidate_public_key=unsigned["candidate_public_key"],
-            candidate_endpoint=unsigned["candidate_endpoint"],
+            version=PAIRING_VERSION,
+            pairing_id=offer.pairing_id,
+            candidate_device=candidate_device,
+            candidate_public_key=candidate_signer.public_b64,
             candidate_role=candidate_role,
+            candidate_endpoint=endpoint,
             proof=proof,
         )
 
@@ -300,14 +324,13 @@ class PairingManager:
             raise TypeError("request must be PairingRequest")
         if request.version != PAIRING_VERSION:
             raise ValueError("unsupported pairing request version")
-        if request.candidate_role is PeerRole.NODE:
-            candidate_endpoint = normalize_peer_endpoint(request.candidate_endpoint)
-        else:
-            if request.candidate_endpoint not in {None, ""}:
-                raise ValueError("companion pairing does not accept a sync endpoint")
-            candidate_endpoint = None
 
+        endpoint = _normalize_candidate_endpoint(
+            request.candidate_role,
+            request.candidate_endpoint,
+        )
         now = self._now()
+
         with self.registry._store._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -317,6 +340,7 @@ class PairingManager:
             if row is None or row["state"] != "offered":
                 db.rollback()
                 raise PermissionError("pairing offer is absent or already used")
+
             if now > _ts(row["expires_at"]):
                 db.execute(
                     """
@@ -324,7 +348,10 @@ class PairingManager:
                     SET state='expired', updated_at=?
                     WHERE pairing_id=?
                     """,
-                    (now.isoformat().replace("+00:00", "Z"), request.pairing_id),
+                    (
+                        now.isoformat().replace("+00:00", "Z"),
+                        request.pairing_id,
+                    ),
                 )
                 db.commit()
                 raise PermissionError("pairing offer expired")
@@ -335,8 +362,7 @@ class PairingManager:
                 "candidate_device": request.candidate_device,
                 "candidate_public_key": request.candidate_public_key,
                 "candidate_role": request.candidate_role.value,
-                "candidate_endpoint": candidate_endpoint,
-                "candidate_role": request.candidate_role.value,
+                "candidate_endpoint": endpoint,
             }
             expected_proof = hmac.new(
                 row["secret_hash"].encode("ascii"),
@@ -362,7 +388,7 @@ class PairingManager:
                 (
                     request.candidate_device,
                     request.candidate_public_key,
-                    candidate_endpoint,
+                    endpoint,
                     request.candidate_role.value,
                     updated,
                     request.pairing_id,
@@ -371,13 +397,12 @@ class PairingManager:
             db.commit()
 
         return PendingPairing(
-            request.pairing_id,
-            request.candidate_device,
-            request.candidate_public_key,
-            request.candidate_role,
-            candidate_endpoint,
-            request.candidate_role,
-            updated,
+            pairing_id=request.pairing_id,
+            candidate_device=request.candidate_device,
+            candidate_public_key=request.candidate_public_key,
+            candidate_role=request.candidate_role,
+            candidate_endpoint=endpoint,
+            created_at=updated,
         )
 
     def pending(self) -> tuple[PendingPairing, ...]:
@@ -391,17 +416,23 @@ class PairingManager:
                 ORDER BY updated_at
                 """
             ).fetchall()
-        return tuple(
-            PendingPairing(
-                row["pairing_id"],
-                row["candidate_device"],
-                row["candidate_public_key"],
-                PeerRole(row["candidate_role"]),
-                row["candidate_endpoint"] if PeerRole(row["candidate_role"]) is PeerRole.NODE else None,
-                row["updated_at"],
+
+        pending: list[PendingPairing] = []
+        for row in rows:
+            role = PeerRole(row["candidate_role"])
+            pending.append(
+                PendingPairing(
+                    pairing_id=row["pairing_id"],
+                    candidate_device=row["candidate_device"],
+                    candidate_public_key=row["candidate_public_key"],
+                    candidate_role=role,
+                    candidate_endpoint=(
+                        row["candidate_endpoint"] if role is PeerRole.NODE else None
+                    ),
+                    created_at=row["updated_at"],
+                )
             )
-            for row in rows
-        )
+        return tuple(pending)
 
     def approve(self, pairing_id: str) -> TrustedPeer:
         now = self._now()
@@ -414,6 +445,7 @@ class PairingManager:
             if row is None or row["state"] != "pending":
                 db.rollback()
                 raise PermissionError("pairing request is not awaiting owner approval")
+
             role = PeerRole(row["candidate_role"])
             if role is PeerRole.COMPANION:
                 peer = self.registry._trust_companion_in_db(
@@ -428,13 +460,17 @@ class PairingManager:
                     row["candidate_public_key"],
                     row["candidate_endpoint"],
                 )
+
             db.execute(
                 """
                 UPDATE nexus_pairing_sessions
                 SET state='approved', updated_at=?
                 WHERE pairing_id=?
                 """,
-                (now.isoformat().replace("+00:00", "Z"), pairing_id),
+                (
+                    now.isoformat().replace("+00:00", "Z"),
+                    pairing_id,
+                ),
             )
             db.commit()
         return peer
