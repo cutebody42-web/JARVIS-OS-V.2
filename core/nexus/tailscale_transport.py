@@ -151,6 +151,16 @@ class KeyringPeerKeyStore:
             base64.urlsafe_b64encode(secret).decode("ascii"),
         )
 
+    def delete_secret(self, peer_id: str) -> None:
+        _validate_peer_id(peer_id)
+        import keyring
+
+        try:
+            keyring.delete_password(self.service_name, peer_id)
+        except keyring.errors.PasswordDeleteError:
+            # Revocation is idempotent: absence already satisfies the outcome.
+            pass
+
 
 def generate_pairwise_secret() -> bytes:
     return secrets.token_bytes(32)
