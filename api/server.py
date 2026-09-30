@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
+from dataclasses import asdict
+from pydantic import BaseModel, ConfigDict, Field
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,6 +77,16 @@ class LiveSessionRegistry:
             "cloud_safe": True,
         }
 
+    def owner_runtime(self, user_id: str, session_id: str | None = None):
+        current = self._sessions.get(user_id)
+        if not current or current[2].done():
+            raise HTTPException(status_code=409, detail="No active owner session")
+        runtime = current[0].owner_runtime
+        context = runtime.gateway.context
+        if context.owner_id != user_id or (session_id is not None and context.session_id != session_id):
+            raise HTTPException(status_code=409, detail="Owner session mismatch")
+        return runtime
+
     async def close_all(self) -> None:
         async with self._lock:
             sessions = list(self._sessions.values())
@@ -93,11 +106,21 @@ async def lifespan(_: FastAPI):
     if settings.auto_create_tables:
         await asyncio.to_thread(init_db)
     await limiter.connect()
+    app.state.missions = None
     try:
+        mission_directory = os.environ.get("NEXUS_STATE_DIR")
+        if mission_directory:
+            from agent.missions import MissionService
+            app.state.missions = await asyncio.to_thread(MissionService, mission_directory)
         yield
     finally:
-        await live_sessions.close_all()
-        await limiter.close()
+        try:
+            await live_sessions.close_all()
+            if app.state.missions is not None:
+                await asyncio.to_thread(app.state.missions.close)
+                app.state.missions = None
+        finally:
+            await limiter.close()
 
 
 app = FastAPI(
@@ -112,6 +135,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+from .mission_api import router as mission_router
+app.include_router(mission_router)
 
 
 def _user_view(user: User, db: Session) -> UserView:
@@ -197,14 +223,75 @@ def get_status(user: User = Depends(get_current_user)) -> dict:
 @app.get("/actions")
 def get_actions(_: User = Depends(get_current_user)) -> dict:
     from main import get_tool_declarations
+    from core.capability_registry import inventory
 
     tools = get_tool_declarations(cloud_safe=True)
     return {
         "actions": [
             {"name": item["name"], "description": item.get("description", "")}
             for item in tools
-        ]
+        ],
+        "capabilities": inventory(),
     }
+
+
+class ConsentApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=100)
+    expected_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    ttl_seconds: int = Field(default=120, gt=0, le=300)
+
+
+class ConsentExecution(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=100)
+    ticket_id: str = Field(min_length=1, max_length=100)
+
+
+@app.get("/owner/actions/pending")
+def pending_owner_actions(user: User = Depends(get_current_user)) -> dict:
+    runtime = live_sessions.owner_runtime(user.id)
+    return {"session_id": runtime.gateway.context.session_id, "requests": [
+        {"request_id": r.request_id, "capability_id": r.capability_id,
+         "arguments": r.arguments, "arguments_digest": r.arguments_digest}
+        for r in runtime.owner.pending()
+    ]}
+
+
+@app.post("/owner/actions/{request_id}/approve")
+def approve_owner_action(request_id: str, payload: ConsentApproval,
+                         user: User = Depends(get_current_user)) -> dict:
+    runtime = live_sessions.owner_runtime(user.id, payload.session_id)
+    try:
+        ticket = runtime.owner.approve(request_id, payload.expected_digest, ttl_seconds=payload.ttl_seconds)
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return asdict(ticket)
+
+
+@app.post("/owner/actions/{request_id}/execute")
+async def execute_owner_action(request_id: str, payload: ConsentExecution,
+                              user: User = Depends(get_current_user)) -> dict:
+    runtime = live_sessions.owner_runtime(user.id, payload.session_id)
+    try:
+        receipt = await asyncio.to_thread(runtime.execute_approved, request_id, payload.ticket_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return receipt.to_dict()
+
+
+@app.delete("/owner/consents/{ticket_id}")
+def revoke_owner_consent(ticket_id: str, session_id: str,
+                         user: User = Depends(get_current_user)) -> dict:
+    runtime = live_sessions.owner_runtime(user.id, session_id)
+    return {"revoked": runtime.owner.revoke(ticket_id)}
+
+
+@app.delete("/owner/actions/{request_id}")
+def cancel_owner_request(request_id: str, session_id: str,
+                         user: User = Depends(get_current_user)) -> dict:
+    runtime = live_sessions.owner_runtime(user.id, session_id)
+    return {"cancelled": runtime.owner.cancel(request_id)}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -255,6 +342,7 @@ async def chat(
 @app.websocket("/ws")
 async def live_socket(websocket: WebSocket) -> None:
     from main import JarvisLive
+    from core.action_gateway import create_runtime
 
     with SessionLocal() as db:
         try:
@@ -281,6 +369,7 @@ async def live_socket(websocket: WebSocket) -> None:
         cloud_safe=True,
         api_key=api_key,
         external_audio=True,
+        owner_runtime=create_runtime(owner_id=user.id),
     )
     sender_task = asyncio.create_task(client.send_events())
     with tenant_scope(user.id):

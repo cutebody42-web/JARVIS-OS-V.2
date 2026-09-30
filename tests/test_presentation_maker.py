@@ -341,7 +341,7 @@ class PresentationMakerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "generated.pptx"
             with patch.object(maker, "_plan_presentation", return_value=_sample_plan()):
-                result = maker.create_presentation({
+                result = maker.build_presentation({
                     "topic": "clean energy",
                     "slide_count": 6,
                     "output_path": str(output),
@@ -349,7 +349,7 @@ class PresentationMakerTests(unittest.TestCase):
                     "export_pdf": False,
                 })
 
-            self.assertIn("Created an editable 6-slide", result)
+            self.assertIn("Created an editable 6-slide", str(result))
             self.assertTrue(output.exists())
             self.assertTrue(output.with_name("generated.pptx.jarvis_meta.json").exists())
 
@@ -448,12 +448,16 @@ class PresentationMakerTests(unittest.TestCase):
         self.assertTrue(any("quota cooldown" in warning for warning in second_result.warnings))
         self.assertTrue(all(count <= 4 for count in text_counts), text_counts)
 
-    def test_legacy_action_name_routes_to_create_presentation(self):
-        with patch.object(maker, "create_presentation", return_value="created") as create:
-            result = maker.presentation_maker({"topic": "clean energy"})
-
-        self.assertEqual(result, "created")
-        create.assert_called_once()
+    def test_owner_policy_blocks_legacy_action_name_routes_to_create_presentation(self):
+        # Display/run preferences are untrusted arguments, never owner consent.
+        player, speak = Mock(), Mock()
+        with patch("agent.task_queue.get_queue") as queue, patch.object(maker, "build_presentation") as build:
+            result = maker.presentation_maker({'topic': 'Biology'}, player=player, speak=speak)
+        self.assertTrue(result.startswith("denied:"), result)
+        queue.assert_not_called()
+        build.assert_not_called()
+        speak.assert_not_called()
+        self.assertEqual(player.mock_calls, [])
 
     def test_qa_output_paths_can_be_explicit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -474,55 +478,38 @@ class PresentationMakerTests(unittest.TestCase):
         self.assertEqual(plan["steps"][0]["parameters"]["slide_count"], 12)
         self.assertEqual(plan["steps"][0]["parameters"]["execution_mode"], "ask")
 
-    def test_presentation_first_asks_about_native_3d(self):
-        with patch.object(maker, "queue_presentation") as queued:
-            message = maker.request_presentation({
-                "topic": "A six-slide presentation about robotics",
-                "slide_count": 6,
-                "execution_mode": "ask",
-            })
+    def test_owner_policy_blocks_presentation_first_asks_about_native_3d(self):
+        # Display/run preferences are untrusted arguments, never owner consent.
+        player, speak = Mock(), Mock()
+        with patch("agent.task_queue.get_queue") as queue, patch.object(maker, "build_presentation") as build:
+            result = maker.request_presentation({'topic': 'Biology'}, player=player, speak=speak)
+        self.assertTrue(result.startswith("denied:"), result)
+        queue.assert_not_called()
+        build.assert_not_called()
+        speak.assert_not_called()
+        self.assertEqual(player.mock_calls, [])
 
-        self.assertEqual(message, maker.PRESENTATION_3D_QUESTION)
-        self.assertFalse(queued.called)
-        self.assertEqual(maker._pending_presentation_parameters["slide_count"], 6)
+    def test_owner_policy_blocks_3d_answer_requires_an_actual_model_source(self):
+        # Display/run preferences are untrusted arguments, never owner consent.
+        player, speak = Mock(), Mock()
+        with patch("agent.task_queue.get_queue") as queue, patch.object(maker, "build_presentation") as build:
+            result = maker.request_presentation({'action': 'confirm', 'include_3d': True}, player=player, speak=speak)
+        self.assertTrue(result.startswith("denied:"), result)
+        queue.assert_not_called()
+        build.assert_not_called()
+        speak.assert_not_called()
+        self.assertEqual(player.mock_calls, [])
 
-    def test_3d_answer_requires_an_actual_model_source(self):
-        maker.request_presentation({
-            "topic": "A presentation about robotics",
-            "slide_count": 7,
-            "execution_mode": "ask",
-        })
-        message = maker.request_presentation({
-            "three_d_mode": "yes",
-            "execution_mode": "ask",
-        })
-        self.assertEqual(message, maker.PRESENTATION_3D_SOURCE_QUESTION)
-        self.assertTrue(maker._pending_presentation_parameters["use_native_3d"])
-        self.assertEqual(maker._pending_presentation_parameters["slide_count"], 7)
-
-    def test_attaching_a_model_deck_advances_to_the_run_mode_question(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "model-source.pptx"
-            _write_native_3d_source(source)
-            maker.request_presentation({
-                "topic": "A presentation about robotics",
-                "execution_mode": "ask",
-            })
-            maker.request_presentation({
-                "three_d_mode": "yes",
-                "execution_mode": "ask",
-            })
-            message = maker.request_presentation({
-                "source_files": [str(source)],
-                "execution_mode": "ask",
-            })
-
-        self.assertEqual(message, maker.PRESENTATION_RUN_MODE_QUESTION)
-        self.assertEqual(
-            maker._pending_presentation_parameters["model_source_file"],
-            str(source),
-        )
-        self.assertNotIn("source_files", maker._pending_presentation_parameters)
+    def test_owner_policy_blocks_attaching_a_model_deck_advances_to_the_run_mode_question(self):
+        # Display/run preferences are untrusted arguments, never owner consent.
+        player, speak = Mock(), Mock()
+        with patch("agent.task_queue.get_queue") as queue, patch.object(maker, "build_presentation") as build:
+            result = maker.request_presentation({'source_file': 'model.pptx', 'include_3d': True}, player=player, speak=speak)
+        self.assertTrue(result.startswith("denied:"), result)
+        queue.assert_not_called()
+        build.assert_not_called()
+        speak.assert_not_called()
+        self.assertEqual(player.mock_calls, [])
 
     def test_model_library_does_not_turn_a_new_deck_into_a_redesign(self):
         request = PresentationRequest.from_parameters({
@@ -547,85 +534,38 @@ class PresentationMakerTests(unittest.TestCase):
                     "output_path": str(Path(directory) / "must-not-build.pptx"),
                 })
 
-    def test_visible_choice_starts_the_pending_presentation_live(self):
-        maker.request_presentation({
-            "topic": "A presentation about robotics",
-            "slide_count": 7,
-            "execution_mode": "ask",
-        })
-        maker.request_presentation({"three_d_mode": "no", "execution_mode": "ask"})
-        with patch.object(maker, "queue_presentation", return_value="live") as queued:
-            message = maker.request_presentation({"execution_mode": "visible"})
+    def test_owner_policy_blocks_visible_choice_starts_the_pending_presentation_live(self):
+        # Display/run preferences are untrusted arguments, never owner consent.
+        player, speak = Mock(), Mock()
+        with patch("agent.task_queue.get_queue") as queue, patch.object(maker, "build_presentation") as build:
+            result = maker.request_presentation({'action': 'confirm', 'execution_mode': 'visible'}, player=player, speak=speak)
+        self.assertTrue(result.startswith("denied:"), result)
+        queue.assert_not_called()
+        build.assert_not_called()
+        speak.assert_not_called()
+        self.assertEqual(player.mock_calls, [])
 
-        self.assertEqual(message, "live")
-        parameters = queued.call_args.args[0]
-        self.assertEqual(parameters["slide_count"], 7)
-        self.assertEqual(parameters["topic"], "A presentation about robotics")
-        self.assertTrue(queued.call_args.kwargs["visible"])
+    def test_owner_policy_blocks_background_choice_starts_the_pending_presentation_quietly(self):
+        # Display/run preferences are untrusted arguments, never owner consent.
+        player, speak = Mock(), Mock()
+        with patch("agent.task_queue.get_queue") as queue, patch.object(maker, "build_presentation") as build:
+            result = maker.request_presentation({'action': 'confirm', 'execution_mode': 'background'}, player=player, speak=speak)
+        self.assertTrue(result.startswith("denied:"), result)
+        queue.assert_not_called()
+        build.assert_not_called()
+        speak.assert_not_called()
+        self.assertEqual(player.mock_calls, [])
 
-    def test_background_choice_starts_the_pending_presentation_quietly(self):
-        maker.request_presentation({
-            "topic": "A presentation about robotics",
-            "execution_mode": "ask",
-            "use_native_3d": False,
-        })
-        with patch.object(maker, "queue_presentation", return_value="background") as queued:
-            message = maker.request_presentation({"execution_mode": "background"})
-
-        self.assertEqual(message, "background")
-        self.assertFalse(queued.call_args.kwargs["visible"])
-
-    def test_visible_queue_publishes_real_presentation_phases(self):
-        class Player:
-            def __init__(self):
-                self.shown = []
-                self.updates = []
-
-            def show_presentation_progress(self, title, visible=False):
-                self.shown.append((title, visible))
-
-            def update_presentation_progress(self, **update):
-                self.updates.append(update)
-
-            def write_log(self, _text):
-                pass
-
-        class Queue:
-            def submit_job(self, **job):
-                job["runner"](threading.Event(), lambda **_update: None)
-                return "task-3d"
-
-        class Result:
-            artifacts = ["deck.pptx"]
-            warnings = []
-
-        player = Player()
-
-        def build(*_args, **kwargs):
-            kwargs["progress_callback"](percent=58, phase="Building editable PowerPoint")
-            kwargs["progress_callback"](
-                percent=100,
-                phase="Presentation complete",
-                artifacts=["deck.pptx"],
-                warnings=[],
-            )
-            return Result()
-
-        with (
-            patch("agent.task_queue.get_queue", return_value=Queue()),
-            patch.object(maker, "build_presentation", side_effect=build),
-        ):
-            message = maker.queue_presentation(
-                {"topic": "Robotics", "export_pdf": False},
-                player=player,
-                visible=True,
-            )
-
-        self.assertIn("visible", message)
-        self.assertEqual(player.shown, [("Robotics", True)])
-        self.assertEqual(player.updates[0]["percent"], 58)
-        self.assertTrue(player.updates[0]["visible"])
-        self.assertEqual(player.updates[-1]["artifacts"], ["deck.pptx"])
+    def test_owner_policy_blocks_visible_queue_publishes_real_presentation_phases(self):
+        # Display/run preferences are untrusted arguments, never owner consent.
+        player, speak = Mock(), Mock()
+        with patch("agent.task_queue.get_queue") as queue, patch.object(maker, "build_presentation") as build:
+            result = maker.queue_presentation({'topic': 'Robotics', 'execution_mode': 'visible'}, player=player, speak=speak)
+        self.assertTrue(result.startswith("denied:"), result)
+        queue.assert_not_called()
+        build.assert_not_called()
+        speak.assert_not_called()
+        self.assertEqual(player.mock_calls, [])
 
     def test_request_accepts_multiple_sources_and_clamps_to_fifty_slides(self):
         request = PresentationRequest.from_parameters({
@@ -783,7 +723,7 @@ class PresentationMakerTests(unittest.TestCase):
             self.assertEqual(len(Presentation(output).slides), 5)
             self.assertEqual(result.slide_count, 5)
 
-    def test_specialized_queue_reports_progress_and_artifacts(self):
+    def test_specialized_queue_cannot_claim_progress_or_artifacts_without_authority(self):
         queue = TaskQueue(max_concurrent=1)
 
         class Result:
@@ -794,8 +734,7 @@ class PresentationMakerTests(unittest.TestCase):
                 return "created"
 
         def runner(cancel_flag, progress):
-            progress(percent=75, phase="Rendering")
-            return Result()
+            self.fail("An arbitrary runner must never execute")
 
         task_id = queue.submit_job("presentation", runner)
         task = queue._tasks[task_id]
@@ -803,9 +742,10 @@ class PresentationMakerTests(unittest.TestCase):
         queue._active_count = 1
         queue._run_task(task)
         status = queue.get_status(task_id)
-        self.assertEqual(status["status"], "completed")
-        self.assertEqual(status["progress"], 100)
-        self.assertEqual(status["artifacts"], ["presentation.pptx"])
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["progress"], 0)
+        self.assertEqual(status["artifacts"], [])
+        self.assertEqual(status["action_receipts"][0]["authorization_decision"], "DENY")
 
     def test_missing_pdf_renderer_delivers_powerpoint_with_warning(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -829,11 +769,11 @@ class PresentationMakerTests(unittest.TestCase):
         queue = TaskQueue(max_concurrent=1)
 
         def runner(cancel_flag, progress):
-            cancel_flag.set()
-            raise RuntimeError("cancelled")
+            self.fail("A cancelled runner must never execute")
 
         task_id = queue.submit_job("presentation", runner)
         task = queue._tasks[task_id]
+        task.cancel_flag.set()
         task.status = task.status.RUNNING
         queue._active_count = 1
         queue._run_task(task)

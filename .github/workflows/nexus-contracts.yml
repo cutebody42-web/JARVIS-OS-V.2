@@ -1,0 +1,30 @@
+name: NEXUS architecture contracts
+
+on:
+  pull_request:
+  push:
+    branches: ["nexus/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install google-genai cryptography fastapi httpx
+      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_owner_kernel tests.test_local_provider tests.test_missions tests.test_hardware_profile tests.test_model_runtime tests.test_model_router tests.test_personas tests.test_nexus_event_store tests.test_nexus_merge tests.test_nexus_merge_applier tests.test_nexus_sync_daemon tests.test_nexus_peer_auth tests.test_nexus_sync_node tests.test_nexus_pairing tests.test_windows_broker
+      - uses: actions/checkout@v4
+        with:
+          ref: fffb487cc79adb827d21918ade107bebcdc2c03c
+          path: .baseline-phase2
+      - run: python scripts/benchmark_missions.py --baseline-dir .baseline-phase2 --output artifacts/mission-benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mission-benchmark
+          path: artifacts/mission-benchmark.json

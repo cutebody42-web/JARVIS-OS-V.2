@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 #flight_finder.py
 import json
 import re
@@ -303,6 +305,7 @@ def _save_to_desktop(content: str, origin: str, destination: str) -> str:
     return str(filepath)
 
 
+@guarded_entrypoint('flight_finder')
 def flight_finder(parameters: dict, player=None, speak=None) -> str:
     params = parameters or {}
 

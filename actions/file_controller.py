@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import os
 import shutil
 import platform
@@ -520,6 +522,7 @@ def get_file_info(path: str, name: str = "") -> str:
     except Exception as e:
         return f"Could not get file info: {e}"
 
+@guarded_entrypoint('file_controller')
 def file_controller(
     parameters: dict = None,
     response=None,

@@ -1,0 +1,138 @@
+"""Evidence-bearing action results. Model prose is never verification evidence."""
+
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from enum import Enum
+import json
+import math
+from core.authority_contracts import AuthorizationDecision, argument_digest, canonical_arguments
+
+
+class ActionStatus(str, Enum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    DENIED = "denied"
+    CANCELLED = "cancelled"
+    UNVERIFIED = "unverified"
+    REQUIRE_CONFIRMATION = "require_confirmation"
+
+
+def _aware_timestamp(value: str) -> None:
+    if datetime.fromisoformat(value).utcoffset() is None:
+        raise ValueError("Receipt timestamps must include a timezone.")
+
+
+@dataclass(frozen=True)
+class Evidence:
+    source: str
+    observation: str
+    observed_at: str
+
+    def __post_init__(self):
+        if not self.source.strip() or not self.observation.strip():
+            raise ValueError("Evidence needs a source and an observation.")
+        _aware_timestamp(self.observed_at)
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    status: ActionStatus
+    message: str
+    evidence: tuple[Evidence, ...] = ()
+    error_code: str = ""
+
+    def __post_init__(self):
+        if not isinstance(self.status, ActionStatus):
+            raise TypeError("status must be an ActionStatus.")
+        if not isinstance(self.evidence, tuple) or any(not isinstance(e, Evidence) for e in self.evidence):
+            raise TypeError("Evidence must be an immutable tuple of Evidence records.")
+        if self.status is ActionStatus.SUCCEEDED and not self.evidence:
+            raise ValueError("Success requires evidence from a trusted action/verifier.")
+
+    def to_dict(self) -> dict:
+        return {**asdict(self), "status": self.status.value}
+
+
+class VerificationStatus(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class VerifierResult:
+    status: VerificationStatus
+    verifier: str
+    evidence: tuple[Evidence, ...] = ()
+
+    def __post_init__(self):
+        if not isinstance(self.status, VerificationStatus) or not self.verifier.strip():
+            raise ValueError("Verification requires a typed status and verifier identity.")
+        if not isinstance(self.evidence, tuple) or any(not isinstance(e, Evidence) for e in self.evidence):
+            raise TypeError("Verifier evidence must be an immutable Evidence tuple.")
+        if self.status is VerificationStatus.PASS and not self.evidence:
+            raise ValueError("Passing verification requires observed evidence.")
+
+
+@dataclass(frozen=True)
+class ActionReceipt:
+    action_id: str
+    task_id: str
+    step_id: str
+    tool: str
+    parameters_json: str
+    route: str
+    started_at: str
+    finished_at: str
+    duration_ms: float
+    result: ToolResult
+    schema_version: int = 1
+    request_id: str = ""
+    authorization_decision: AuthorizationDecision | None = None
+    capability_id: str = ""
+    policy_rule: str = ""
+    normalized_argument_digest: str = ""
+    confirmation_ticket_id: str | None = None
+    authorization_evidence: tuple[Evidence, ...] = ()
+    verifier_result: VerifierResult | None = None
+
+    def __post_init__(self):
+        if not self.action_id or not self.task_id or not self.tool:
+            raise ValueError("Receipts require action, task, and tool identities.")
+        if self.route not in {"reflex", "model", "live", "background", "owner", "legacy"}:
+            raise ValueError("Unknown cognition route.")
+        _aware_timestamp(self.started_at)
+        _aware_timestamp(self.finished_at)
+        if not math.isfinite(self.duration_ms) or self.duration_ms < 0:
+            raise ValueError("duration_ms must be finite and nonnegative.")
+        if not isinstance(json.loads(self.parameters_json), dict):
+            raise ValueError("Receipt parameters must be a JSON object.")
+        if not isinstance(self.result, ToolResult):
+            raise TypeError("Receipts require a ToolResult.")
+        if self.verifier_result is not None:
+            if not isinstance(self.verifier_result, VerifierResult):
+                raise TypeError("Expected a VerifierResult.")
+            if self.result.status is ActionStatus.SUCCEEDED and self.verifier_result.status is not VerificationStatus.PASS:
+                raise ValueError("Success cannot contradict verification.")
+        if self.schema_version == 2:
+            canonical = canonical_arguments(json.loads(self.parameters_json))
+            if canonical != self.parameters_json or argument_digest(canonical) != self.normalized_argument_digest:
+                raise ValueError("Receipt digest must match the exact normalized arguments.")
+            if not all((self.request_id, self.capability_id, self.policy_rule, self.normalized_argument_digest)):
+                raise ValueError("V2 receipts require authorization identities and digest.")
+            if not isinstance(self.authorization_decision, AuthorizationDecision) or not self.authorization_evidence:
+                raise ValueError("V2 receipts require an owner-kernel decision and evidence.")
+            if self.authorization_decision is not AuthorizationDecision.ALLOW and self.result.status is ActionStatus.SUCCEEDED:
+                raise ValueError("An unauthorized action cannot be successful.")
+        if not isinstance(self.authorization_evidence, tuple) or any(not isinstance(e, Evidence) for e in self.authorization_evidence):
+            raise TypeError("Authorization evidence must be an immutable evidence tuple.")
+
+    def to_dict(self) -> dict:
+        payload = asdict(self)
+        payload["parameters"] = json.loads(payload.pop("parameters_json"))
+        payload["result"] = self.result.to_dict()
+        if self.authorization_decision is not None:
+            payload["authorization_decision"] = self.authorization_decision.value
+        if self.verifier_result is not None:
+            payload["verifier_result"]["status"] = self.verifier_result.status.value
+        return payload

@@ -1,5 +1,23 @@
 # JARVIS
 
+> **Current development line: NEXUS V2 / TABY.** The repository now contains the integrated owner-authority kernel, adaptive Gemini/Ollama routing, TABY/FRIDAY/JARVIS personas, durable semantic memory/sync, signed peer authentication, explicit phone/device pairing, and the typed Windows broker contract. Physical Windows microphone/camera/iGPU/admin execution remains deliberately uncertified until tested on the target machine.
+
+## NEXUS V2
+
+The cloud-tested NEXUS V2 stack is developed in this repository and is no longer a separate experimental project. Its main architecture is:
+
+- **TABY** — the single user-visible identity and runtime presence.
+- **JARVIS** — strategic/engineering cognition profile.
+- **FRIDAY** — low-latency realtime cognition profile.
+- **OwnerKernel / ActionGateway** — exact-consent, capability-based authority. Model text cannot grant privileges.
+- **Adaptive model stack** — Gemini + local Ollama, current hardware snapshots, warm/cold runtime lifecycle and deterministic fallbacks.
+- **Semantic local-first sync** — vector clocks, deterministic merge policies, transactional materialization and per-peer ACK/retry.
+- **Device trust** — Ed25519-signed sync, explicit trusted-peer registry, revocation and one-time pairing.
+- **Windows broker contract** — short-lived signed permits for typed capabilities only; there is no generic shell/PowerShell execution surface.
+
+Cloud CI and the full legacy regression gate exercise these layers together. The manual Windows hardware-certification workflow remains a release gate for functionality that cannot be honestly proven in GitHub-hosted runners.
+
+
 Local Gemini Live desktop assistant with a PyQt6 interface, voice interaction, detachable panels, and optional browser, file, screen, and messaging tools.
 
 JARVIS also includes a dedicated presentation studio that creates, edits,

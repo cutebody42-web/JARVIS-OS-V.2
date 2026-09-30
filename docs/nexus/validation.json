@@ -1,0 +1,242 @@
+{
+  "base_commit": "5fca0ac3e8cf4e9031072f9d27da8d83f6941e0e",
+  "branch": "nexus/phase-1-provider-action-contracts",
+  "date": "2026-09-27",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "database": "isolated SQLite for full local suite",
+    "qt": "offscreen",
+    "node": "24.19.0"
+  },
+  "new_offline_contract_tests": {
+    "passed": 30,
+    "failed": 0,
+    "minimal_environment": "fresh venv with google-genai only",
+    "audio_integration_scope": "Real main.py text methods; inert audio import. No hardware/audio test."
+  },
+  "full_suite": {
+    "baseline": {
+      "reported_tests": 212,
+      "passed": 120,
+      "failures": 4,
+      "errors": 88
+    },
+    "changed": {
+      "reported_tests": 242,
+      "passed": 150,
+      "failures": 4,
+      "errors": 88
+    },
+    "new_failure_ids": [],
+    "baseline_failure_ids": [
+      "test_action_helpers (unittest.loader._FailedTest.test_action_helpers)",
+      "test_aligned_intro_renders_once_with_the_selected_voice (test_ui_regressions.UIRegressionTests.test_aligned_intro_renders_once_with_the_selected_voice)",
+      "test_audio_driven_intro_never_finishes_on_wall_clock_deadline (test_ui_regressions.UIRegressionTests.test_audio_driven_intro_never_finishes_on_wall_clock_deadline)",
+      "test_audio_driven_intro_waits_for_playback_clock_before_first_chapter (test_ui_regressions.UIRegressionTests.test_audio_driven_intro_waits_for_playback_clock_before_first_chapter)",
+      "test_authenticated_websocket_streams_engine_events (test_hosted_api.HostedApiTests.test_authenticated_websocket_streams_engine_events)",
+      "test_auto_graphics_result_is_saved_with_device_report (test_ui_regressions.UIRegressionTests.test_auto_graphics_result_is_saved_with_device_report)",
+      "test_chapter_signal_tracks_caption_boundaries (test_ui_regressions.UIRegressionTests.test_chapter_signal_tracks_caption_boundaries)",
+      "test_clean_websocket_close_is_recognized_inside_task_group (test_qa_system.QAModeSafetyTests.test_clean_websocket_close_is_recognized_inside_task_group)",
+      "test_cloud_action_worker_keeps_tenant_context (test_hosted_api.HostedApiTests.test_cloud_action_worker_keeps_tenant_context)",
+      "test_connection_reset_is_retryable_inside_task_group (test_qa_system.QAModeSafetyTests.test_connection_reset_is_retryable_inside_task_group)",
+      "test_core_resilience (unittest.loader._FailedTest.test_core_resilience)",
+      "test_core_spotlight_is_compact_and_circular (test_ui_regressions.UIRegressionTests.test_core_spotlight_is_compact_and_circular)",
+      "test_each_selected_voice_uses_its_own_intro_cache (test_ui_regressions.UIRegressionTests.test_each_selected_voice_uses_its_own_intro_cache)",
+      "test_exact_intro_timing_sidecar_overrides_estimated_boundaries (test_ui_regressions.UIRegressionTests.test_exact_intro_timing_sidecar_overrides_estimated_boundaries)",
+      "test_explicit_self_quit_commands_route_to_jarvis (test_ui_regressions.UIRegressionTests.test_explicit_self_quit_commands_route_to_jarvis)",
+      "test_failed_tour_replay_returns_to_comms_and_releases_lock (test_ui_regressions.UIRegressionTests.test_failed_tour_replay_returns_to_comms_and_releases_lock)",
+      "test_fresh_install_voice_defaults_to_charon (test_ui_regressions.UIRegressionTests.test_fresh_install_voice_defaults_to_charon)",
+      "test_full_tour_is_chaptered_for_a_ninety_second_delivery (test_ui_regressions.UIRegressionTests.test_full_tour_is_chaptered_for_a_ninety_second_delivery)",
+      "test_gemini_voice_selection_drives_tour_and_survives_restart (test_ui_regressions.UIRegressionTests.test_gemini_voice_selection_drives_tour_and_survives_restart)",
+      "test_graphics_setting_preserves_saved_theme (test_ui_regressions.UIRegressionTests.test_graphics_setting_preserves_saved_theme)",
+      "test_graphics_settings_include_auto_choice (test_ui_regressions.UIRegressionTests.test_graphics_settings_include_auto_choice)",
+      "test_guided_tour_switches_real_tabs_and_restores_original (test_ui_regressions.UIRegressionTests.test_guided_tour_switches_real_tabs_and_restores_original)",
+      "test_independent_tool_batch_executes_concurrently_and_preserves_order (test_qa_system.QAModeSafetyTests.test_independent_tool_batch_executes_concurrently_and_preserves_order)",
+      "test_intro_cache_is_versioned_by_performance_and_mastering (test_ui_regressions.UIRegressionTests.test_intro_cache_is_versioned_by_performance_and_mastering)",
+      "test_intro_caption_boundaries_snap_to_pcm_pauses (test_ui_regressions.UIRegressionTests.test_intro_caption_boundaries_snap_to_pcm_pauses)",
+      "test_intro_captions_use_the_live_subtitle_widget (test_ui_regressions.UIRegressionTests.test_intro_captions_use_the_live_subtitle_widget)",
+      "test_intro_completion_is_the_operational_readiness_transition (test_ui_regressions.UIRegressionTests.test_intro_completion_is_the_operational_readiness_transition)",
+      "test_intro_does_not_force_fullscreen (test_ui_regressions.UIRegressionTests.test_intro_does_not_force_fullscreen)",
+      "test_intro_generation_uses_tts_renderer_before_mastering (test_ui_regressions.UIRegressionTests.test_intro_generation_uses_tts_renderer_before_mastering)",
+      "test_intro_has_no_platform_voice_fallback (test_ui_regressions.UIRegressionTests.test_intro_has_no_platform_voice_fallback)",
+      "test_intro_mastering_keeps_raw_pcm_valid_and_peak_safe (test_ui_regressions.UIRegressionTests.test_intro_mastering_keeps_raw_pcm_valid_and_peak_safe)",
+      "test_intro_overlay_renders_and_finishes_once (test_ui_regressions.UIRegressionTests.test_intro_overlay_renders_and_finishes_once)",
+      "test_intro_pcm_duration_is_used_as_the_audio_clock (test_ui_regressions.UIRegressionTests.test_intro_pcm_duration_is_used_as_the_audio_clock)",
+      "test_intro_plays_only_prepared_selected_gemini_voice (test_ui_regressions.UIRegressionTests.test_intro_plays_only_prepared_selected_gemini_voice)",
+      "test_intro_quota_error_never_substitutes_a_different_voice (test_ui_regressions.UIRegressionTests.test_intro_quota_error_never_substitutes_a_different_voice)",
+      "test_intro_renderer_uses_dedicated_tts_with_exact_script (test_ui_regressions.UIRegressionTests.test_intro_renderer_uses_dedicated_tts_with_exact_script)",
+      "test_intro_settings_preserve_existing_ui_preferences (test_ui_regressions.UIRegressionTests.test_intro_settings_preserve_existing_ui_preferences)",
+      "test_intro_voice_preparation_retries_and_caches_selected_voice (test_ui_regressions.UIRegressionTests.test_intro_voice_preparation_retries_and_caches_selected_voice)",
+      "test_key_validation_does_not_complete_intro_early (test_ui_regressions.UIRegressionTests.test_key_validation_does_not_complete_intro_early)",
+      "test_legacy_graphics_setting_migrates_to_auto_until_overridden (test_ui_regressions.UIRegressionTests.test_legacy_graphics_setting_migrates_to_auto_until_overridden)",
+      "test_legacy_intro_completion_replays_once_after_version_upgrade (test_ui_regressions.UIRegressionTests.test_legacy_intro_completion_replays_once_after_version_upgrade)",
+      "test_live_audio_extraction_ignores_non_audio_parts_without_data_shortcut (test_qa_system.QAModeSafetyTests.test_live_audio_extraction_ignores_non_audio_parts_without_data_shortcut)",
+      "test_live_config_uses_fast_end_of_speech_detection (test_qa_system.QAModeSafetyTests.test_live_config_uses_fast_end_of_speech_detection)",
+      "test_live_dispatch_enforces_qa_guard_before_tool_handler (test_qa_system.QAModeSafetyTests.test_live_dispatch_enforces_qa_guard_before_tool_handler)",
+      "test_live_dispatch_is_blocked_until_ui_is_operationally_ready (test_qa_system.QAModeSafetyTests.test_live_dispatch_is_blocked_until_ui_is_operationally_ready)",
+      "test_live_intro_reveals_the_real_console_widgets_in_sequence (test_ui_regressions.UIRegressionTests.test_live_intro_reveals_the_real_console_widgets_in_sequence)",
+      "test_live_quit_tool_requires_explicit_current_user_transcript (test_qa_system.QAModeSafetyTests.test_live_quit_tool_requires_explicit_current_user_transcript)",
+      "test_live_reconnect_backoff_is_bounded (test_qa_system.QAModeSafetyTests.test_live_reconnect_backoff_is_bounded)",
+      "test_live_tool_schemas_have_names_parameters_and_properties (test_qa_system.ToolContractTests.test_live_tool_schemas_have_names_parameters_and_properties)",
+      "test_long_intro_renderer_has_extended_timeout (test_ui_regressions.UIRegressionTests.test_long_intro_renderer_has_extended_timeout)",
+      "test_manual_graphics_choice_wins_over_late_auto_result (test_ui_regressions.UIRegressionTests.test_manual_graphics_choice_wins_over_late_auto_result)",
+      "test_manual_tour_replay_activates_hard_interaction_lock (test_ui_regressions.UIRegressionTests.test_manual_tour_replay_activates_hard_interaction_lock)",
+      "test_mission_empty_states_are_visible_until_real_activity_arrives (test_ui_regressions.UIRegressionTests.test_mission_empty_states_are_visible_until_real_activity_arrives)",
+      "test_mutating_tool_batch_remains_sequential (test_qa_system.QAModeSafetyTests.test_mutating_tool_batch_remains_sequential)",
+      "test_operational_readiness_requires_every_startup_gate_to_clear (test_ui_regressions.UIRegressionTests.test_operational_readiness_requires_every_startup_gate_to_clear)",
+      "test_phase1_decoupling (unittest.loader._FailedTest.test_phase1_decoupling)",
+      "test_qss_alpha_colors_are_explicit_rgba (test_ui_regressions.UIRegressionTests.test_qss_alpha_colors_are_explicit_rgba)",
+      "test_reconnect_wait_exits_immediately_during_shutdown (test_qa_system.QAModeSafetyTests.test_reconnect_wait_exits_immediately_during_shutdown)",
+      "test_reduced_motion_spotlight_moves_without_animation (test_ui_regressions.UIRegressionTests.test_reduced_motion_spotlight_moves_without_animation)",
+      "test_replay_selected_during_setup_applies_to_current_launch (test_ui_regressions.UIRegressionTests.test_replay_selected_during_setup_applies_to_current_launch)",
+      "test_segmented_intro_renderer_returns_exact_pcm_boundaries (test_ui_regressions.UIRegressionTests.test_segmented_intro_renderer_returns_exact_pcm_boundaries)",
+      "test_segmented_intro_uses_exact_tts_chapter_boundaries (test_ui_regressions.UIRegressionTests.test_segmented_intro_uses_exact_tts_chapter_boundaries)",
+      "test_segmented_tts_retries_when_model_returns_no_audio (test_ui_regressions.UIRegressionTests.test_segmented_tts_retries_when_model_returns_no_audio)",
+      "test_segmented_tts_stops_immediately_on_quota_error (test_ui_regressions.UIRegressionTests.test_segmented_tts_stops_immediately_on_quota_error)",
+      "test_self_quit_waits_for_farewell_audio_to_finish (test_qa_system.QAModeSafetyTests.test_self_quit_waits_for_farewell_audio_to_finish)",
+      "test_settings_copy_distinguishes_greeting_from_interface_tour (test_ui_regressions.UIRegressionTests.test_settings_copy_distinguishes_greeting_from_interface_tour)",
+      "test_settings_exposes_replay_preference_after_setup (test_ui_regressions.UIRegressionTests.test_settings_exposes_replay_preference_after_setup)",
+      "test_setup_api_guide_expands_without_clearing_the_key (test_ui_regressions.UIRegressionTests.test_setup_api_guide_expands_without_clearing_the_key)",
+      "test_setup_api_guide_opens_official_ai_studio_page (test_ui_regressions.UIRegressionTests.test_setup_api_guide_opens_official_ai_studio_page)",
+      "test_setup_exposes_replay_preference (test_ui_regressions.UIRegressionTests.test_setup_exposes_replay_preference)",
+      "test_setup_overlay_is_centered_after_first_show (test_ui_regressions.UIRegressionTests.test_setup_overlay_is_centered_after_first_show)",
+      "test_setup_validation_state_is_visible_and_recoverable (test_ui_regressions.UIRegressionTests.test_setup_validation_state_is_visible_and_recoverable)",
+      "test_shutdown_is_not_exposed_as_a_gemini_tool_action (test_qa_system.QAModeSafetyTests.test_shutdown_is_not_exposed_as_a_gemini_tool_action)",
+      "test_single_render_stops_immediately_on_quota_error (test_ui_regressions.UIRegressionTests.test_single_render_stops_immediately_on_quota_error)",
+      "test_startup_backdrop_covers_the_live_console_during_setup (test_ui_regressions.UIRegressionTests.test_startup_backdrop_covers_the_live_console_during_setup)",
+      "test_startup_clap (unittest.loader._FailedTest.test_startup_clap)",
+      "test_startup_gate_blocks_text_callbacks_until_ready (test_ui_regressions.UIRegressionTests.test_startup_gate_blocks_text_callbacks_until_ready)",
+      "test_status_and_cloud_actions_are_authenticated (test_hosted_api.HostedApiTests.test_status_and_cloud_actions_are_authenticated)",
+      "test_successful_tour_handoff_finishes_on_comms (test_ui_regressions.UIRegressionTests.test_successful_tour_handoff_finishes_on_comms)",
+      "test_successful_validation_keeps_setup_until_voice_is_ready (test_ui_regressions.UIRegressionTests.test_successful_validation_keeps_setup_until_voice_is_ready)",
+      "test_time_aware_greeting_boundaries (test_ui_regressions.UIRegressionTests.test_time_aware_greeting_boundaries)",
+      "test_tools_panel_ignores_generic_system_lifecycle_messages (test_ui_regressions.UIRegressionTests.test_tools_panel_ignores_generic_system_lifecycle_messages)",
+      "test_tour_and_greeting_use_distinct_caches (test_ui_regressions.UIRegressionTests.test_tour_and_greeting_use_distinct_caches)",
+      "test_tour_chapters_cover_every_guided_region (test_ui_regressions.UIRegressionTests.test_tour_chapters_cover_every_guided_region)",
+      "test_tour_leaves_tools_for_comms_on_the_next_non_tool_chapter (test_ui_regressions.UIRegressionTests.test_tour_leaves_tools_for_comms_on_the_next_non_tool_chapter)",
+      "test_tour_lock_tracks_state_without_closing_on_release (test_qa_system.QAModeSafetyTests.test_tour_lock_tracks_state_without_closing_on_release)",
+      "test_tour_mask_uses_quieter_single_focus_treatment (test_ui_regressions.UIRegressionTests.test_tour_mask_uses_quieter_single_focus_treatment)",
+      "test_tour_popup_cleanup_ignores_deleted_qt_wrappers (test_ui_regressions.UIRegressionTests.test_tour_popup_cleanup_ignores_deleted_qt_wrappers)",
+      "test_tour_start_failure_is_reported_and_does_not_escape_qt_slot (test_ui_regressions.UIRegressionTests.test_tour_start_failure_is_reported_and_does_not_escape_qt_slot)",
+      "test_tour_temporarily_suppresses_presence_popups (test_ui_regressions.UIRegressionTests.test_tour_temporarily_suppresses_presence_popups)",
+      "test_unavailable_hardware_metrics_are_not_fabricated (test_ui_regressions.UIRegressionTests.test_unavailable_hardware_metrics_are_not_fabricated)",
+      "test_voice_and_text_chapter_reveals_the_real_comms_input (test_ui_regressions.UIRegressionTests.test_voice_and_text_chapter_reveals_the_real_comms_input)"
+    ],
+    "notes": [
+      "Counts include unittest loader failures; some modules cannot collect all tests in this environment.",
+      "PortAudio is unavailable and DISPLAY/Xvfb is missing. Native package installation was blocked by runtime setgroups/setuid limits.",
+      "Base UI is also missing existing intro/tour API symbols, including INTRO_SEQUENCE_VERSION. These are not caused by the spike."
+    ]
+  },
+  "automated_qa": {
+    "baseline": [
+      {
+        "name": "source compilation",
+        "status": "passed",
+        "duration_seconds": 0.27657543899999837
+      },
+      {
+        "name": "dependency consistency",
+        "status": "passed",
+        "duration_seconds": 0.3221013429999857
+      },
+      {
+        "name": "complete unittest suite",
+        "status": "failed",
+        "duration_seconds": 4.397709609000003
+      },
+      {
+        "name": "offscreen UI evidence",
+        "status": "failed",
+        "duration_seconds": 0.12011206099998617
+      },
+      {
+        "name": "tracked secret scan",
+        "status": "passed",
+        "duration_seconds": 0.012794003999999859
+      }
+    ],
+    "changed": [
+      {
+        "name": "source compilation",
+        "status": "passed",
+        "duration_seconds": 0.09394996200012429
+      },
+      {
+        "name": "dependency consistency",
+        "status": "passed",
+        "duration_seconds": 0.30983658800005287
+      },
+      {
+        "name": "complete unittest suite",
+        "status": "failed",
+        "duration_seconds": 4.0502757320000455
+      },
+      {
+        "name": "offscreen UI evidence",
+        "status": "failed",
+        "duration_seconds": 0.13439943499997753
+      },
+      {
+        "name": "tracked secret scan",
+        "status": "passed",
+        "duration_seconds": 0.01634536200003822
+      }
+    ]
+  },
+  "existing_backend_ci": {
+    "status": "blocked",
+    "reason": "Exact existing unittest command aborts importing main: PortAudio library not found. PostgreSQL/Redis gates not certified."
+  },
+  "frontend": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "tested_tree": "unchanged base web tree; Next.js 16.3.1, Node 24.19.0"
+  },
+  "ui_preservation": {
+    "ui.py": "unchanged",
+    "web/": "unchanged"
+  },
+  "remote_ci": {
+    "tested_commit": "2e15296990eadce3bdf6c5678d021dccff7391f2",
+    "observed_date": "2026-09-28",
+    "nexus_contracts": {
+      "status": "passed",
+      "tests": 30,
+      "job_id": 108773723214,
+      "run_url": "https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36373238811"
+    },
+    "existing_frontend": {
+      "status": "passed",
+      "checks": [
+        "typecheck",
+        "lint",
+        "build"
+      ],
+      "job_id": 108773723329,
+      "run_url": "https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36373238852"
+    },
+    "existing_backend": {
+      "status": "failed",
+      "job_id": 108773723323,
+      "run_url": "https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36373238852",
+      "migration": "passed against PostgreSQL",
+      "tests": "not collected",
+      "reason": "OSError: PortAudio library not found while importing main through tests.test_phase1_decoupling; same local baseline blocker. PostgreSQL/Redis integration tests remain uncertified."
+    },
+    "publication_followup": "Documentation/evidence changes only; no runtime or test changes after the tested implementation commit."
+  },
+  "ready_to_merge": false,
+  "commands": [
+    "python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route",
+    "JARVIS_QA_MODE=1 QT_QPA_PLATFORM=offscreen JARVIS_ENV=test DATABASE_URL=sqlite:////absolute/path/to/isolated-test.db python -m unittest discover -s tests -v",
+    "JARVIS_QA_MODE=1 QT_QPA_PLATFORM=offscreen JARVIS_ENV=test DATABASE_URL=sqlite:////absolute/path/to/isolated-test.db python scripts/qa.py automated",
+    "python -m unittest -v tests.test_phase1_decoupling tests.test_hosted_api tests.test_core_resilience",
+    "cd web && npm ci && npm run typecheck && npm run lint && npm run build",
+    "python scripts/benchmark_nexus.py --baseline-dir ../nexus-baseline --iterations 500 --output docs/nexus/benchmark.json",
+    "git diff --check",
+    "python -m pip check"
+  ]
+}

@@ -54,13 +54,14 @@ def repository_findings(root: Path) -> list[Finding]:
             "Every supported tool is declared exactly once.",
             f"Missing={missing}; duplicates={duplicates}",
         ))
-    unhandled = sorted(name for name in tools if f'name == "{name}"' not in main_source)
+    from core.capability_registry import TOOL_CAPABILITIES
+    unhandled = sorted(set(tools) - TOOL_CAPABILITIES.keys())
     if unhandled:
         findings.append(Finding(
-            "P0", "Declared tools lack dispatch branches", "Tool routing",
+            "P0", "Declared tools lack capability mappings", "Tool routing",
             "A valid Live tool call can return no useful result.",
-            "Compare TOOL_DECLARATIONS with JarvisLive._execute_tool.",
-            "Every declaration has an execution path.",
+            "Compare TOOL_DECLARATIONS with the central capability registry.",
+            "Every declaration is explicitly mapped, including denied legacy capabilities.",
             f"Unhandled={unhandled}",
         ))
 

@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import json
 import io
 import difflib
@@ -17,7 +19,8 @@ from actions.instagram_browser import (
 )
 
 try:
-    import pyautogui
+    from core.desktop_dependency import load_pyautogui
+    pyautogui = load_pyautogui()
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.06
     _PYAUTOGUI = True
@@ -1136,6 +1139,7 @@ def _clear_browser_draft_via_js(url_markers: tuple[str, ...]) -> bool:
     return bool(isinstance(data, dict) and data.get("ok"))
 
 
+@guarded_entrypoint('send_message')
 def send_open_browser_draft(platform_name: str, url_markers: tuple[str, ...]) -> str:
     """Public helper used by the approval flow to press Send on a typed draft.
 
@@ -1147,6 +1151,7 @@ def send_open_browser_draft(platform_name: str, url_markers: tuple[str, ...]) ->
     return _send_open_browser_draft(platform_name, url_markers)
 
 
+@guarded_entrypoint('prepare_message_reply')
 def clear_open_browser_draft(url_markers: tuple[str, ...]) -> bool:
     """Public helper used by the approval flow to discard a typed draft."""
     if any("instagram.com/direct" in str(marker or "").lower() for marker in url_markers):
@@ -1154,6 +1159,7 @@ def clear_open_browser_draft(url_markers: tuple[str, ...]) -> bool:
     return _clear_browser_draft_via_js(url_markers)
 
 
+@guarded_entrypoint('prepare_message_reply')
 def prepare_instagram_draft(receiver: str, message: str) -> str:
     """Find an Instagram DM, type the draft, and wait for approval.
 
@@ -1749,6 +1755,7 @@ def _resolve_platform(platform_str: str):
     return lambda r, m: _desktop_send(platform_str.strip().title(), r, m)
 
 
+@guarded_entrypoint('send_message')
 def send_message(
     parameters: dict,
     response=None,
@@ -1820,6 +1827,7 @@ def send_message(
     return result
 
 
+@guarded_entrypoint('prepare_message_reply')
 def prepare_message_reply(
     parameters: dict | None = None,
     response=None,

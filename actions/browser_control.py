@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 
+from core.action_gateway import guarded_entrypoint
+
 import asyncio
 import concurrent.futures
 import os
@@ -801,6 +803,7 @@ class _SessionRegistry:
 
 _registry = _SessionRegistry()
 
+@guarded_entrypoint('browser_control')
 def browser_control(
     parameters:    dict = None,
     response=None,

@@ -7,7 +7,16 @@ import sys
 import traceback
 from pathlib import Path
 
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError) as exc:
+    # Headless/API/test environments may have the Python package installed
+    # without the native PortAudio library. Keep module import safe; actual
+    # microphone/speaker paths resolve the dependency lazily when invoked.
+    sd = None
+    _SOUNDDEVICE_IMPORT_ERROR = exc
+else:
+    _SOUNDDEVICE_IMPORT_ERROR = None
 from google import genai
 from google.genai import types
 from api import status as jarvis_status
@@ -20,6 +29,17 @@ import importlib
 import time
 
 from core.live_model import pick_live_model
+
+
+def _require_sounddevice():
+    """Return sounddevice only when an audio path is actually requested."""
+    if sd is None:
+        detail = type(_SOUNDDEVICE_IMPORT_ERROR).__name__ if _SOUNDDEVICE_IMPORT_ERROR else "Unavailable"
+        raise RuntimeError(
+            "Audio I/O is unavailable because sounddevice/PortAudio could not "
+            f"be initialized ({detail})."
+        )
+    return sd
 
 
 def _lazy_action(module_name: str, attribute: str):
@@ -176,7 +196,14 @@ def wait_for_startup_claps(
         return True
 
     required = max(1, int(required))
-    stream_factory = stream_factory or sd.InputStream
+    if stream_factory is None:
+        if sd is None:
+            print("[JARVIS] ⚠️ Startup clap microphone unavailable: PortAudio is not installed.")
+            if os.environ.get("JARVIS_REQUIRE_CLAP_GATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+                print("[JARVIS] ⚠️ Continuing without the clap gate; microphone input is unavailable.")
+                return True
+            return False
+        stream_factory = sd.InputStream
     try:
         import numpy as np
     except ImportError:
@@ -238,7 +265,7 @@ def wait_for_startup_claps(
     sample_rates = [SEND_SAMPLE_RATE, 44100, 48000]
     input_device = None
     try:
-        if stream_factory is sd.InputStream:
+        if sd is not None and stream_factory is sd.InputStream:
             try:
                 default_device = sd.default.device
                 try:
@@ -264,7 +291,7 @@ def wait_for_startup_claps(
         last_error = None
         for sample_rate in sample_rates:
             try:
-                if stream_factory is sd.InputStream:
+                if sd is not None and stream_factory is sd.InputStream:
                     # Validate the format before constructing a live AUHAL
                     # stream; macOS can report a device but reject it with
                     # PaErrorCode -9986 during stream startup.
@@ -1140,6 +1167,7 @@ class JarvisLive:
         cloud_safe: bool = False,
         api_key: str | None = None,
         external_audio: bool = False,
+        owner_runtime=None,
     ):
         # Keep ``ui`` as a compatibility alias for desktop integrations that
         # already inspect JarvisLive.ui. The engine contract is JarvisClient.
@@ -1147,6 +1175,7 @@ class JarvisLive:
         self.ui             = client
         self.cloud_safe     = bool(cloud_safe)
         self.external_audio = bool(external_audio)
+        self.owner_runtime  = owner_runtime
         self._api_key       = api_key.strip() if isinstance(api_key, str) else None
         self.tool_declarations = get_tool_declarations(cloud_safe=self.cloud_safe)
         self.session        = None
@@ -1178,12 +1207,33 @@ class JarvisLive:
         self._tour_active = False
 
     def _on_text_command(self, text: str):
+        if self._handle_reflex_text(text):
+            return
         if not self._loop or not self.session:
             return
         asyncio.run_coroutine_threadsafe(self.send_text(text), self._loop)
 
+    def _handle_reflex_text(self, text: str) -> bool:
+        """Typed clock commands use the native route even without a Live session."""
+        from agent.reflex import reflex_plan
+
+        if reflex_plan(text) is None:
+            return False
+        if self._shutdown_requested.is_set() or getattr(self.ui, "operational_ready", True) is False:
+            return True
+        from agent.executor import AgentExecutor
+
+        executor = AgentExecutor()
+        message = executor.execute(text, cancel_flag=self._shutdown_requested)
+        self.last_action_receipts = executor.last_action_receipts
+        self.ui.write_log(message)
+        self.ui.show_subtitle(message)
+        return True
+
     async def send_text(self, text: str) -> bool:
         """Send a text turn from either the desktop callback or a web client."""
+        if self._handle_reflex_text(text):
+            return True
         if not self.session:
             return False
         self._current_input_transcript = str(text or "").strip()
@@ -1470,6 +1520,16 @@ class JarvisLive:
             ),
         )
 
+    def _ensure_owner_runtime(self):
+        runtime = getattr(self, "owner_runtime", None)
+        if runtime is None:
+            from core.action_gateway import create_runtime
+            runtime = create_runtime(
+                environment="cloud" if getattr(self, "cloud_safe", False) else "desktop"
+            )
+            self.owner_runtime = runtime
+        return runtime
+
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
@@ -1491,6 +1551,25 @@ class JarvisLive:
                 name=name,
                 response={"result": "Startup sequence active. Try this action again when JARVIS is ready."},
             )
+
+        # All model/live tool proposals cross the central authority boundary
+        # before any legacy/UI adapter can run. Transcript text cannot approve
+        # its own actions; the gateway returns an explicit ActionReceipt.
+        runtime = self._ensure_owner_runtime()
+        receipt = runtime.gateway.run_tool(
+            name,
+            args,
+            route="live",
+            runtime=runtime,
+        )
+        return types.FunctionResponse(
+            id=fc.id,
+            name=name,
+            response={
+                "result": receipt.result.message,
+                "receipt": receipt.to_dict(),
+            },
+        )
 
         from core.qa_mode import guard_tool_call, qa_block_message
 
@@ -1728,17 +1807,8 @@ class JarvisLive:
         )
 
     async def _execute_tool_batch(self, calls):
-        """Run read-only calls concurrently while preserving mutation order."""
-        mutating = {
-            "send_message", "prepare_message_reply", "email_control", "reminder",
-            "computer_settings", "computer_control", "desktop_control", "file_controller",
-            "file_processor", "code_helper", "dev_agent", "game_updater",
-            "create_presentation", "save_memory", "jarvis_ui_control", "graphics_quality",
-        }
-        call_list = list(calls or [])
-        if any(getattr(call, "name", "") in mutating for call in call_list):
-            return [await self._execute_tool(call) for call in call_list]
-        return list(await asyncio.gather(*(self._execute_tool(call) for call in call_list)))
+        """Preserve model proposal order through the central action gateway."""
+        return [await self._execute_tool(call) for call in list(calls or [])]
 
     async def _send_realtime(self):
         while True:
@@ -1764,7 +1834,8 @@ class JarvisLive:
                 )
 
         try:
-            with sd.InputStream(
+            audio = _require_sounddevice()
+            with audio.InputStream(
                 samplerate=SEND_SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
@@ -1879,7 +1950,8 @@ class JarvisLive:
 
         stream = None
         if not self.external_audio:
-            stream = sd.RawOutputStream(
+            audio = _require_sounddevice()
+            stream = audio.RawOutputStream(
                 samplerate=RECEIVE_SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",

@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import subprocess
 import sys
 import json
@@ -581,6 +583,7 @@ def _build_project(
     return f"{msg}\n\nLast error:\n{last_output[:600]}"
 
 
+@guarded_entrypoint('dev_agent')
 def dev_agent(
     parameters: dict,
     response=None,
