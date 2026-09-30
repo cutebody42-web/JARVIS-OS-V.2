@@ -42,6 +42,10 @@ def run_action(tool: str, parameters: dict, *, task_id: str, step_id: str,
     qa_denial = qa.reason if qa is not None and not qa.allowed else ""
     return runtime.gateway.run_tool(
         tool, parameters, task_id=task_id, step_id=step_id, route=route,
-        cancel_flag=cancel_flag, additional_denial=persona_denial or qa_denial,
+        cancel_flag=cancel_flag,
+        additional_denial=persona_denial or qa_denial,
+        additional_denial_rule=(
+            "persona.denied" if persona_denial else "preflight.denied"
+        ),
         runtime=runtime,
     )
