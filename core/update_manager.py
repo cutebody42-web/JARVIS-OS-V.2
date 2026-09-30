@@ -21,6 +21,7 @@ import sqlite3
 from typing import Any, Mapping, Protocol
 from uuid import uuid4
 
+from core.nexus.owner_approval import OwnerApprovalManager
 from core.nexus.peer_auth import DeviceSigner, PeerRegistry
 
 
@@ -359,6 +360,7 @@ class UpdateOutcome:
     state: UpdateState
     message: str
     checkpoint_id: str | None = None
+    approval_id: str | None = None
 
 
 class UpdateManager:
@@ -368,25 +370,45 @@ class UpdateManager:
         *,
         policy: UpdatePolicy | None = None,
         approval_gate: UpdateApprovalGate | None = None,
+        owner_approvals: OwnerApprovalManager | None = None,
     ):
         self.installer = installer
         self.policy = policy or UpdatePolicy()
         self.approval_gate = approval_gate
+        self.owner_approvals = owner_approvals
 
     def apply(
         self,
         plan: UpdatePlan,
         *,
         approval: DeviceApproval | None = None,
+        approval_id: str | None = None,
     ) -> UpdateOutcome:
         self.policy.validate_declared_class(plan)
         if self.policy.requires_owner_approval(plan):
-            if self.approval_gate is None or approval is None:
-                return UpdateOutcome(
-                    UpdateState.AWAITING_APPROVAL,
-                    "Major update is staged but requires companion biometric approval.",
+            if self.owner_approvals is not None:
+                if approval_id is None:
+                    request = self.owner_approvals.create(
+                        f"Install JARVIS major update {plan.version}",
+                        plan.digest(),
+                        ttl_seconds=300,
+                    )
+                    return UpdateOutcome(
+                        UpdateState.AWAITING_APPROVAL,
+                        "Major update requires fingerprint/biometric approval on the paired phone.",
+                        approval_id=request.approval_id,
+                    )
+                self.owner_approvals.consume(
+                    approval_id,
+                    action_digest=plan.digest(),
                 )
-            self.approval_gate.verify_and_consume(plan, approval)
+            else:
+                if self.approval_gate is None or approval is None:
+                    return UpdateOutcome(
+                        UpdateState.AWAITING_APPROVAL,
+                        "Major update is staged but requires companion biometric approval.",
+                    )
+                self.approval_gate.verify_and_consume(plan, approval)
 
         checkpoint = self.installer.stage(plan)
         try:
