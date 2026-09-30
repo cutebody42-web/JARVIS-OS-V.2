@@ -33,6 +33,7 @@ class PersonaAgentRuntime:
         ollama_factory: Callable[[ProviderChoice], ModelProvider] | None = None,
         gemini_factory: Callable[[ProviderChoice], ModelProvider] | None = None,
         ollama_base_url: str | None = None,
+        allow_cloud: bool = True,
     ):
         if not isinstance(persona, PersonaSpec):
             raise TypeError("persona must be PersonaSpec")
@@ -44,6 +45,7 @@ class PersonaAgentRuntime:
         self._router = router or ModelRouter()
         self._ollama_factory = ollama_factory
         self._gemini_factory = gemini_factory
+        self._allow_cloud = bool(allow_cloud)
         self._persona = persona
         self._task = persona.validate_task(task)
         self._provider: RoutedModelProvider
@@ -59,6 +61,7 @@ class PersonaAgentRuntime:
             router=self._router,
             ollama_factory=self._ollama_factory,
             gemini_factory=self._gemini_factory,
+            allow_cloud=self._allow_cloud,
         )
         self._provider = provider
         self._executor = AgentExecutor(
