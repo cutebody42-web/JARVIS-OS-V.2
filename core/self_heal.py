@@ -283,6 +283,22 @@ class RepairJournal:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    def recent(self, limit: int = 20) -> tuple[dict[str, object], ...]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
+        with sqlite3.connect(self.path) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                SELECT incident_id, state, message, checkpoint_id, created_at
+                FROM repair_events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
 
 class SelfHealController:
     def __init__(
