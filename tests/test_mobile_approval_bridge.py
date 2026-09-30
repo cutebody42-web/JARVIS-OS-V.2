@@ -1,8 +1,10 @@
 """End-to-end exact action resumption after paired-phone biometric approval."""
 
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from core.action_contracts import ActionStatus
 from core.action_gateway import create_runtime
@@ -16,6 +18,12 @@ class MobileApprovalBridgeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.workspace = root / "workspace"
+        self._qa_workspace = patch.dict(
+            os.environ,
+            {"JARVIS_QA_WORKSPACE": str(self.workspace)},
+            clear=False,
+        )
+        self._qa_workspace.start()
         self.runtime = create_runtime(
             owner_id="local-owner",
             workspace_root=self.workspace,
@@ -27,6 +35,7 @@ class MobileApprovalBridgeTests(unittest.TestCase):
 
     def tearDown(self):
         self.runtime.gateway.close()
+        self._qa_workspace.stop()
         self.tmp.cleanup()
 
     def _pending_create(self, name="approved.txt", content="hello"):
