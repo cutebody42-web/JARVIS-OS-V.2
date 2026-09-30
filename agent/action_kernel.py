@@ -29,7 +29,7 @@ def _dispatch(tool: str, parameters: dict) -> ToolResult:
 
 
 def run_action(tool: str, parameters: dict, *, task_id: str, step_id: str,
-               route: str, cancel_flag=None) -> ActionReceipt:
+               route: str, cancel_flag=None, allowed_tools=None) -> ActionReceipt:
     start = datetime.now(timezone.utc).isoformat()
     tick = time.perf_counter()
     # JSON roundtrip is both validation and a snapshot: callers cannot mutate
@@ -38,6 +38,12 @@ def run_action(tool: str, parameters: dict, *, task_id: str, step_id: str,
     snapshot = json.loads(encoded)
     if cancel_flag is not None and cancel_flag.is_set():
         result = ToolResult(ActionStatus.CANCELLED, "Task cancelled.", error_code="cancelled")
+    elif allowed_tools is not None and tool not in frozenset(allowed_tools):
+        result = ToolResult(
+            ActionStatus.DENIED,
+            "Capability is not admitted by the active persona.",
+            error_code="persona_denied",
+        )
     else:
         owner = authorize_action(tool, snapshot)
         qa = guard_tool_call(tool, snapshot) if owner.allowed else None
