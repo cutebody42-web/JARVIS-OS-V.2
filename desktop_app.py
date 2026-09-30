@@ -130,23 +130,12 @@ def main(argv=None) -> int:
         "closing": False,
     }
 
+    allow_install = bool(args.install_brain)
+    if find_ollama_executable() is None and not allow_install and not args.skip_brain_setup:
+        allow_install = _confirm_ollama_install(ui._win)
+
     def initialize() -> None:
         try:
-            allow_install = bool(args.install_brain)
-            if find_ollama_executable() is None and not allow_install:
-                # The prompt itself must run on the Qt thread.
-                decision = threading.Event()
-                approved = {"value": False}
-
-                def ask():
-                    approved["value"] = _confirm_ollama_install(ui._win)
-                    decision.set()
-
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, ask)
-                decision.wait()
-                allow_install = approved["value"]
-
             if args.skip_brain_setup:
                 if find_ollama_executable() is None:
                     raise OllamaBootstrapError("Local JARVIS Brain runtime is not installed.")
