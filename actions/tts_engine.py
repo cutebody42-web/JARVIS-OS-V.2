@@ -7,7 +7,6 @@ import threading
 from typing import Callable
 
 import numpy as np
-import sounddevice as sd
 
 RECEIVE_SAMPLE_RATE = 24000
 
@@ -61,6 +60,8 @@ def _play_pcm(pcm: np.ndarray, on_start: Callable | None = None,
         if on_start:
             on_start()
         raw = pcm.tobytes()
+        # Voice metadata and synthesis helpers also run without audio hardware.
+        import sounddevice as sd
         stream = sd.RawOutputStream(
             samplerate=RECEIVE_SAMPLE_RATE,
             channels=1,
