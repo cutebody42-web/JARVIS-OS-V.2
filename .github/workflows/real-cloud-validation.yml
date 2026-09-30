@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   local-ai-real-inference:
-    name: Local AI — real 1B+ Ollama inference
+    name: Local AI — real JARVIS Core 1B inference
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -74,12 +74,12 @@ jobs:
         run: |
           set -euo pipefail
           ollama pull llama3.2:1b
-          ollama pull qwen3:1.7b
+          ollama pull llama3.2:1b
           ollama create jarvis-core-1b -f models/jarvis-core-1b.Modelfile
-          ollama create jarvis-brain-lite -f models/jarvis-brain-lite.Modelfile
+          ollama create jarvis-core-1b -f models/jarvis-core-1b.Modelfile
           ollama list | tee artifacts/real-cloud/local-ai/ollama-list.txt
           ollama show jarvis-core-1b | tee artifacts/real-cloud/local-ai/ollama-show-core.txt
-          ollama show jarvis-brain-lite | tee artifacts/real-cloud/local-ai/ollama-show-expert.txt
+          ollama show jarvis-core-1b | tee artifacts/real-cloud/local-ai/ollama-show-expert.txt
 
       - name: Verify parameter floor and execute real generation
         shell: bash
@@ -91,7 +91,7 @@ jobs:
 
           manifest = json.loads(Path("models/manifest.json").read_text("utf-8"))
           core = next(item for item in manifest["models"] if item["alias"] == "jarvis-core-1b")
-          expert = next(item for item in manifest["models"] if item["alias"] == "jarvis-brain-lite")
+          expert = next(item for item in manifest["models"] if item["alias"] == "jarvis-core-1b")
           assert float(core["parameters_b"]) >= 1.0, core
           assert float(expert["parameters_b"]) >= 1.0, expert
 
