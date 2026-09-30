@@ -45,6 +45,7 @@ class PersonaAgentRuntime:
         self._router = router or ModelRouter()
         self._ollama_factory = ollama_factory
         self._gemini_factory = gemini_factory
+        self._ollama_base_url = ollama_base_url
         self._allow_cloud = bool(allow_cloud)
         self._persona = persona
         self._task = persona.validate_task(task)
@@ -61,6 +62,7 @@ class PersonaAgentRuntime:
             router=self._router,
             ollama_factory=self._ollama_factory,
             gemini_factory=self._gemini_factory,
+            ollama_base_url=self._ollama_base_url,
             allow_cloud=self._allow_cloud,
         )
         self._provider = provider
