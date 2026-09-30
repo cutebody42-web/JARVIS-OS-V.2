@@ -3,16 +3,22 @@
 import { useEffect, useState } from "react";
 import { AuthScreen } from "@/components/auth-screen";
 import { JarvisConsole } from "@/components/jarvis-console";
+import { JarvisProductShell } from "@/components/jarvis-product-shell";
 import { Onboarding } from "@/components/onboarding";
 import { api, getToken, setToken, type Session, type User } from "@/lib/api";
+import { isNativeJarvis } from "@/lib/jarvis-runtime";
 
-type View = "loading" | "auth" | "onboarding" | "console";
+type View = "loading" | "native" | "auth" | "onboarding" | "console";
 
 export default function Home() {
   const [view, setView] = useState<View>("loading");
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
+    if (isNativeJarvis()) {
+      queueMicrotask(() => setView("native"));
+      return;
+    }
     if (!getToken()) {
       queueMicrotask(() => setView("auth"));
       return;
@@ -44,6 +50,7 @@ export default function Home() {
   if (view === "loading") {
     return <div className="boot-screen"><div className="boot-pulse" aria-label="Initializing JARVIS" /></div>;
   }
+  if (view === "native") return <JarvisProductShell />;
   if (view === "auth") return <AuthScreen onSession={handleSession} />;
   if (view === "onboarding" && user) {
     return <Onboarding user={user} onComplete={() => setView("console")} onSignOut={signOut} />;
