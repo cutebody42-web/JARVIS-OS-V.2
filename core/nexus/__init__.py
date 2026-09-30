@@ -51,4 +51,23 @@ __all__ = [
     "compare_vector_clocks",
     "materialize_orset",
     "materialize_pn_counter",
+    "KeyringPeerKeyStore",
+    "NonceReplayCache",
+    "PeerEndpoint",
+    "PeerRegistry",
+    "SignedSyncHttpEndpoint",
+    "TailscaleCLI",
+    "TailscaleHttpTransport",
+    "generate_pairwise_secret",
 ]
+
+from .tailscale_transport import (
+    KeyringPeerKeyStore,
+    NonceReplayCache,
+    PeerEndpoint,
+    PeerRegistry,
+    SignedSyncHttpEndpoint,
+    TailscaleCLI,
+    TailscaleHttpTransport,
+    generate_pairwise_secret,
+)
