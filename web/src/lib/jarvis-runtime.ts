@@ -297,17 +297,28 @@ export async function listenForPairingDeepLinks(
 
 const NEXUS_MEDIA_TYPE = "application/vnd.nexus-sync+json";
 
-async function requireMobileOwnerPresence(reason: string) {
+async function requireMobileOwnerPresence(
+  reason: string,
+  { requireFingerprint = false }: { requireFingerprint?: boolean } = {},
+) {
   const biometric = window.__TAURI__?.biometric;
   if (!biometric) throw new Error("Mobile owner authentication is unavailable.");
   const status = await biometric.checkStatus();
   if (!status.isAvailable) {
     throw new Error(status.error || "Fingerprint/biometric approval is unavailable on this phone.");
   }
+  // Tauri BiometryType.TouchID (1) maps to Android fingerprint. Sensitive
+  // approvals can explicitly require it instead of silently falling back to
+  // a lock-screen PIN/password.
+  if (requireFingerprint && status.biometryType !== 1) {
+    throw new Error("Enroll and enable a fingerprint on this phone to approve sensitive JARVIS actions.");
+  }
   await biometric.authenticate(reason, {
-    allowDeviceCredential: true,
+    allowDeviceCredential: false,
     confirmationRequired: true,
     cancelTitle: "Cancel",
+    title: "JARVIS owner approval",
+    subtitle: requireFingerprint ? "Use your fingerprint to continue" : "Verify owner presence",
   });
   return status;
 }
@@ -328,7 +339,10 @@ export async function pairMobileCompanion(
   offer: Record<string, unknown>,
   onState?: (state: string) => void,
 ) {
-  await requireMobileOwnerPresence("Confirm pairing this phone with your JARVIS Brain");
+  await requireMobileOwnerPresence(
+    "Confirm pairing this phone with your JARVIS Brain",
+    { requireFingerprint: true },
+  );
   const bundle = await core().invoke<MobilePairingBundle>("mobile_prepare_pairing", { offer });
 
   onState?.("requesting");
@@ -450,8 +464,9 @@ export async function mobileDecideApproval(
 ): Promise<Record<string, unknown>> {
   await requireMobileOwnerPresence(
     approved
-      ? "Confirm this JARVIS action with your fingerprint or device biometric"
-      : "Confirm rejecting this JARVIS action",
+      ? "Confirm this JARVIS action with your fingerprint"
+      : "Confirm rejecting this JARVIS action with your fingerprint",
+    { requireFingerprint: true },
   );
   const request = await core().invoke<MobileApprovalRequest>(
     "mobile_sign_approval_decision",
