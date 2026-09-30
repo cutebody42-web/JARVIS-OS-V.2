@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile-default",
-  "description": "Mobile companion permissions for QR pairing, biometric approval and haptics",
+  "description": "Mobile companion permissions for QR pairing, fingerprint-only sensitive approval and haptics",
   "windows": [
     "main"
   ],
