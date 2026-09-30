@@ -281,7 +281,7 @@ function MobileShell() {
                         onClick={() => void decideApproval(approval.approval_id, true)}
                         disabled={busy}
                       >
-                        Approve with biometric
+                        Approve with fingerprint
                       </Button>
                       <Button
                         size="sm"
@@ -680,7 +680,7 @@ export function JarvisProductShell() {
                     : "Local voice is unavailable on this device"
                 }
                 onClick={() => void toggleVoice()}
-                disabled={!client || busy || !status?.voice.available}
+                disabled={!client || (!voiceActive && busy) || !status?.voice.available}
               >
                 {status?.voice.state === "listening" ? <LoaderCircle className="spin" size={18} /> : <Mic2 size={18} />}
               </Button>
@@ -699,6 +699,8 @@ export function JarvisProductShell() {
             <div><dt>Cognition</dt><dd data-on="true">ADAPTIVE</dd></div>
             <div><dt>Voice</dt><dd data-on={status?.voice.available}>{status?.voice.available ? status.voice.state.toUpperCase() : "UNAVAILABLE"}</dd></div>
             <div><dt>Owner face</dt><dd data-on={status?.owner_identity.face_recognized}>{status?.owner_identity.face_recognized ? "RECOGNIZED" : status?.owner_identity.face_enrolled ? "ENROLLED" : "NOT ENROLLED"}</dd></div>
+            <div><dt>Face engine</dt><dd>{status?.owner_identity.face_engine === "opencv_sface_2021dec" ? "SFACE" : status?.owner_identity.face_engine ?? "—"}</dd></div>
+            <div><dt>Phone approvals</dt><dd data-on={(status?.approvals.pending_exact_actions ?? 0) > 0}>{status?.approvals.pending_exact_actions ?? 0} PENDING</dd></div>
             <div><dt>Memory</dt><dd data-on="true"><ShieldCheck size={13} /> CONTINUOUS</dd></div>
             <div><dt>RAM available</dt><dd>{ram}</dd></div>
             <div><dt>System pressure</dt><dd>{pressure == null ? "—" : `${Math.round(pressure * 100)}%`}</dd></div>
