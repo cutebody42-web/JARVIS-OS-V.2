@@ -184,6 +184,20 @@ class ModelRuntimeTests(unittest.TestCase):
         self.assertFalse(status.models["external"].managed)
         self.assertEqual(status.models["external"].vram_gb, 1.0)
 
+    def test_release_fails_closed_when_status_is_unavailable(self):
+        self.runtime.ensure("friday:4b", priority=10)
+
+        def broken_get(*_args, **_kwargs):
+            raise OSError("offline")
+
+        runtime = ModelRuntime(
+            http_get=broken_get,
+            http_post=self.fake.post,
+            clock=lambda: self.now,
+        )
+        with self.assertRaises(ModelRuntimeError):
+            runtime.release("friday:4b", ttl=0)
+
     def test_status_query_failure_is_fail_closed_for_eviction(self):
         def broken_get(*_args, **_kwargs):
             raise OSError("offline")
@@ -219,6 +233,8 @@ class ModelRuntimeTests(unittest.TestCase):
             self.runtime.ensure("model", priority=True)
         with self.assertRaises(ValueError):
             self.runtime.release("model", ttl=-1)
+        with self.assertRaises(ValueError):
+            self.runtime.ensure("model", priority=1, keep_alive=0)
         with self.assertRaises(ValueError):
             self.runtime.relieve_pressure(snapshot(0.5), threshold=1.1)
 
