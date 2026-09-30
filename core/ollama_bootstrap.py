@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from typing import Callable, Iterable
+from urllib.parse import urlparse
 
 import requests
 
@@ -28,6 +29,38 @@ from core.hardware_profile import HardwareSnapshot
 
 Progress = Callable[[str, float, str], None]
 
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+
+
+def _ollama_environment(
+    base_url: str = DEFAULT_OLLAMA_URL,
+    model_store: str | Path | None = None,
+) -> dict[str, str]:
+    parsed = urlparse(base_url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise OllamaBootstrapError("JARVIS Ollama endpoint must be literal loopback HTTP.")
+    try:
+        port = parsed.port or 11434
+    except ValueError as exc:
+        raise OllamaBootstrapError("JARVIS Ollama endpoint has an invalid port.") from exc
+
+    env = os.environ.copy()
+    env["OLLAMA_HOST"] = f"127.0.0.1:{port}"
+    if model_store is not None:
+        store = Path(model_store).expanduser()
+        if not store.is_absolute():
+            raise OllamaBootstrapError("Local model folder must be an absolute path.")
+        env["OLLAMA_MODELS"] = str(store.resolve())
+    return env
+
 
 @dataclass(frozen=True)
 class BrainModelSpec:
@@ -35,6 +68,7 @@ class BrainModelSpec:
     base: str
     role: str
     min_ram_gb: float
+    parameters_b: float
     modelfile: Path
 
 
@@ -73,6 +107,7 @@ def load_brain_manifest() -> tuple[BrainModelSpec, ...]:
         base = item.get("base")
         role = item.get("role")
         min_ram = item.get("min_ram_gb")
+        parameters_b = item.get("parameters_b")
         if (
             not isinstance(alias, str)
             or not isinstance(base, str)
@@ -80,13 +115,18 @@ def load_brain_manifest() -> tuple[BrainModelSpec, ...]:
             or isinstance(min_ram, bool)
             or not isinstance(min_ram, (int, float))
             or min_ram < 0
+            or isinstance(parameters_b, bool)
+            or not isinstance(parameters_b, (int, float))
+            or parameters_b < 1.0
         ):
-            raise OllamaBootstrapError("JARVIS Brain model manifest is invalid.")
+            raise OllamaBootstrapError(
+                "JARVIS Brain model manifest is invalid or below the 1B parameter floor."
+            )
         modelfile = resource_path("models", f"{alias}.Modelfile")
         if not modelfile.is_file():
             raise OllamaBootstrapError(f"Missing Modelfile for {alias}.")
         specs.append(
-            BrainModelSpec(alias, base, role, float(min_ram), modelfile)
+            BrainModelSpec(alias, base, role, float(min_ram), float(parameters_b), modelfile)
         )
     return tuple(specs)
 
@@ -169,7 +209,8 @@ def wait_for_ollama(
 def ensure_ollama_service(
     executable: str,
     *,
-    base_url: str = "http://127.0.0.1:11434",
+    base_url: str = DEFAULT_OLLAMA_URL,
+    model_store: str | Path | None = None,
     popen=subprocess.Popen,
 ) -> None:
     if wait_for_ollama(base_url, timeout_seconds=2.0):
@@ -180,6 +221,8 @@ def ensure_ollama_service(
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
+    if base_url != DEFAULT_OLLAMA_URL or model_store is not None:
+        kwargs["env"] = _ollama_environment(base_url, model_store)
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -192,7 +235,17 @@ def ensure_ollama_service(
         raise OllamaBootstrapError("Ollama service did not become ready.")
 
 
-def _run_ollama(executable: str, args: list[str], *, runner=subprocess.run) -> None:
+def _run_ollama(
+    executable: str,
+    args: list[str],
+    *,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    model_store: str | Path | None = None,
+    runner=subprocess.run,
+) -> None:
+    kwargs = {}
+    if base_url != DEFAULT_OLLAMA_URL or model_store is not None:
+        kwargs["env"] = _ollama_environment(base_url, model_store)
     try:
         completed = runner(
             [executable, *args],
@@ -200,6 +253,7 @@ def _run_ollama(executable: str, args: list[str], *, runner=subprocess.run) -> N
             capture_output=True,
             text=True,
             timeout=3600,
+            **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OllamaBootstrapError("Ollama model provisioning failed.") from exc
@@ -210,8 +264,13 @@ def _run_ollama(executable: str, args: list[str], *, runner=subprocess.run) -> N
 def installed_model_names(
     executable: str,
     *,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    model_store: str | Path | None = None,
     runner=subprocess.run,
 ) -> set[str]:
+    kwargs = {}
+    if base_url != DEFAULT_OLLAMA_URL or model_store is not None:
+        kwargs["env"] = _ollama_environment(base_url, model_store)
     try:
         completed = runner(
             [executable, "list"],
@@ -219,6 +278,7 @@ def installed_model_names(
             capture_output=True,
             text=True,
             timeout=30,
+            **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired):
         return set()
@@ -265,13 +325,20 @@ def provision_brain_models(
     *,
     snapshot: HardwareSnapshot | None = None,
     progress: Progress | None = None,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    model_store: str | Path | None = None,
     runner=subprocess.run,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     specs = load_brain_manifest()
     selected = select_brain_models(specs, snapshot)
     selected_aliases = {spec.alias for spec in selected}
     skipped = tuple(spec.alias for spec in specs if spec.alias not in selected_aliases)
-    existing = installed_model_names(executable, runner=runner)
+    existing = installed_model_names(
+        executable,
+        base_url=base_url,
+        model_store=model_store,
+        runner=runner,
+    )
 
     completed_aliases: list[str] = []
     total = max(1, len(selected))
@@ -284,10 +351,18 @@ def provision_brain_models(
             continue
 
         _emit(progress, "models", base_percent, f"Preparing {spec.alias}")
-        _run_ollama(executable, ["pull", spec.base], runner=runner)
+        _run_ollama(
+            executable,
+            ["pull", spec.base],
+            base_url=base_url,
+            model_store=model_store,
+            runner=runner,
+        )
         _run_ollama(
             executable,
             ["create", spec.alias, "-f", str(spec.modelfile)],
+            base_url=base_url,
+            model_store=model_store,
             runner=runner,
         )
         completed_aliases.append(spec.alias)
@@ -306,6 +381,8 @@ def bootstrap_local_brain(
     snapshot: HardwareSnapshot | None = None,
     allow_install: bool = False,
     progress: Progress | None = None,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    model_store: str | Path | None = None,
     runner=subprocess.run,
 ) -> BootstrapResult:
     executable = find_ollama_executable()
@@ -321,13 +398,19 @@ def bootstrap_local_brain(
         installed = True
 
     _emit(progress, "ollama", 20, "Starting the local JARVIS Brain runtime")
-    ensure_ollama_service(executable)
+    ensure_ollama_service(
+        executable,
+        base_url=base_url,
+        model_store=model_store,
+    )
 
     _emit(progress, "models", 25, "Preparing JARVIS Brain models")
     provisioned, skipped = provision_brain_models(
         executable,
         snapshot=snapshot,
         progress=progress,
+        base_url=base_url,
+        model_store=model_store,
         runner=runner,
     )
     _emit(progress, "complete", 100, "JARVIS Brain is ready")
