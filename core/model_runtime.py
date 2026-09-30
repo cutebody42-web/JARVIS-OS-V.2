@@ -18,7 +18,8 @@ import os
 from types import MappingProxyType
 from typing import Callable, Mapping
 
-from core.hardware_profile import HardwareSnapshot, _normalize_base_url
+from core.hardware_profile import HardwareSnapshot
+from core.ollama_endpoint import normalize_local_ollama_url
 
 
 _GIB = 1024 ** 3
@@ -97,7 +98,7 @@ class ModelRuntime:
     ):
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        self._base_url = _normalize_base_url(
+        self._base_url = normalize_local_ollama_url(
             ollama_base_url
             or os.getenv("OLLAMA_HOST")
             or "http://127.0.0.1:11434"
