@@ -127,6 +127,11 @@ JARVIS_GENERAL = _profile(
             {ModelTier.FAST, ModelTier.STANDARD},
             {TaskKind.GENERAL, TaskKind.REALTIME},
         ),
+        _candidate(
+            "jarvis-core-1b", 1.5, 3, 300,
+            {ModelTier.FAST, ModelTier.STANDARD},
+            {TaskKind.GENERAL, TaskKind.REALTIME},
+        ),
     ),
     default_task=TaskKind.GENERAL,
     allowed_tasks=frozenset({TaskKind.GENERAL, TaskKind.REALTIME}),
@@ -146,6 +151,11 @@ JARVIS_REALTIME = _profile(
         ),
         _candidate(
             "jarvis-brain-lite", 2.0, 9, 60,
+            {ModelTier.FAST, ModelTier.STANDARD},
+            {TaskKind.REALTIME, TaskKind.GENERAL},
+        ),
+        _candidate(
+            "jarvis-core-1b", 1.5, 4, 300,
             {ModelTier.FAST, ModelTier.STANDARD},
             {TaskKind.REALTIME, TaskKind.GENERAL},
         ),
@@ -173,6 +183,11 @@ JARVIS_ENGINEERING = _profile(
         ),
         _candidate(
             "jarvis-brain-lite", 2.0, 5, 60,
+            {ModelTier.FAST, ModelTier.STANDARD},
+            {TaskKind.CODING, TaskKind.GENERAL},
+        ),
+        _candidate(
+            "jarvis-core-1b", 1.5, 2, 300,
             {ModelTier.FAST, ModelTier.STANDARD},
             {TaskKind.CODING, TaskKind.GENERAL},
         ),
