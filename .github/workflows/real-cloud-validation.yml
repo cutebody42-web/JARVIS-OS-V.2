@@ -460,10 +460,11 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
             adb wait-for-device
             adb install -r "$APK"
-            adb shell pm path ai.jarvis.app | tee artifacts/real-cloud/android/package-path.txt
+            adb shell pm path ai.jarvis.app > artifacts/real-cloud/android/package-path.txt
+            cat artifacts/real-cloud/android/package-path.txt
             adb shell monkey -p ai.jarvis.app -c android.intent.category.LAUNCHER 1
             sleep 12
             adb shell dumpsys activity activities > artifacts/real-cloud/android/activity.txt
