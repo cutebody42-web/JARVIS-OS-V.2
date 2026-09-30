@@ -26,6 +26,7 @@ class PersonaAgentRuntime:
         *,
         task: TaskKind | None = None,
         awareness=None,
+        owner_runtime=None,
         profiler: HardwareProfiler | None = None,
         model_runtime: ModelRuntime | None = None,
         router: ModelRouter | None = None,
@@ -37,6 +38,7 @@ class PersonaAgentRuntime:
             raise TypeError("persona must be PersonaSpec")
         self._guard = threading.RLock()
         self._awareness = awareness
+        self._owner_runtime = owner_runtime
         self._profiler = profiler or HardwareProfiler(ollama_base_url=ollama_base_url)
         self._model_runtime = model_runtime or ModelRuntime(ollama_base_url=ollama_base_url)
         self._router = router or ModelRouter()
@@ -62,6 +64,7 @@ class PersonaAgentRuntime:
         self._executor = AgentExecutor(
             awareness=self._awareness,
             provider=provider,
+            owner_runtime=self._owner_runtime,
             tool_allowlist=self._persona.tool_allowlist,
         )
 
