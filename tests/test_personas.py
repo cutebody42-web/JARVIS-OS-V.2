@@ -210,7 +210,7 @@ class PersonaActionBoundaryTests(unittest.TestCase):
         result = executor.execute("read clock")
         self.assertIn("denied", result)
         self.assertEqual(executor.last_status, ActionStatus.DENIED)
-        self.assertEqual(executor.last_action_receipts[0].result.error_code, "persona_denied")
+        self.assertEqual(executor.last_action_receipts[0].result.error_code, "persona.denied")
 
     def test_persona_allowlist_cannot_expand_owner_policy(self):
         executor = AgentExecutor(
@@ -220,7 +220,7 @@ class PersonaActionBoundaryTests(unittest.TestCase):
         result = executor.execute("run generated code")
         self.assertIn("denied", result)
         self.assertEqual(executor.last_status, ActionStatus.DENIED)
-        self.assertEqual(executor.last_action_receipts[0].result.error_code, "policy_denied")
+        self.assertEqual(executor.last_action_receipts[0].result.error_code, "capability.unknown")
 
 
 class PersonaRuntimeTests(unittest.TestCase):
