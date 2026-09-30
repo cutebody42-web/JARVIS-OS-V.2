@@ -393,12 +393,13 @@ pub fn mobile_accept_pairing_approval(
         return Err("JARVIS pairing approval payload mismatch.".into());
     }
 
+    let desktop_endpoint = offer_endpoint(&offer)?;
     save_trust(
         &app,
         &DesktopTrust {
             desktop_device: offer.inviter_device,
             desktop_public_key: offer.inviter_public_key,
-            desktop_endpoint: offer_endpoint(&offer)?,
+            desktop_endpoint,
         },
     )?;
     Ok(identity)
