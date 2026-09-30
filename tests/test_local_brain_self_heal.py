@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from api.jarvis_local_server import LocalBrainHost
@@ -31,6 +32,9 @@ class LocalBrainSelfHealTests(unittest.TestCase):
         self.host = LocalBrainHost.__new__(LocalBrainHost)
         self.host.repair_journal = RepairJournal(Path(self.tmp.name) / "repair.db")
         self.host.self_heal = SelfHealController(journal=self.host.repair_journal)
+        self.host.owner_runtime = SimpleNamespace(
+            gateway=SimpleNamespace(receipts=[]),
+        )
         self.host.self_heal.register_runtime_healer(
             IncidentKind.MODEL_FAILURE,
             lambda incident: True,
