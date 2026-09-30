@@ -81,6 +81,7 @@ class LocalBrainHost:
         ui_token: str,
         state_dir: str | Path | None = None,
         allow_cloud: bool = False,
+        companion_endpoint: str | None = None,
     ):
         if not isinstance(ui_token, str) or len(ui_token) < 32:
             raise ValueError("ui_token must contain at least 32 characters")
