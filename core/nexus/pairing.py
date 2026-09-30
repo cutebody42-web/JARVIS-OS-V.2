@@ -89,6 +89,35 @@ class PairingRequest:
     candidate_endpoint: str
     proof: str
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "pairing_id": self.pairing_id,
+            "candidate_device": self.candidate_device,
+            "candidate_public_key": self.candidate_public_key,
+            "candidate_endpoint": self.candidate_endpoint,
+            "proof": self.proof,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "PairingRequest":
+        if not isinstance(value, Mapping):
+            raise TypeError("pairing request must be an object")
+        required = {
+            "version", "pairing_id", "candidate_device",
+            "candidate_public_key", "candidate_endpoint", "proof",
+        }
+        if set(value) != required:
+            raise ValueError("pairing request schema mismatch")
+        return cls(
+            version=value["version"],
+            pairing_id=value["pairing_id"],
+            candidate_device=value["candidate_device"],
+            candidate_public_key=value["candidate_public_key"],
+            candidate_endpoint=value["candidate_endpoint"],
+            proof=value["proof"],
+        )
+
 
 @dataclass(frozen=True)
 class PendingPairing:
