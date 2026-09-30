@@ -3,7 +3,7 @@ name: NEXUS architecture contracts
 on:
   pull_request:
   push:
-    branches: [nexus/phase-1-provider-action-contracts]
+    branches: ["nexus/**"]
 
 permissions:
   contents: read
