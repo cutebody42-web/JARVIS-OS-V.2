@@ -42,9 +42,12 @@ class Runtime:
 
 
 class Provider:
+    seen = []
+
     def __init__(self, model, **kwargs):
         self.model = model
     def generate(self, request):
+        type(self).seen.append((self.model, request))
         if self.model == CORE_MODEL:
             return ModelResponse("route for owner goal", "ollama", self.model)
         return ModelResponse(f"expert note from {self.model}", "ollama", self.model)
@@ -67,6 +70,20 @@ class CouncilTests(unittest.TestCase):
         context = council.context(result)
         self.assertIn("route for owner goal", context)
         self.assertNotIn("expert note from jarvis-core-1b", context)
+
+    @patch("core.jarvis_council.OllamaProvider", Provider)
+    def test_hidden_council_marks_unstated_personal_context_unknown(self):
+        Provider.seen.clear()
+        council = JarvisCouncil(
+            ollama_base_url="http://127.0.0.1:11435",
+            profiler=Profiler(hardware()),
+            runtime=Runtime(),
+        )
+        council.consult("plan tomorrow efficiently", TaskKind.GENERAL)
+        instructions = "\n".join(request.system_instruction for _, request in Provider.seen)
+        self.assertIn("UNKNOWN", instructions)
+        self.assertIn("never fill gaps by assumption", instructions)
+        self.assertIn("never invent it", instructions)
 
     @patch("core.jarvis_council.OllamaProvider", Provider)
     def test_manual_installed_model_can_join_without_replacing_automatic_core(self):
