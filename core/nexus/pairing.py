@@ -24,12 +24,13 @@ from uuid import uuid4
 from core.nexus.peer_auth import (
     DeviceSigner,
     PeerRegistry,
+    PeerRole,
     TrustedPeer,
     normalize_peer_endpoint,
 )
 
 
-PAIRING_VERSION = 1
+PAIRING_VERSION = 2
 MAX_PAIRING_SECONDS = 10 * 60
 
 
@@ -106,7 +107,8 @@ class PairingRequest:
     pairing_id: str
     candidate_device: str
     candidate_public_key: str
-    candidate_endpoint: str
+    candidate_role: PeerRole
+    candidate_endpoint: str | None
     proof: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -115,6 +117,7 @@ class PairingRequest:
             "pairing_id": self.pairing_id,
             "candidate_device": self.candidate_device,
             "candidate_public_key": self.candidate_public_key,
+            "candidate_role": self.candidate_role.value,
             "candidate_endpoint": self.candidate_endpoint,
             "proof": self.proof,
         }
@@ -125,7 +128,7 @@ class PairingRequest:
             raise TypeError("pairing request must be an object")
         required = {
             "version", "pairing_id", "candidate_device",
-            "candidate_public_key", "candidate_endpoint", "proof",
+            "candidate_public_key", "candidate_role", "candidate_endpoint", "proof",
         }
         if set(value) != required:
             raise ValueError("pairing request schema mismatch")
@@ -134,6 +137,7 @@ class PairingRequest:
             pairing_id=value["pairing_id"],
             candidate_device=value["candidate_device"],
             candidate_public_key=value["candidate_public_key"],
+            candidate_role=PeerRole(value["candidate_role"]),
             candidate_endpoint=value["candidate_endpoint"],
             proof=value["proof"],
         )
@@ -144,7 +148,8 @@ class PendingPairing:
     pairing_id: str
     candidate_device: str
     candidate_public_key: str
-    candidate_endpoint: str
+    candidate_role: PeerRole
+    candidate_endpoint: str | None
     created_at: str
 
 
@@ -177,11 +182,21 @@ class PairingManager:
                     candidate_device TEXT,
                     candidate_public_key TEXT,
                     candidate_endpoint TEXT,
+                    candidate_role TEXT NOT NULL DEFAULT 'node',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(nexus_pairing_sessions)")
+            }
+            if "candidate_role" not in columns:
+                db.execute(
+                    "ALTER TABLE nexus_pairing_sessions "
+                    "ADD COLUMN candidate_role TEXT NOT NULL DEFAULT 'node'"
+                )
 
     def _now(self) -> datetime:
         now = self._clock()
@@ -228,7 +243,9 @@ class PairingManager:
         offer: PairingOffer,
         candidate_device: str,
         candidate_signer: DeviceSigner,
-        candidate_endpoint: str,
+        candidate_endpoint: str | None = None,
+        *,
+        candidate_role: PeerRole = PeerRole.NODE,
     ) -> PairingRequest:
         if not isinstance(offer, PairingOffer):
             raise TypeError("offer must be PairingOffer")
@@ -237,12 +254,20 @@ class PairingManager:
         if not isinstance(candidate_signer, DeviceSigner):
             raise TypeError("candidate_signer must be DeviceSigner")
 
-        candidate_endpoint = normalize_peer_endpoint(candidate_endpoint)
+        if not isinstance(candidate_role, PeerRole):
+            raise TypeError("candidate_role must be PeerRole")
+        if candidate_role is PeerRole.NODE:
+            candidate_endpoint = normalize_peer_endpoint(candidate_endpoint)
+        else:
+            if candidate_endpoint not in {None, ""}:
+                raise ValueError("companion pairing does not accept a sync endpoint")
+            candidate_endpoint = None
         unsigned = {
             "version": PAIRING_VERSION,
             "pairing_id": offer.pairing_id,
             "candidate_device": candidate_device,
             "candidate_public_key": candidate_signer.public_b64,
+            "candidate_role": candidate_role.value,
             "candidate_endpoint": candidate_endpoint,
         }
         proof = hmac.new(
@@ -257,7 +282,12 @@ class PairingManager:
             raise TypeError("request must be PairingRequest")
         if request.version != PAIRING_VERSION:
             raise ValueError("unsupported pairing request version")
-        candidate_endpoint = normalize_peer_endpoint(request.candidate_endpoint)
+        if request.candidate_role is PeerRole.NODE:
+            candidate_endpoint = normalize_peer_endpoint(request.candidate_endpoint)
+        else:
+            if request.candidate_endpoint not in {None, ""}:
+                raise ValueError("companion pairing does not accept a sync endpoint")
+            candidate_endpoint = None
 
         now = self._now()
         with self.registry._store._connect() as db:
@@ -286,6 +316,7 @@ class PairingManager:
                 "pairing_id": request.pairing_id,
                 "candidate_device": request.candidate_device,
                 "candidate_public_key": request.candidate_public_key,
+                "candidate_role": request.candidate_role.value,
                 "candidate_endpoint": candidate_endpoint,
             }
             expected_proof = hmac.new(
@@ -305,6 +336,7 @@ class PairingManager:
                     candidate_device=?,
                     candidate_public_key=?,
                     candidate_endpoint=?,
+                    candidate_role=?,
                     updated_at=?
                 WHERE pairing_id=?
                 """,
@@ -312,6 +344,7 @@ class PairingManager:
                     request.candidate_device,
                     request.candidate_public_key,
                     candidate_endpoint,
+                    request.candidate_role.value,
                     updated,
                     request.pairing_id,
                 ),
@@ -322,6 +355,7 @@ class PairingManager:
             request.pairing_id,
             request.candidate_device,
             request.candidate_public_key,
+            request.candidate_role,
             candidate_endpoint,
             updated,
         )
@@ -331,7 +365,7 @@ class PairingManager:
             rows = db.execute(
                 """
                 SELECT pairing_id, candidate_device, candidate_public_key,
-                       candidate_endpoint, updated_at
+                       candidate_role, candidate_endpoint, updated_at
                 FROM nexus_pairing_sessions
                 WHERE state='pending'
                 ORDER BY updated_at
@@ -342,7 +376,8 @@ class PairingManager:
                 row["pairing_id"],
                 row["candidate_device"],
                 row["candidate_public_key"],
-                row["candidate_endpoint"],
+                PeerRole(row["candidate_role"]),
+                row["candidate_endpoint"] if PeerRole(row["candidate_role"]) is PeerRole.NODE else None,
                 row["updated_at"],
             )
             for row in rows
@@ -359,12 +394,20 @@ class PairingManager:
             if row is None or row["state"] != "pending":
                 db.rollback()
                 raise PermissionError("pairing request is not awaiting owner approval")
-            peer = self.registry._trust_peer_in_db(
-                db,
-                row["candidate_device"],
-                row["candidate_public_key"],
-                row["candidate_endpoint"],
-            )
+            role = PeerRole(row["candidate_role"])
+            if role is PeerRole.COMPANION:
+                peer = self.registry._trust_companion_in_db(
+                    db,
+                    row["candidate_device"],
+                    row["candidate_public_key"],
+                )
+            else:
+                peer = self.registry._trust_peer_in_db(
+                    db,
+                    row["candidate_device"],
+                    row["candidate_public_key"],
+                    row["candidate_endpoint"],
+                )
             db.execute(
                 """
                 UPDATE nexus_pairing_sessions
