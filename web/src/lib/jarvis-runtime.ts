@@ -142,6 +142,10 @@ export async function ensureDesktopBrain(): Promise<BrainConnection> {
   return core().invoke<BrainConnection>("ensure_brain_sidecar");
 }
 
+export async function chooseModelStore(): Promise<string | null> {
+  return core().invoke<string | null>("choose_model_store");
+}
+
 export class LocalBrainClient {
   constructor(readonly connection: BrainConnection) {}
 
