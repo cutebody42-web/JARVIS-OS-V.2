@@ -31,6 +31,7 @@ from core.jarvis_council import JarvisCouncil
 from core.jarvis_memory import JarvisMemory
 from core.model_router import TaskKind
 from core.model_runtime import ModelRuntime, ModelRuntimeError
+from core.mobile_approval_bridge import MobileApprovalBridge
 from core.owner_face import FaceIdentityError, OwnerFaceRecognizer
 from core.nexus.owner_approval import OwnerApprovalManager
 from core.nexus.sync_node import NexusSyncNode
@@ -145,6 +146,17 @@ class LocalBrainHost:
             workspace_root=self.state_dir / "workspace",
             environment="desktop",
         )
+        self.approval_bridge = MobileApprovalBridge(
+            self.approvals,
+            self.owner_runtime,
+        )
+        self._approval_stop = threading.Event()
+        self._approval_thread = threading.Thread(
+            target=self._approval_loop,
+            name="jarvis-biometric-approval-bridge",
+            daemon=True,
+        )
+        self._approval_thread.start()
         self.model_runtime = ModelRuntime(ollama_base_url=self.ollama_base_url)
         self.repair_journal = RepairJournal(self.state_dir / "repair.db")
         self.self_heal = SelfHealController(journal=self.repair_journal)
@@ -301,10 +313,12 @@ class LocalBrainHost:
                 "face_enrolled": self.owner_face.enrolled,
                 "face_recognized": self.owner_face.recognized,
                 "face_score": round(self.owner_face.last_score, 4),
+                "face_engine": self.owner_face.engine,
             },
             "voice": self.voice.status(),
             "approvals": {
                 "pending": len(self.approvals.pending()),
+                **self.approval_bridge.status(),
             },
             "setup": {
                 "phase": setup.phase,
@@ -367,6 +381,15 @@ class LocalBrainHost:
             return False
         return all(report.error is None for report in reports)
 
+    def _approval_loop(self) -> None:
+        while not self._approval_stop.wait(0.5):
+            try:
+                self.approval_bridge.reconcile()
+            except Exception:
+                # Approval processing is fail-closed; a loop error must never
+                # grant authority or crash the local Brain.
+                continue
+
     def _record_and_heal(self, kind: IncidentKind, summary: str, component: str):
         incident = Incident.create(kind, summary, component)
         self.repair_journal.record(
@@ -378,8 +401,29 @@ class LocalBrainHost:
 
     def handle_message(self, message: str, *, task: TaskKind | None = None) -> str:
         intent = classify_intent(message)
+        before = {receipt.action_id for receipt in self.owner_runtime.gateway.receipts}
         try:
-            return self.brain.handle(message, task=task)
+            text = self.brain.handle(message, task=task)
+            queued = []
+            for receipt in self.owner_runtime.gateway.receipts:
+                if receipt.action_id in before:
+                    continue
+                if receipt.result.status.value != "require_confirmation":
+                    continue
+                queued.append(self.approval_bridge.queue_receipt(receipt))
+            if queued:
+                if self.node.registry.active_peers():
+                    return (
+                        text
+                        + "\nFingerprint approval sent to your paired phone. "
+                        "Only the exact pending action will run after approval."
+                    )
+                return (
+                    text
+                    + "\nThis exact action requires owner approval. Pair the JARVIS phone "
+                    "companion to approve it with your fingerprint."
+                )
+            return text
         except Exception as exc:
             outcome = self._record_and_heal(
                 IncidentKind.MODEL_FAILURE,
