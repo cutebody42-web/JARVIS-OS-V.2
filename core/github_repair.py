@@ -44,6 +44,7 @@ class GitHubRepairPublication:
     pull_url: str
     head_sha: str
     disposition: RepairDisposition
+    required_workflows: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class GitHubCheckSummary:
     successful: bool
     pending: tuple[str, ...]
     failed: tuple[str, ...]
+    missing: tuple[str, ...] = ()
 
 
 class GitHubRepairClient:
@@ -204,7 +206,12 @@ class GitHubRepairClient:
             raise GitHubRepairError("GitHub returned an invalid pull request.")
         return number, url
 
-    def workflow_checks(self, head_sha: str) -> GitHubCheckSummary:
+    def workflow_checks(
+        self,
+        head_sha: str,
+        *,
+        required_workflows: Sequence[str] = (),
+    ) -> GitHubCheckSummary:
         if not _SHA_RE.fullmatch(head_sha):
             raise ValueError("head_sha must be a full commit SHA")
         value = self._request(
@@ -218,11 +225,13 @@ class GitHubRepairClient:
 
         pending: list[str] = []
         failed: list[str] = []
+        observed_names: set[str] = set()
         observed = 0
         for run in runs:
             if not isinstance(run, dict):
                 continue
             name = str(run.get("name") or "workflow")
+            observed_names.add(name)
             status = run.get("status")
             conclusion = run.get("conclusion")
             observed += 1
@@ -231,11 +240,15 @@ class GitHubRepairClient:
             elif conclusion not in {"success", "neutral", "skipped"}:
                 failed.append(name)
 
+        missing = tuple(
+            sorted(set(required_workflows) - observed_names)
+        )
         return GitHubCheckSummary(
-            completed=observed > 0 and not pending,
-            successful=observed > 0 and not pending and not failed,
+            completed=observed > 0 and not pending and not missing,
+            successful=observed > 0 and not pending and not failed and not missing,
             pending=tuple(sorted(set(pending))),
             failed=tuple(sorted(set(failed))),
+            missing=missing,
         )
 
     def merge_pull_request(
@@ -269,7 +282,6 @@ class GitHubRepairCoordinator:
         required_workflows: Sequence[str] = (
             "CI",
             "NEXUS architecture contracts",
-            "JARVIS product shell",
         ),
     ):
         if not isinstance(client, GitHubRepairClient):
@@ -277,6 +289,34 @@ class GitHubRepairCoordinator:
         self.client = client
         self.policy = policy or SelfHealPolicy()
         self.required_workflows = tuple(required_workflows)
+
+    def _required_for_patch(self, patch: RepairPatch) -> tuple[str, ...]:
+        required = set(self.required_workflows)
+        paths = tuple(edit.path.replace("\\", "/") for edit in patch.edits)
+
+        if any(path.startswith("web/") for path in paths):
+            required.add("JARVIS product shell")
+            required.add("Build JARVIS Android companion")
+
+        windows_relevant_prefixes = (
+            "brain_sidecar.py",
+            "api/",
+            "core/",
+            "agent/",
+            "actions/",
+            "memory/",
+            "models/",
+            "packaging/windows/",
+            "web/",
+            "requirements.txt",
+        )
+        if any(
+            any(path == prefix or path.startswith(prefix) for prefix in windows_relevant_prefixes)
+            for path in paths
+        ):
+            required.add("Build JARVIS Windows installer")
+
+        return tuple(sorted(required))
 
     @staticmethod
     def _branch_name(incident_id: str) -> str:
@@ -330,7 +370,12 @@ class GitHubRepairCoordinator:
             draft=draft,
         )
         return GitHubRepairPublication(
-            branch, pull_number, pull_url, head_sha, disposition
+            branch,
+            pull_number,
+            pull_url,
+            head_sha,
+            disposition,
+            self._required_for_patch(patch),
         )
 
     def wait_for_ci(
@@ -341,9 +386,18 @@ class GitHubRepairCoordinator:
         poll_seconds: float = 10.0,
     ) -> GitHubCheckSummary:
         deadline = time.monotonic() + timeout_seconds
-        latest = GitHubCheckSummary(False, False, (), ())
+        latest = GitHubCheckSummary(
+            False,
+            False,
+            (),
+            (),
+            publication.required_workflows,
+        )
         while time.monotonic() < deadline:
-            latest = self.client.workflow_checks(publication.head_sha)
+            latest = self.client.workflow_checks(
+                publication.head_sha,
+                required_workflows=publication.required_workflows,
+            )
             if latest.completed:
                 return latest
             time.sleep(poll_seconds)
