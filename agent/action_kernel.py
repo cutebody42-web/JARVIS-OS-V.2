@@ -28,13 +28,20 @@ def _dispatch(tool: str, parameters: dict) -> ToolResult:
 
 
 def run_action(tool: str, parameters: dict, *, task_id: str, step_id: str,
-               route: str, cancel_flag=None, owner_runtime=None) -> ActionReceipt:
+               route: str, cancel_flag=None, owner_runtime=None,
+               allowed_tools=None) -> ActionReceipt:
     """Compatibility entry point; all dispatch now goes through the owner kernel."""
     runtime = owner_runtime or current_runtime()
     # Preserve QA as an additional restrictive gate, never a source of grants.
     qa = guard_tool_call(tool, parameters) if isinstance(parameters, dict) else None
+    persona_denial = (
+        "Capability is not allowed by the active persona."
+        if allowed_tools is not None and tool not in allowed_tools
+        else ""
+    )
+    qa_denial = qa.reason if qa is not None and not qa.allowed else ""
     return runtime.gateway.run_tool(
         tool, parameters, task_id=task_id, step_id=step_id, route=route,
-        cancel_flag=cancel_flag, additional_denial=qa.reason if qa is not None and not qa.allowed else "",
+        cancel_flag=cancel_flag, additional_denial=persona_denial or qa_denial,
         runtime=runtime,
     )
