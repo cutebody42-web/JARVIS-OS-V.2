@@ -224,15 +224,11 @@ class MergeApplier:
             return ApplyStatus.REJECTED
         raise ValueError(f"Unsupported merge action: {decision.action}")
 
-    def apply_event(self, event: SyncEvent) -> ApplyResult:
-        """Resolve and materialize one accepted inbound event in one transaction.
-
-        The event must already exist in nexus_sync_events as an inbound event.
-        Unknown policy/schema exceptions leave it pending for later inspection
-        or retry after the policy registry is updated.
-        """
+    def _apply_direction(self, event: SyncEvent, expected_direction: str) -> ApplyResult:
         if not isinstance(event, SyncEvent):
             raise TypeError("event must be SyncEvent")
+        if expected_direction not in {"inbound", "outbound"}:
+            raise ValueError("expected_direction must be inbound or outbound")
 
         db = self._store._connect()
         try:
@@ -246,9 +242,12 @@ class MergeApplier:
                 (event.id,),
             ).fetchone()
             if ledger is None:
-                raise ValueError("event must be accepted into EventStore before apply")
-            if ledger["direction"] != "inbound":
-                raise ValueError("merge applier only accepts inbound events")
+                raise ValueError("event must exist in EventStore before apply")
+            if ledger["direction"] != expected_direction:
+                raise ValueError(
+                    f"merge applier expected {expected_direction} event, "
+                    f"got {ledger['direction']}"
+                )
             if ledger["apply_state"] == "applied":
                 db.rollback()
                 return ApplyResult(event.id, ApplyStatus.ALREADY_APPLIED)
@@ -263,7 +262,6 @@ class MergeApplier:
                 self._store_snapshot(db, decision.snapshot)
 
             self._store_evidence(db, event, decision)
-
             apply_state = (
                 "failed" if decision.action is MergeAction.REJECT else "applied"
             )
@@ -271,25 +269,46 @@ class MergeApplier:
                 """
                 UPDATE nexus_sync_events
                 SET apply_state = ?
-                WHERE event_id = ? AND direction = 'inbound'
+                WHERE event_id = ? AND direction = ?
                 """,
-                (apply_state, event.id),
+                (apply_state, event.id, expected_direction),
             )
 
             if self._before_commit_hook is not None:
                 self._before_commit_hook(db, event, decision)
 
             db.commit()
-            return ApplyResult(event.id, self._status_for(decision), decision)
         except Exception:
             db.rollback()
             raise
         finally:
             db.close()
 
+        if expected_direction == "outbound" and apply_state == "applied":
+            # File export is intentionally outside the SQLite transaction. If the
+            # process dies here, EventStore.flush_pending() recovers it later.
+            self._store.flush_pending()
+
+        return ApplyResult(event.id, self._status_for(decision), decision)
+
+    def apply_event(self, event: SyncEvent) -> ApplyResult:
+        """Resolve and materialize one accepted inbound event transactionally."""
+        return self._apply_direction(event, "inbound")
+
+    def apply_local_event(self, event: SyncEvent) -> ApplyResult:
+        """Materialize one locally authored outbound event before it can sync."""
+        return self._apply_direction(event, "outbound")
+
     def apply_pending(self, limit: int | None = None) -> tuple[ApplyResult, ...]:
         """Replay durable pending inbound events after startup or reconnect."""
-        results: list[ApplyResult] = []
-        for event in self._store.pending_inbound(limit=limit):
-            results.append(self.apply_event(event))
-        return tuple(results)
+        return tuple(
+            self.apply_event(event)
+            for event in self._store.pending_inbound(limit=limit)
+        )
+
+    def apply_pending_local(self, limit: int | None = None) -> tuple[ApplyResult, ...]:
+        """Replay local events that were durably authored but not materialized."""
+        return tuple(
+            self.apply_local_event(event)
+            for event in self._store.pending_local(limit=limit)
+        )
