@@ -50,7 +50,7 @@ class Task:
 
 
 class TaskQueue:
-    def __init__(self, max_concurrent: int = 2, awareness=None):
+    def __init__(self, max_concurrent: int = 2, awareness=None, executor_factory=None):
         self._queue:        list[Task]       = []
         self._lock:         threading.Lock   = threading.Lock()
         self._condition:    threading.Condition = threading.Condition(self._lock)
@@ -61,9 +61,15 @@ class TaskQueue:
         self._active_count   = 0
         self._executor       = None
         self._awareness      = awareness
+        self._executor_factory = executor_factory
 
     def _get_executor(self):
         # Concurrent tasks must not share receipts, outcomes or provider state.
+        if self._executor_factory is not None:
+            executor = self._executor_factory()
+            if executor is None:
+                raise RuntimeError("executor_factory returned no executor")
+            return executor
         from agent.executor import AgentExecutor
         return AgentExecutor(awareness=self._awareness)
 
@@ -475,13 +481,19 @@ _queue_started = False
 _queue_lock    = threading.Lock()
 
 
-def get_queue(awareness=None) -> TaskQueue:
+def get_queue(awareness=None, executor_factory=None) -> TaskQueue:
     global _queue, _queue_started
 
     with _queue_lock:
         if awareness is not None and getattr(_queue, "_awareness", None) is None:
-            _queue = TaskQueue(max_concurrent=2, awareness=awareness)
+            _queue = TaskQueue(
+                max_concurrent=2,
+                awareness=awareness,
+                executor_factory=executor_factory,
+            )
             _queue_started = False
+        elif executor_factory is not None:
+            _queue._executor_factory = executor_factory
 
         if not _queue_started:
             _queue.start()
