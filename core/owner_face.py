@@ -21,7 +21,7 @@ import threading
 import time
 from typing import Iterable
 
-from core.app_paths import user_data_dir
+from core.app_paths import resource_path, user_data_dir
 from core.secret_store import SecretStore, get_secret_store
 
 
@@ -208,6 +208,16 @@ class OwnerFaceRecognizer:
     def _download_verified(self, url: str, target: Path, expected_sha256: str) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_file() and _sha256_file(target) == expected_sha256:
+            return target
+
+        # Packaged Windows builds include the pinned OpenCV models so owner
+        # recognition works offline after installation. Source/dev builds fall
+        # back to the verified network download below.
+        bundled = resource_path("models", "vision", target.name)
+        if bundled.is_file() and _sha256_file(bundled) == expected_sha256:
+            temp = target.with_suffix(target.suffix + ".partial")
+            temp.write_bytes(bundled.read_bytes())
+            temp.replace(target)
             return target
 
         getter = self._http_get
