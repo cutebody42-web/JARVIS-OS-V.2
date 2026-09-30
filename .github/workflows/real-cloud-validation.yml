@@ -265,8 +265,31 @@ jobs:
           $status = Invoke-RestMethod -Headers $headers -Uri "http://127.0.0.1:$env:JARVIS_SMOKE_PORT/v1/status" -TimeoutSec 5
           if ($status.identity -ne "JARVIS") { throw "Live status identity mismatch" }
           if (!$status.device.device_id) { throw "Live status did not expose a device id" }
+          if ($status.voice.available -ne $true) { throw "Packaged JARVIS did not expose the Windows-local voice runtime" }
+          if ($status.voice.privacy -ne "local_os_speech") { throw "JARVIS voice privacy mode mismatch" }
           $health | ConvertTo-Json -Depth 8 | Out-File "artifacts/real-cloud/windows/live-health.json" -Encoding utf8
           $status | ConvertTo-Json -Depth 8 | Out-File "artifacts/real-cloud/windows/live-status.json" -Encoding utf8
+
+          Add-Type -AssemblyName System.Speech
+          $voice = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $voiceFile = "$PWD/artifacts/real-cloud/windows/voice-smoke.wav"
+          try {
+            $voice.SetOutputToWaveFile($voiceFile)
+            $voice.Speak("JARVIS voice runtime validation.")
+          } finally {
+            $voice.Dispose()
+          }
+          if (!(Test-Path $voiceFile) -or (Get-Item $voiceFile).Length -lt 1000) {
+            throw "Windows System.Speech synthesis did not produce valid audio evidence"
+          }
+          $recognizers = @([System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers())
+          @{
+            engine = "windows-system-speech"
+            tts_wave_bytes = (Get-Item $voiceFile).Length
+            installed_recognizers = $recognizers.Count
+            physical_microphone_certified = $false
+          } | ConvertTo-Json | Out-File "artifacts/real-cloud/windows/voice-evidence.json" -Encoding utf8
+
           Stop-Process -Id $brain.Id -Force
 
       - uses: actions/setup-node@v4
