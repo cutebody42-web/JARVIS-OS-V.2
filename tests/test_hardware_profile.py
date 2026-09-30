@@ -172,6 +172,32 @@ class HardwareProfilerTests(unittest.TestCase):
         self.assertEqual(snapshot.gpu_memory_kind, GPUMemoryKind.UNKNOWN)
         self.assertIn("gpu_probe_failed", snapshot.warnings)
 
+    def test_scheme_less_and_bind_ollama_hosts_are_connectable(self):
+        psutil = self._psutil()
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"models": []}
+
+        get_one = Mock(return_value=response)
+        HardwareProfiler(
+            device_id="node-a",
+            psutil_module=psutil,
+            http_get=get_one,
+            gpu_probe=lambda: (None, GPUMemoryKind.UNKNOWN),
+            ollama_base_url="127.0.0.1:1234",
+        ).capture()
+        get_one.assert_called_once_with("http://127.0.0.1:1234/api/ps", timeout=1.5)
+
+        get_two = Mock(return_value=response)
+        HardwareProfiler(
+            device_id="node-b",
+            psutil_module=psutil,
+            http_get=get_two,
+            gpu_probe=lambda: (None, GPUMemoryKind.UNKNOWN),
+            ollama_base_url="0.0.0.0:11434",
+        ).capture()
+        get_two.assert_called_once_with("http://127.0.0.1:11434/api/ps", timeout=1.5)
+
     def test_configured_device_id_wins(self):
         psutil = self._psutil()
         response = Mock()
