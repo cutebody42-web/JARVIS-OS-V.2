@@ -17,7 +17,7 @@ export type BrainStatus = {
     core_model: string;
     parallel_experts: number;
   };
-  identity: {
+  owner_identity: {
     face_enrolled: boolean;
     face_recognized: boolean;
     face_score: number;
