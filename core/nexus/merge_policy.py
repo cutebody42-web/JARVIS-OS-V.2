@@ -31,6 +31,8 @@ DEFAULT_POLICIES: Mapping[str, MergePolicySpec] = MappingProxyType(
         "user.preference": MergePolicySpec(MergePolicyKind.LWW_REGISTER),
         "device.last_seen": MergePolicySpec(MergePolicyKind.LWW_REGISTER, delete_wins=False),
         "memory.fact": MergePolicySpec(MergePolicyKind.LWW_REGISTER),
+        "memory.handoff": MergePolicySpec(MergePolicyKind.LWW_REGISTER),
+        "memory.project": MergePolicySpec(MergePolicyKind.LWW_MAP),
         "skills.learned": MergePolicySpec(MergePolicyKind.OR_SET),
         "tags": MergePolicySpec(MergePolicyKind.OR_SET),
         "devices.trusted": MergePolicySpec(MergePolicyKind.OR_SET),
