@@ -17,6 +17,11 @@ export type BrainStatus = {
     core_model: string;
     parallel_experts: number;
   };
+  identity: {
+    face_enrolled: boolean;
+    face_recognized: boolean;
+    face_score: number;
+  };
   setup: {
     phase: string;
     percent: number;
@@ -153,6 +158,33 @@ export class LocalBrainClient {
         model_store: modelStore?.trim() || null,
       }),
     });
+  }
+
+  enrollOwnerFace(cameraIndex = 0) {
+    return this.request<{ enrolled: boolean; samples: number; recognized: boolean; score: number }>(
+      "/v1/identity/face/enroll",
+      { method: "POST", body: JSON.stringify({ camera_index: cameraIndex }) },
+    );
+  }
+
+  verifyOwnerFace(cameraIndex = 0) {
+    return this.request<{
+      enrolled: boolean;
+      recognized: boolean;
+      score: number;
+      matched_frames: number;
+      total_frames: number;
+    }>("/v1/identity/face/verify", {
+      method: "POST",
+      body: JSON.stringify({ camera_index: cameraIndex }),
+    });
+  }
+
+  forgetOwnerFace() {
+    return this.request<{ enrolled: boolean; recognized: boolean }>(
+      "/v1/identity/face/forget",
+      { method: "POST", body: "{}" },
+    );
   }
 
   selectManualModel(model?: string) {
