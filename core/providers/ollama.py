@@ -85,7 +85,7 @@ class OllamaProvider:
         standard_model: str = "qwen2.5-coder:7b",
         base_url: str | None = None,
         keep_alive: str | int | None = "5m",
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = 60.0,
         timeout: float | None = None,
     ):
         from core.model_provider import ModelTier
@@ -103,8 +103,8 @@ class OllamaProvider:
         if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
             raise ValueError("timeout_seconds must be numeric.")
         # Keep the Phase-3 bounded local-provider timeout.
-        if not 0 < float(timeout_seconds) <= 120:
-            raise ValueError("Timeout must be in (0, 120] seconds.")
+        if not 0 < float(timeout_seconds) <= 60:
+            raise ValueError("Timeout must be in (0, 60] seconds.")
 
         resolved = (
             base_url
