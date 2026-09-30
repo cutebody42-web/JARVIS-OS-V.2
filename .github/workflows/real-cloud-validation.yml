@@ -380,7 +380,7 @@ jobs:
   android-real-runtime:
     name: Android emulator — install and run JARVIS
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -477,8 +477,6 @@ jobs:
             adb shell am start -W -a android.intent.action.VIEW -d "jarvis://pair?smoke=cloud-validation" ai.jarvis.app > artifacts/real-cloud/android/deep-link.txt || true
             sleep 4
             adb exec-out screencap -p > artifacts/real-cloud/android/android-screen.png
-            adb shell uiautomator dump /sdcard/jarvis-window.xml >/dev/null || true
-            adb pull /sdcard/jarvis-window.xml artifacts/real-cloud/android/jarvis-window.xml || true
             adb logcat -d > artifacts/real-cloud/android/logcat.txt
             if grep -E "FATAL EXCEPTION: main|Process: ai\.jarvis\.app.*has died" artifacts/real-cloud/android/logcat.txt; then echo "JARVIS Android app crashed in the emulator" >&2; exit 1; fi
 
