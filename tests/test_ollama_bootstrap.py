@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock
 
 from core.hardware_profile import GPUMemoryKind, HardwareSnapshot, PowerSource
 from core.ollama_bootstrap import (
