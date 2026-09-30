@@ -15,8 +15,10 @@ from enum import Enum
 import re
 import threading
 from typing import Callable
+from uuid import uuid4
 
 from core.hardware_profile import HardwareProfiler
+from core.jarvis_memory import JarvisMemory
 from core.model_provider import ModelProvider, ModelRequest, ModelTier
 from core.model_router import (
     LocalModelCandidate,
@@ -258,6 +260,8 @@ class JarvisBrain:
         ollama_factory: Callable[[ProviderChoice], ModelProvider] | None = None,
         gemini_factory: Callable[[ProviderChoice], ModelProvider] | None = None,
         ollama_base_url: str | None = None,
+        memory: JarvisMemory | None = None,
+        session_id: str | None = None,
     ):
         self.policy = policy or BrainPolicy()
         self._lock = threading.RLock()
@@ -265,6 +269,8 @@ class JarvisBrain:
         self._lane = BrainLane.GENERAL
         self._history: list[tuple[str, str]] = []
         self._history_limit = 16
+        self._memory = memory
+        self._session_id = session_id or uuid4().hex
         self._runtime = PersonaAgentRuntime(
             JARVIS_GENERAL,
             task=TaskKind.GENERAL,
@@ -322,23 +328,97 @@ class JarvisBrain:
     def _history_prompt(self, message: str) -> str:
         with self._lock:
             history = tuple(self._history[-self._history_limit:])
-        if not history:
-            return message
-        transcript = "\n".join(
-            ("Owner" if role == "user" else JARVIS_IDENTITY) + ": " + content
-            for role, content in history
-        )
-        return (
-            "Continue the same conversation and preserve context.\n\n"
-            f"Recent conversation:\n{transcript}\n\n"
-            f"Owner: {message}"
-        )
+            memory = self._memory
+
+        sections: list[str] = [
+            "Continue the same JARVIS identity and preserve context across devices."
+        ]
+        if memory is not None:
+            durable = memory.continuity_context(turn_limit=8)
+            if durable:
+                sections.append("Durable synchronized continuity:\n" + durable)
+
+        if history:
+            transcript = "\n".join(
+                ("Owner" if role == "user" else JARVIS_IDENTITY) + ": " + content
+                for role, content in history
+            )
+            sections.append("Current-session conversation:\n" + transcript)
+
+        sections.append("Owner: " + message)
+        return "\n\n".join(sections)
 
     def _remember_turn(self, user_text: str, response_text: str) -> None:
         with self._lock:
             self._history.extend((("user", user_text), ("assistant", response_text)))
             if len(self._history) > self._history_limit * 2:
                 self._history = self._history[-self._history_limit * 2:]
+            memory = self._memory
+            session_id = self._session_id
+
+        if memory is not None:
+            handoff = memory.current_handoff() or {}
+            project_id = handoff.get("project_id")
+            if not isinstance(project_id, str) or not project_id:
+                project_id = None
+            memory.append_turn(session_id, "user", user_text, project_id=project_id)
+            memory.append_turn(session_id, "assistant", response_text, project_id=project_id)
+
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def memory(self) -> JarvisMemory | None:
+        return self._memory
+
+    def attach_memory(self, memory: JarvisMemory) -> None:
+        if not isinstance(memory, JarvisMemory):
+            raise TypeError("memory must be JarvisMemory")
+        with self._lock:
+            self._memory = memory
+
+    def checkpoint_project(
+        self,
+        project_id: str,
+        *,
+        summary: str | None = None,
+        phase: str | None = None,
+        open_tasks: list[str] | None = None,
+        decisions: list[str] | None = None,
+        artifacts: list[str] | None = None,
+    ):
+        with self._lock:
+            memory = self._memory
+        if memory is None:
+            raise RuntimeError("Durable JARVIS memory is not attached")
+        return memory.checkpoint_project(
+            project_id,
+            summary=summary,
+            phase=phase,
+            open_tasks=open_tasks,
+            decisions=decisions,
+            artifacts=artifacts,
+        )
+
+    def write_handoff(
+        self,
+        *,
+        project_id: str | None,
+        summary: str,
+        next_actions=(),
+    ) -> str:
+        with self._lock:
+            memory = self._memory
+        if memory is None:
+            raise RuntimeError("Durable JARVIS memory is not attached")
+        return memory.write_handoff(
+            project_id=project_id,
+            summary=summary,
+            next_actions=tuple(next_actions),
+            session_id=self._session_id,
+        )
 
     def clear_session_history(self) -> None:
         """Clear transient conversation history without deleting durable memory."""
