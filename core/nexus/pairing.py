@@ -310,7 +310,8 @@ class PairingManager:
             if row is None or row["state"] != "pending":
                 db.rollback()
                 raise PermissionError("pairing request is not awaiting owner approval")
-            peer = self.registry.trust_peer(
+            peer = self.registry._trust_peer_in_db(
+                db,
                 row["candidate_device"],
                 row["candidate_public_key"],
                 row["candidate_endpoint"],
