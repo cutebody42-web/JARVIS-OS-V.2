@@ -24,16 +24,24 @@ from pydantic import BaseModel, Field
 from core.action_gateway import create_runtime
 from core.app_paths import user_data_dir
 from core.hardware_profile import HardwareProfiler, HardwareSnapshot
-from core.jarvis_brain import BrainPolicy, JarvisBrain
+from core.jarvis_brain import BrainIntent, BrainPolicy, JarvisBrain, classify_intent
 from core.jarvis_memory import JarvisMemory
 from core.model_router import TaskKind
-from core.model_runtime import ModelRuntime
+from core.model_runtime import ModelRuntime, ModelRuntimeError
 from core.nexus.sync_node import NexusSyncNode
 from core.ollama_bootstrap import (
     OllamaBootstrapError,
     bootstrap_local_brain,
+    ensure_ollama_service,
     find_ollama_executable,
     installed_model_names,
+)
+from core.self_heal import (
+    Incident,
+    IncidentKind,
+    RepairJournal,
+    RepairState,
+    SelfHealController,
 )
 
 
@@ -97,6 +105,16 @@ class LocalBrainHost:
             environment="desktop",
         )
         self.model_runtime = ModelRuntime()
+        self.repair_journal = RepairJournal(self.state_dir / "repair.db")
+        self.self_heal = SelfHealController(journal=self.repair_journal)
+        self.self_heal.register_runtime_healer(
+            IncidentKind.MODEL_FAILURE,
+            self._heal_model_runtime,
+        )
+        self.self_heal.register_runtime_healer(
+            IncidentKind.SYNC_FAILURE,
+            self._heal_sync_runtime,
+        )
         self.brain = JarvisBrain(
             policy=BrainPolicy(allow_cloud=bool(allow_cloud)),
             owner_runtime=self.owner_runtime,
@@ -162,7 +180,61 @@ class LocalBrainHost:
                 {"peer_id": peer.peer_id, "endpoint": peer.endpoint}
                 for peer in self.node.registry.active_peers()
             ],
+            "self_heal": {
+                "recent": list(self.repair_journal.recent(limit=8)),
+            },
         }
+
+    def _heal_model_runtime(self, incident: Incident) -> bool:
+        snapshot = self.refresh_hardware()
+        if snapshot is not None:
+            try:
+                self.model_runtime.relieve_pressure(snapshot)
+            except Exception:
+                pass
+
+        executable = find_ollama_executable()
+        if executable is None:
+            return False
+        try:
+            ensure_ollama_service(executable)
+            self.model_runtime.get_status()
+        except Exception:
+            return False
+        return True
+
+    def _heal_sync_runtime(self, incident: Incident) -> bool:
+        try:
+            self.node.recover()
+            reports = self.node.scheduler.tick()
+        except Exception:
+            return False
+        return all(report.error is None for report in reports)
+
+    def _record_and_heal(self, kind: IncidentKind, summary: str, component: str):
+        incident = Incident.create(kind, summary, component)
+        self.repair_journal.record(
+            incident.id,
+            RepairState.DETECTED,
+            incident.summary,
+        )
+        return self.self_heal.heal_runtime(incident)
+
+    def handle_message(self, message: str, *, task: TaskKind | None = None) -> str:
+        intent = classify_intent(message)
+        try:
+            return self.brain.handle(message, task=task)
+        except Exception as exc:
+            outcome = self._record_and_heal(
+                IncidentKind.MODEL_FAILURE,
+                f"JARVIS Brain request failed ({type(exc).__name__}).",
+                "model_runtime",
+            )
+            # Never blindly replay operational actions: an external side effect
+            # may have happened before an exception was observed.
+            if intent is BrainIntent.CHAT and outcome.state is RepairState.HEALED:
+                return self.brain.handle(message, task=task)
+            raise
 
     def setup_local_brain(self, *, approved: bool) -> dict[str, Any]:
         if not approved:
@@ -260,7 +332,7 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
             except ValueError:
                 raise HTTPException(status_code=400, detail="Unsupported task kind") from None
         try:
-            text = host.brain.handle(request.message, task=task)
+            text = host.handle_message(request.message, task=task)
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
