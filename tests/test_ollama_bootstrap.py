@@ -10,6 +10,8 @@ from core.ollama_bootstrap import (
     OllamaBootstrapError,
     _ollama_environment,
     load_brain_manifest,
+    model_matches_manifest,
+    parameter_size_b,
     select_brain_models,
 )
 
@@ -77,6 +79,34 @@ class BootstrapTests(unittest.TestCase):
             env = _ollama_environment("http://127.0.0.1:11435", directory)
             self.assertEqual(env["OLLAMA_HOST"], "127.0.0.1:11435")
             self.assertEqual(Path(env["OLLAMA_MODELS"]), Path(directory).resolve())
+
+    def test_ollama_parameter_size_parser_supports_billions_and_millions(self):
+        self.assertEqual(parameter_size_b("1B"), 1.0)
+        self.assertAlmostEqual(parameter_size_b("1.7B"), 1.7)
+        self.assertAlmostEqual(parameter_size_b("950M"), 0.95)
+
+    def test_existing_alias_is_trusted_only_when_parameter_size_matches_manifest(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"details": {"parameter_size": "1.0B"}}
+        post = Mock(return_value=response)
+        self.assertTrue(
+            model_matches_manifest(
+                "jarvis-core-1b",
+                1.0,
+                base_url="http://127.0.0.1:11435",
+                request_post=post,
+            )
+        )
+        response.json.return_value = {"details": {"parameter_size": "7B"}}
+        self.assertFalse(
+            model_matches_manifest(
+                "jarvis-core-1b",
+                1.0,
+                base_url="http://127.0.0.1:11435",
+                request_post=post,
+            )
+        )
 
     def test_non_loopback_ollama_endpoint_is_rejected(self):
         with self.assertRaises(OllamaBootstrapError):
