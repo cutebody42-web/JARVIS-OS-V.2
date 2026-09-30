@@ -14,6 +14,8 @@ import threading
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
+from core.jarvis_brain import JarvisBrain
+from core.nexus.brain_rpc import SignedBrainEndpoint
 from core.nexus.pairing import PairingRequest
 from core.nexus.peer_auth import MAX_ENVELOPE_BYTES
 from core.nexus.signed_transport import MEDIA_TYPE, SignedSyncEndpoint
@@ -36,12 +38,16 @@ async def _bounded_body(request: Request, *, limit: int = MAX_ENVELOPE_BYTES) ->
 def create_sync_app(
     node: NexusSyncNode,
     *,
+    brain: JarvisBrain | None = None,
     run_scheduler: bool = True,
     scheduler_poll_seconds: float = 0.25,
 ) -> FastAPI:
     if not isinstance(node, NexusSyncNode):
         raise TypeError("node must be NexusSyncNode")
+    if brain is not None and not isinstance(brain, JarvisBrain):
+        raise TypeError("brain must be JarvisBrain or None")
 
+    brain_endpoint = SignedBrainEndpoint(brain, node.authenticator) if brain is not None else None
     stop_event = threading.Event()
     scheduler_thread: threading.Thread | None = None
 
@@ -112,6 +118,23 @@ def create_sync_app(
             "candidate_device": pending.candidate_device,
             "owner_approval_required": True,
         }
+
+    if brain_endpoint is not None:
+        @app.post("/nexus/brain/v1/message")
+        async def brain_message(request: Request) -> Response:
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != MEDIA_TYPE:
+                raise HTTPException(status_code=415, detail="Unsupported JARVIS Brain media type")
+            body = await _bounded_body(request, limit=256 * 1024)
+            try:
+                signed_response = await asyncio.to_thread(brain_endpoint.handle, body)
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Paired-device authentication failed") from None
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="Invalid JARVIS Brain request") from None
+            except Exception:
+                raise HTTPException(status_code=503, detail="JARVIS Brain could not complete the request") from None
+            return Response(content=signed_response, media_type=MEDIA_TYPE)
 
     @app.post("/nexus/sync/v1/batch")
     async def receive_batch(request: Request) -> Response:
