@@ -58,7 +58,7 @@ class SetupRequest(BaseModel):
 
 
 class PairOfferRequest(BaseModel):
-    endpoint: str = Field(min_length=1, max_length=512)
+    endpoint: str | None = Field(default=None, min_length=1, max_length=512)
     ttl_seconds: int = Field(default=300, ge=30, le=600)
 
 
@@ -85,6 +85,7 @@ class LocalBrainHost:
         if not isinstance(ui_token, str) or len(ui_token) < 32:
             raise ValueError("ui_token must contain at least 32 characters")
         self.ui_token = ui_token
+        self.companion_endpoint = companion_endpoint
         self.state_dir = Path(state_dir) if state_dir else user_data_dir() / "brain"
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._guard = threading.RLock()
@@ -176,8 +177,16 @@ class LocalBrainHost:
                 "power_source": snapshot.power_source.value if snapshot else "unknown",
                 "battery_pct": snapshot.battery_pct if snapshot else None,
             },
+            "companion": {
+                "available": self.companion_endpoint is not None,
+                "endpoint": self.companion_endpoint,
+            },
             "paired_devices": [
-                {"peer_id": peer.peer_id, "endpoint": peer.endpoint}
+                {
+                    "peer_id": peer.peer_id,
+                    "endpoint": peer.endpoint,
+                    "role": peer.role.value,
+                }
                 for peer in self.node.registry.active_peers()
             ],
             "self_heal": {
@@ -346,8 +355,17 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
 
     @app.post("/v1/pair/offer", dependencies=[Depends(require_ui)])
     def pair_offer(request: PairOfferRequest) -> dict[str, Any]:
+        endpoint = request.endpoint or host.companion_endpoint
+        if endpoint is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Remote companion gateway is unavailable. "
+                    "Connect Tailscale or configure JARVIS_COMPANION_BIND."
+                ),
+            )
         offer = host.node.pairing.create_offer(
-            request.endpoint,
+            endpoint,
             ttl_seconds=request.ttl_seconds,
         )
         return offer.public_payload()
@@ -360,6 +378,7 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
                     "pairing_id": item.pairing_id,
                     "candidate_device": item.candidate_device,
                     "candidate_public_key": item.candidate_public_key,
+                    "candidate_role": item.candidate_role.value,
                     "candidate_endpoint": item.candidate_endpoint,
                     "created_at": item.created_at,
                 }
@@ -374,6 +393,7 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
             "approved": True,
             "peer_id": peer.peer_id,
             "endpoint": peer.endpoint,
+            "role": peer.role.value,
         }
 
     @app.post("/v1/pair/cancel", dependencies=[Depends(require_ui)])
