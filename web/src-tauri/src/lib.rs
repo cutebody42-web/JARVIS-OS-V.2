@@ -19,6 +19,12 @@ pub fn run() {
         .plugin(tauri_plugin_websocket::init())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
+            #[cfg(target_os = "android")]
+            {
+                let store = android_native_keyring_store::Store::new()
+                    .map_err(|error| format!("Android JARVIS Keystore initialization failed: {error}"))?;
+                keyring_core::set_default_store(store);
+            }
             let salt_dir = app
                 .path()
                 .app_local_data_dir()
