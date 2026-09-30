@@ -1,5 +1,6 @@
 """Owner face identity contracts without requiring a physical camera."""
 
+import json
 import unittest
 
 from core.owner_face import OwnerFaceRecognizer
@@ -55,6 +56,20 @@ class OwnerFaceTests(unittest.TestCase):
         self.assertTrue(result.recognized)
         self.assertEqual(result.matched_frames, 3)
         self.assertTrue(recognizer.recognized)
+
+    def test_old_prototype_templates_require_fresh_sface_enrollment(self):
+        store = NoopSecretStore()
+        store.set(
+            "identity.owner.face.v1",
+            json.dumps({
+                "version": 1,
+                "threshold": 0.82,
+                "templates": [vec(0, 0.01) for _ in range(6)],
+            }),
+        )
+        recognizer = OwnerFaceRecognizer(secret_store=store)
+        self.assertFalse(recognizer.enrolled)
+        self.assertEqual(recognizer.engine, "opencv_sface_2021dec")
 
     def test_forget_removes_identity(self):
         store = NoopSecretStore()
