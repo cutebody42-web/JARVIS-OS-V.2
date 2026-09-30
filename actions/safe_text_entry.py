@@ -6,7 +6,8 @@ import time
 from dataclasses import dataclass
 
 try:
-    import pyautogui
+    from core.desktop_dependency import load_pyautogui
+    pyautogui = load_pyautogui()
     pyautogui.FAILSAFE = True
     _PYAUTOGUI = True
 except ImportError:

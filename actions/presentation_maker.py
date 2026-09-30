@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.action_gateway import guarded_entrypoint
+
 import json
 import mimetypes
 import os
@@ -1776,6 +1778,7 @@ def build_presentation(
         output_lock.release()
 
 
+@guarded_entrypoint('create_presentation')
 def create_presentation(parameters: dict, response=None, player=None, session_memory=None) -> str:
     """Generate an editable PowerPoint deck from a spoken or typed request.
 
@@ -1792,6 +1795,7 @@ def create_presentation(parameters: dict, response=None, player=None, session_me
         return f"Could not create the PowerPoint presentation: {exc}"
 
 
+@guarded_entrypoint('create_presentation')
 def queue_presentation(
     parameters: dict,
     player=None,
@@ -1948,6 +1952,7 @@ def _take_pending_presentation(parameters: dict) -> dict | None:
     return None
 
 
+@guarded_entrypoint('create_presentation')
 def request_presentation(parameters: dict, player=None, speak=None) -> str:
     """Collect 3D and run-mode choices, then start the confirmed task."""
     params = dict(parameters or {})
@@ -2013,6 +2018,7 @@ def request_presentation(parameters: dict, player=None, speak=None) -> str:
     )
 
 
+@guarded_entrypoint('create_presentation')
 def presentation_maker(parameters: dict, response=None, player=None, session_memory=None) -> str:
     """Backward-compatible alias for the dedicated presentation action."""
     return create_presentation(

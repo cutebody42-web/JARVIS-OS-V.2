@@ -79,11 +79,7 @@ def main() -> int:
     for patcher in patchers:
         patcher.start()
     try:
-        temp_settings.write_text(json.dumps({
-            "intro_completed": True,
-            "intro_version": ui.INTRO_SEQUENCE_VERSION,
-            "startup_greeting_enabled": False,
-        }), encoding="utf-8")
+        temp_settings.write_text("{}", encoding="utf-8")
         window = ui.MainWindow("face.png")
         results = {}
         for width, height in ((980, 680), (1280, 820)):
@@ -94,10 +90,7 @@ def main() -> int:
             window.grab().save(str(args.output / f"{name}.png"))
             results[name] = _metrics(window)
 
-        settings = ui.SettingsOverlay(
-            current_graphics="medium",
-            current_graphics_mode="auto",
-        )
+        settings = ui.SettingsOverlay(current_graphics="medium")
         settings.resize(520, 400)
         settings._s_stack.setCurrentIndex(2)
         settings.show()

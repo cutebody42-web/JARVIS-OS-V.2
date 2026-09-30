@@ -1,12 +1,12 @@
-"""Minimal, application-owned Phase 1 capability boundary, not a full sandbox.
+"""Phase 1 compatibility query backed by the Sovereign Owner Kernel.
 
-No policy mutation tool, environment bypass, generated code or generic shell.
-Only these read operations are admitted until per-action permissions/verifiers
-exist. Legacy Live/direct action entry points are outside this spike's boundary.
+A boolean query is not an execution permit. Runtime actions use ActionGateway.
 """
-
 from dataclasses import dataclass
-
+from core.authority_contracts import ActionRequest, AuthorizationDecision, canonical_arguments
+from core.capability_registry import resolve_tool
+from core.action_gateway import create_runtime
+from core.owner_kernel import OwnerKernel
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -15,16 +15,11 @@ class PolicyDecision:
 
 
 def authorize_action(tool: str, parameters: dict) -> PolicyDecision:
-    if not isinstance(parameters, dict):
-        return PolicyDecision(False, "Action parameters must be an object.")
-    if tool == "system_time" and not parameters:
-        return PolicyDecision(True, "Read the local system clock.")
-    if tool == "web_search" and set(parameters) == {"query"}:
-        query = parameters["query"]
-        if isinstance(query, str) and 0 < len(query.strip()) <= 2000:
-            return PolicyDecision(True, "Read-only search; output remains unverified.")
-    if tool == "weather_report" and set(parameters) == {"city"}:
-        city = parameters["city"]
-        if isinstance(city, str) and 0 < len(city.strip()) <= 200:
-            return PolicyDecision(True, "Read-only weather lookup; output remains unverified.")
-    return PolicyDecision(False, "Capability is not admitted by the Phase 1 owner policy.")
+    try:
+        cid, args = resolve_tool(tool, parameters)
+        runtime = create_runtime()
+        result = OwnerKernel(runtime.gateway.context).authorize(
+            ActionRequest(cid or "unknown", canonical_arguments(args)))
+        return PolicyDecision(result.decision is AuthorizationDecision.ALLOW, result.reason)
+    except (ValueError, TypeError):
+        return PolicyDecision(False, "Invalid action arguments.")

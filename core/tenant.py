@@ -18,8 +18,8 @@ def get_current_user_id() -> str | None:
 
 
 @contextmanager
-def tenant_scope(user_id: str) -> Iterator[None]:
-    token = _current_user_id.set(str(user_id))
+def tenant_scope(user_id: str | None) -> Iterator[None]:
+    token = _current_user_id.set(None if user_id is None else str(user_id))
     try:
         yield
     finally:

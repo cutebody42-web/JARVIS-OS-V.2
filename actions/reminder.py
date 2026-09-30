@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import json
 import os
 import shutil
@@ -283,6 +285,7 @@ def _schedule_linux(target_dt: datetime, task_name: str,
     print("[Reminder] ❌ Neither systemd-run nor at found on this Linux system.")
     return ""
 
+@guarded_entrypoint('reminder')
 def reminder(
     parameters: dict,
     response=None,

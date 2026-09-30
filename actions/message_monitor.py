@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import json
 import re
 import subprocess
@@ -320,6 +322,7 @@ def _format_update(update: dict) -> str:
     return f"{platform}: {recipient} latest message: \"{latest}\". Read {count} current-chat lines. Can reply: {can_reply}."
 
 
+@guarded_entrypoint('check_messages')
 def check_messages(parameters: dict | None = None, response=None, player=None, session_memory=None) -> str:
     params = parameters or {}
     platform = str(params.get("platform", "all") or "all").lower().strip()

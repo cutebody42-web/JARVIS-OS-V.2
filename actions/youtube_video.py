@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 #youtube_video.py
 import json
 import re
@@ -407,6 +409,7 @@ _ACTION_MAP = {
 }
 
 
+@guarded_entrypoint('youtube_video')
 def youtube_video(
     parameters:     dict,
     response=None,

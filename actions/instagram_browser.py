@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import json
 import queue
 import re
@@ -1133,6 +1135,7 @@ class _InstagramBrowser:
 _instagram = _InstagramBrowser()
 
 
+@guarded_entrypoint('prepare_message_reply')
 def prepare_instagram_draft(receiver: str, message: str) -> str:
     try:
         return _instagram._call("_prepare_draft", receiver, message)

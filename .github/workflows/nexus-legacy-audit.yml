@@ -1,0 +1,43 @@
+name: NEXUS full legacy audit (release blocker)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-legacy-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      JARVIS_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
+      - name: Full discovery (retain real failures)
+        id: full
+        continue-on-error: true
+        run: python scripts/cloud_validation.py --suite full --output artifacts/full-tests.json
+      - name: Existing staged QA
+        id: qa
+        continue-on-error: true
+        run: python scripts/qa.py automated
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-legacy-qa-evidence
+          include-hidden-files: true
+          path: |
+            artifacts/full-tests.json
+            .qa-artifacts/
+      - name: Keep unresolved release failures visible
+        if: steps.full.outcome != 'success' || steps.qa.outcome != 'success'
+        run: |
+          echo 'Full legacy QA is not green. Consult artifacts for source failures versus environment limitations. Do not merge/release as certified.'
+          exit 1

@@ -1,3 +1,10 @@
+"""Isolated legacy adapter-body tests with mocked effects.
+
+`__wrapped__` is intentional here: the public entrypoints are retired by the
+Owner Kernel. This does NOT test authorization or authorize any real send.
+Public denial/consent is exercised in test_legacy_boundaries and the Phase 2
+security suite. Never unwrap these entrypoints in application code.
+"""
 import tempfile
 import unittest
 import base64
@@ -33,7 +40,9 @@ class ActionHelperTests(unittest.TestCase):
         self.assertEqual(browser_control._normalize_url("http://localhost:8000"), "http://localhost:8000")
 
     def test_open_app_normalization_removes_polite_noise(self):
-        self.assertEqual(open_app._normalize("Please open Google Chrome"), "Google Chrome")
+        for system, expected in (("Darwin", "Google Chrome"), ("Windows", "chrome"), ("Linux", "google-chrome")):
+            with self.subTest(system=system), patch.object(open_app, "_SYSTEM", system):
+                self.assertEqual(open_app._normalize("Please open Google Chrome"), expected)
 
     def test_successful_macos_direct_launch_has_no_artificial_post_wait(self):
         completed = MagicMock(returncode=0)
@@ -60,7 +69,7 @@ class ActionHelperTests(unittest.TestCase):
         with patch.object(screen_processor, "_last_capture_time", 0.0), \
              patch.object(screen_processor, "_capture_screen", return_value=(b"image", "image/jpeg")), \
              patch.object(screen_processor, "_direct_vision_answer", return_value="The settings panel is open."):
-            result = screen_processor.screen_process(
+            result = screen_processor.screen_process.__wrapped__(
                 {"angle": "screen", "text": "What do you see?"},
                 player=player,
                 speak=speak,
@@ -76,7 +85,7 @@ class ActionHelperTests(unittest.TestCase):
         speak = MagicMock(return_value=True)
         with patch.object(screen_processor, "_last_capture_time", 0.0), \
              patch.object(screen_processor, "_capture_screen", side_effect=RuntimeError("permission denied")):
-            result = screen_processor.screen_process(
+            result = screen_processor.screen_process.__wrapped__(
                 {"angle": "screen", "text": "What do you see?"},
                 speak=speak,
             )
@@ -99,7 +108,7 @@ class ActionHelperTests(unittest.TestCase):
                 patch.object(file_controller, "_is_safe_path", return_value=True),
                 patch.object(file_controller.subprocess, "run", return_value=completed) as run,
             ):
-                result = file_controller.file_controller({"action": "open", "path": str(target)})
+                result = file_controller.file_controller.__wrapped__({"action": "open", "path": str(target)})
         self.assertEqual(result, "Opened file: report.pdf")
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], ["open", str(target)])
@@ -110,7 +119,7 @@ class ActionHelperTests(unittest.TestCase):
             patch.object(email_control, "_run_osascript") as script,
             patch.object(email_control, "_gmail_web_prepare", return_value="GMAIL_WEB_DRAFT_READY") as compose,
         ):
-            result = email_control.email_control({
+            result = email_control.email_control.__wrapped__({
                 "action": "prepare",
                 "to": "Alex <alex@example.com>",
                 "subject": "Project update",
@@ -131,7 +140,7 @@ class ActionHelperTests(unittest.TestCase):
             "_gmail_web_prepare",
             return_value="Gmail requires a browser sign-in. Sign in, then ask me to prepare the email again.",
         ):
-            result = email_control.email_control({
+            result = email_control.email_control.__wrapped__({
                 "action": "prepare",
                 "to": "alex@example.com",
                 "subject": "Project update",
@@ -156,7 +165,7 @@ class ActionHelperTests(unittest.TestCase):
             patch.object(email_control, "_gmail_web_send", return_value="Email sent through the visible Gmail compose window to alex@example.com.") as web_send,
             patch.object(email_control, "_send_gmail") as api_send,
         ):
-            result = email_control.email_control({"action": "approve", "provider": "gmail"})
+            result = email_control.email_control.__wrapped__({"action": "approve", "provider": "gmail"})
         self.assertIn("visible Gmail compose window", result)
         web_send.assert_called_once_with(draft)
         api_send.assert_not_called()
@@ -174,7 +183,7 @@ class ActionHelperTests(unittest.TestCase):
         }
         email_control._set_pending_email(draft)
         with patch.object(email_control, "_gmail_web_cancel", return_value=True) as discard:
-            result = email_control.email_control({"action": "cancel"})
+            result = email_control.email_control.__wrapped__({"action": "cancel"})
         self.assertIn("visible Gmail draft was discarded", result)
         discard.assert_called_once_with(draft)
         self.assertEqual(email_control._get_pending_email(), {})
@@ -252,7 +261,7 @@ class ActionHelperTests(unittest.TestCase):
             patch.object(email_control, "_SYSTEM", "Darwin"),
             patch.object(email_control, "_run_osascript", return_value=completed) as script,
         ):
-            result = email_control.email_control({"action": "approve", "provider": "apple_mail"})
+            result = email_control.email_control.__wrapped__({"action": "approve", "provider": "apple_mail"})
         self.assertEqual(result, "Email sent to alex@example.com.")
         self.assertEqual(email_control._get_pending_email(), {})
         self.assertEqual(script.call_args.args[1:], (
@@ -272,7 +281,7 @@ class ActionHelperTests(unittest.TestCase):
             patch.object(email_control, "_SYSTEM", "Darwin"),
             patch.object(email_control, "_run_osascript", return_value=completed),
         ):
-            result = email_control.email_control({"action": "inbox", "limit": 5, "provider": "apple_mail"})
+            result = email_control.email_control.__wrapped__({"action": "inbox", "limit": 5, "provider": "apple_mail"})
         self.assertIn("[UNREAD] Status", result)
         self.assertIn("Message ID: message-1", result)
         self.assertNotIn("email body", result.lower())
@@ -291,7 +300,7 @@ class ActionHelperTests(unittest.TestCase):
             ]},
         }
         with patch.object(email_control, "_gmail_service", return_value=service):
-            result = email_control.email_control({"action": "unread", "provider": "gmail", "limit": 5})
+            result = email_control.email_control.__wrapped__({"action": "unread", "provider": "gmail", "limit": 5})
         self.assertIn("Unread Gmail inbox", result)
         self.assertIn("Status update", result)
         messages.list.assert_called_once_with(
@@ -316,7 +325,7 @@ class ActionHelperTests(unittest.TestCase):
             },
         }
         with patch.object(email_control, "_gmail_service", return_value=service):
-            result = email_control.email_control({
+            result = email_control.email_control.__wrapped__({
                 "action": "read", "provider": "gmail", "message_id": "gmail-2"
             })
         self.assertIn("This is the Gmail body.", result)
@@ -335,7 +344,7 @@ class ActionHelperTests(unittest.TestCase):
         send = service.users.return_value.messages.return_value.send
         send.return_value.execute.return_value = {"id": "sent-1"}
         with patch.object(email_control, "_gmail_service", return_value=service):
-            result = email_control.email_control({"action": "approve", "provider": "gmail"})
+            result = email_control.email_control.__wrapped__({"action": "approve", "provider": "gmail"})
         self.assertEqual(result, "Email sent through Gmail to alex@example.com.")
         self.assertEqual(email_control._get_pending_email(), {})
         raw = send.call_args.kwargs["body"]["raw"]
@@ -384,7 +393,7 @@ class ActionHelperTests(unittest.TestCase):
                 patch.object(email_control, "_gmail_dependencies", return_value=(MagicMock(), MagicMock(), flow_class, MagicMock(return_value=service))),
                 patch.object(email_control, "_secret_store", return_value=store),
             ):
-                result = email_control.email_control({
+                result = email_control.email_control.__wrapped__({
                     "action": "connect", "provider": "gmail", "credentials_path": str(client_path)
                 })
         self.assertIn("Gmail connected: operator@gmail.com", result)
@@ -396,7 +405,7 @@ class ActionHelperTests(unittest.TestCase):
             patch.object(file_controller, "_is_safe_path", return_value=True),
             patch.object(file_controller.subprocess, "run") as run,
         ):
-            result = file_controller.file_controller({"action": "open", "path": "/missing/jarvis-file.txt"})
+            result = file_controller.file_controller.__wrapped__({"action": "open", "path": "/missing/jarvis-file.txt"})
         self.assertIn("Not found", result)
         run.assert_not_called()
 
@@ -406,7 +415,7 @@ class ActionHelperTests(unittest.TestCase):
             patch.object(media_control, "_SYSTEM", "Darwin"),
             patch.object(media_control, "_run_osascript", return_value=completed) as script,
         ):
-            result = media_control.media_control({"action": "stop", "platform": "spotify"})
+            result = media_control.media_control.__wrapped__({"action": "stop", "platform": "spotify"})
         self.assertEqual(result, "Spotify stopped.")
         apple_script = script.call_args.args[0]
         self.assertIn("pause", apple_script)
@@ -417,7 +426,7 @@ class ActionHelperTests(unittest.TestCase):
             patch.object(media_control, "_SYSTEM", "Darwin"),
             patch.object(media_control, "_open_uri", return_value=(True, "")) as open_uri,
         ):
-            result = media_control.media_control({
+            result = media_control.media_control.__wrapped__({
                 "action": "play",
                 "platform": "spotify",
                 "query": "Daft Punk One More Time",
@@ -431,7 +440,7 @@ class ActionHelperTests(unittest.TestCase):
             patch.object(media_control, "_SYSTEM", "Darwin"),
             patch.object(media_control, "_run_osascript", return_value=completed) as script,
         ):
-            result = media_control.media_control({
+            result = media_control.media_control.__wrapped__({
                 "action": "play_query",
                 "platform": "spotify",
                 "query": "https://open.spotify.com/track/123456?si=test",
@@ -494,7 +503,7 @@ class ActionHelperTests(unittest.TestCase):
 
     def test_reply_draft_requires_approval_before_send(self):
         send_message._clear_pending_message()
-        prepared = send_message.prepare_message_reply({
+        prepared = send_message.prepare_message_reply.__wrapped__({
             "action": "prepare",
             "platform": "iMessage",
             "receiver": "Alex",
@@ -502,19 +511,19 @@ class ActionHelperTests(unittest.TestCase):
         })
         self.assertTrue(prepared.startswith("MESSAGE_APPROVAL_REQUIRED|"))
         with patch.object(send_message, "send_message", return_value="Message sent to Alex via iMessage.") as direct_send:
-            result = send_message.prepare_message_reply({"action": "approve"})
+            result = send_message.prepare_message_reply.__wrapped__({"action": "approve"})
         self.assertIn("Message sent", result)
         direct_send.assert_called_once()
         self.assertEqual(send_message._get_pending_message(), {})
 
-    def test_instagram_send_prepares_then_approves_visible_draft(self):
+    def test_legacy_instagram_body_cannot_approve_through_retired_entrypoint(self):
         send_message._clear_pending_message()
         with patch.object(
             send_message,
             "_resolve_platform",
             return_value=lambda _receiver, _message: "Draft typed in the open Instagram chat. Awaiting your approval to send.",
         ):
-            prepared = send_message.send_message({
+            prepared = send_message.send_message.__wrapped__({
                 "action": "send",
                 "platform": "Instagram",
                 "receiver": "Alex",
@@ -524,14 +533,14 @@ class ActionHelperTests(unittest.TestCase):
         self.assertEqual(send_message._get_pending_message()["receiver"], "Alex")
 
         with patch.object(send_message, "send_open_browser_draft", return_value="Message sent to Alex via Instagram.") as approve:
-            result = send_message.send_message({"action": "approve", "platform": "Instagram"})
-        self.assertIn("Message sent", result)
-        approve.assert_called_once()
-        self.assertEqual(send_message._get_pending_message(), {})
+            result = send_message.send_message.__wrapped__({"action": "approve", "platform": "Instagram"})
+        self.assertTrue(result.startswith("denied:"))
+        approve.assert_not_called()
+        send_message._clear_pending_message()
 
     def test_pending_message_can_be_cancelled_without_sending(self):
         send_message._set_pending_message("iMessage", "Alex", "Not yet")
-        result = send_message.prepare_message_reply({"action": "cancel"})
+        result = send_message.prepare_message_reply.__wrapped__({"action": "cancel"})
         self.assertEqual(result, "Pending message cancelled.")
         self.assertEqual(send_message._get_pending_message(), {})
 

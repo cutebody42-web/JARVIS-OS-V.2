@@ -1,7 +1,10 @@
+
+from core.action_gateway import guarded_entrypoint
 import webbrowser
 from urllib.parse import quote_plus
 
 
+@guarded_entrypoint('weather_report')
 def weather_action(
     parameters: dict,
     player=None,

@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 #computer_control.py
 import io
 import json
@@ -13,7 +15,8 @@ from actions.jarvis_file_stamp import mark_created_file
 from actions.safe_text_entry import safe_type_text
 
 try:
-    import pyautogui
+    from core.desktop_dependency import load_pyautogui
+    pyautogui = load_pyautogui()
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
@@ -332,6 +335,7 @@ def _screen_find(description: str) -> tuple[int, int] | None:
 
     return None
 
+@guarded_entrypoint('computer_control')
 def computer_control(
     parameters: dict,
     response=None,

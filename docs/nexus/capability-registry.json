@@ -1,0 +1,750 @@
+[
+  {
+    "capability_id": "system.time",
+    "access": "read",
+    "risk": "low",
+    "external_side_effect": false,
+    "sensitive_data_access": false,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "none",
+    "execution_surface": "native",
+    "resource_lock": null,
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "system_time"
+    ]
+  },
+  {
+    "capability_id": "web.search",
+    "access": "read",
+    "risk": "moderate",
+    "external_side_effect": true,
+    "sensitive_data_access": false,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "network",
+    "resource_lock": null,
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "web_search"
+    ]
+  },
+  {
+    "capability_id": "weather.read",
+    "access": "read",
+    "risk": "moderate",
+    "external_side_effect": true,
+    "sensitive_data_access": false,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "network",
+    "resource_lock": null,
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "weather_report"
+    ]
+  },
+  {
+    "capability_id": "workspace.read",
+    "access": "read",
+    "risk": "moderate",
+    "external_side_effect": false,
+    "sensitive_data_access": true,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "native",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "file_controller"
+    ]
+  },
+  {
+    "capability_id": "workspace.create_text",
+    "access": "mutate",
+    "risk": "high",
+    "external_side_effect": false,
+    "sensitive_data_access": false,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "native",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "file_controller"
+    ]
+  },
+  {
+    "capability_id": "email.send",
+    "access": "mutate",
+    "risk": "high",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "network",
+    "resource_lock": "email",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "email_control"
+    ]
+  },
+  {
+    "capability_id": "email.read",
+    "access": "read",
+    "risk": "moderate",
+    "external_side_effect": false,
+    "sensitive_data_access": true,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "network",
+    "resource_lock": "email",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "email_control"
+    ]
+  },
+  {
+    "capability_id": "memory.write",
+    "access": "mutate",
+    "risk": "moderate",
+    "external_side_effect": false,
+    "sensitive_data_access": true,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "internal",
+    "resource_lock": "memory",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "save_memory"
+    ]
+  },
+  {
+    "capability_id": "task.submit",
+    "access": "mutate",
+    "risk": "moderate",
+    "external_side_effect": true,
+    "sensitive_data_access": false,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "internal",
+    "resource_lock": null,
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "agent_task"
+    ]
+  },
+  {
+    "capability_id": "task.status",
+    "access": "read",
+    "risk": "low",
+    "external_side_effect": false,
+    "sensitive_data_access": true,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "internal",
+    "resource_lock": null,
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "task_status"
+    ]
+  },
+  {
+    "capability_id": "task.cancel",
+    "access": "mutate",
+    "risk": "moderate",
+    "external_side_effect": false,
+    "sensitive_data_access": false,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "exact",
+    "execution_surface": "internal",
+    "resource_lock": null,
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "",
+    "tools": [
+      "task_status"
+    ]
+  },
+  {
+    "capability_id": "desktop.open_app",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": false,
+    "sensitive_data_access": false,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "open_app"
+    ]
+  },
+  {
+    "capability_id": "message.read_legacy",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": false,
+    "sensitive_data_access": true,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "check_messages"
+    ]
+  },
+  {
+    "capability_id": "message.draft_legacy",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "dom",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "prepare_message_reply"
+    ]
+  },
+  {
+    "capability_id": "message.send",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "dom",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "send_message"
+    ]
+  },
+  {
+    "capability_id": "reminder.schedule",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": false,
+    "sensitive_data_access": true,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "internal",
+    "resource_lock": "timers",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "reminder"
+    ]
+  },
+  {
+    "capability_id": "media.youtube",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": false,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "dom",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "youtube_video"
+    ]
+  },
+  {
+    "capability_id": "media.control",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": false,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "media_control"
+    ]
+  },
+  {
+    "capability_id": "sensors.vision",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "screen_process"
+    ]
+  },
+  {
+    "capability_id": "system.settings",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "admin",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "computer_settings"
+    ]
+  },
+  {
+    "capability_id": "browser.legacy",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "dom",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "browser_control"
+    ]
+  },
+  {
+    "capability_id": "desktop.legacy",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "desktop_control"
+    ]
+  },
+  {
+    "capability_id": "code.generated",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "native",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "code_helper"
+    ]
+  },
+  {
+    "capability_id": "code.developer_agent",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "native",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "dev_agent"
+    ]
+  },
+  {
+    "capability_id": "desktop.input",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "computer_control"
+    ]
+  },
+  {
+    "capability_id": "software.updater",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "admin",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "native",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "game_updater"
+    ]
+  },
+  {
+    "capability_id": "travel.legacy",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "none",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "network",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "flight_finder"
+    ]
+  },
+  {
+    "capability_id": "ui.graphics",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": false,
+    "sensitive_data_access": false,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "graphics_quality"
+    ]
+  },
+  {
+    "capability_id": "ui.control",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": false,
+    "sensitive_data_access": false,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "desktop",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "jarvis_ui_control"
+    ]
+  },
+  {
+    "capability_id": "research.composite",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "network",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "deep_research"
+    ]
+  },
+  {
+    "capability_id": "presentation.composite",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "native",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "create_presentation"
+    ]
+  },
+  {
+    "capability_id": "file.processor_legacy",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "native",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "file_processor"
+    ]
+  },
+  {
+    "capability_id": "system.self_shutdown",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": false,
+    "sensitive_data_access": false,
+    "destructive_level": "recoverable",
+    "privilege_requirement": "user",
+    "reversible": true,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "internal",
+    "resource_lock": "desktop",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "shutdown_jarvis"
+    ]
+  },
+  {
+    "capability_id": "worker.arbitrary_callable",
+    "access": "mutate",
+    "risk": "critical",
+    "external_side_effect": true,
+    "sensitive_data_access": true,
+    "destructive_level": "irreversible",
+    "privilege_requirement": "user",
+    "reversible": false,
+    "verifier_required": true,
+    "confirmation_policy": "forbidden",
+    "execution_surface": "native",
+    "resource_lock": "workspace",
+    "environments": [
+      "cloud",
+      "desktop"
+    ],
+    "disabled_reason": "Legacy composite/ambient action is not admitted; migrate its bounded operations first.",
+    "tools": [
+      "specialized_runner"
+    ]
+  }
+]

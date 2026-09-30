@@ -1,3 +1,5 @@
+
+from core.action_gateway import guarded_entrypoint
 import os
 import re
 import sys
@@ -191,7 +193,8 @@ def _get_steam_window_rect() -> tuple[int, int, int, int] | None:
 def _click_first_profile_by_screenshot() -> bool:
 
     try:
-        import pyautogui
+        from core.desktop_dependency import load_pyautogui
+        pyautogui = load_pyautogui()
         import numpy as np
 
         time.sleep(1.5)
@@ -339,7 +342,8 @@ def _click_button(window, keywords: list[str]) -> bool:
 
 def _handle_install_dialog_pyautogui(game_name: str, best_drive: dict) -> str:
     try:
-        import pyautogui
+        from core.desktop_dependency import load_pyautogui
+        pyautogui = load_pyautogui()
         import pygetwindow as gw
     except ImportError:
         return (f"Install dialog opened for '{game_name}'. "
@@ -925,6 +929,7 @@ def _get_schedule_status() -> str:
         return "No scheduled game update found."
 
 
+@guarded_entrypoint('game_updater')
 def game_updater(parameters: dict, player=None, speak=None) -> str:
     p         = parameters or {}
     action    = p.get("action",    "update").lower().strip()

@@ -1167,6 +1167,7 @@ class JarvisLive:
         cloud_safe: bool = False,
         api_key: str | None = None,
         external_audio: bool = False,
+        owner_runtime=None,
     ):
         # Keep ``ui`` as a compatibility alias for desktop integrations that
         # already inspect JarvisLive.ui. The engine contract is JarvisClient.
@@ -1174,6 +1175,7 @@ class JarvisLive:
         self.ui             = client
         self.cloud_safe     = bool(cloud_safe)
         self.external_audio = bool(external_audio)
+        self.owner_runtime  = owner_runtime
         self._api_key       = api_key.strip() if isinstance(api_key, str) else None
         self.tool_declarations = get_tool_declarations(cloud_safe=self.cloud_safe)
         self.session        = None
@@ -1518,6 +1520,16 @@ class JarvisLive:
             ),
         )
 
+    def _ensure_owner_runtime(self):
+        runtime = getattr(self, "owner_runtime", None)
+        if runtime is None:
+            from core.action_gateway import create_runtime
+            runtime = create_runtime(
+                environment="cloud" if getattr(self, "cloud_safe", False) else "desktop"
+            )
+            self.owner_runtime = runtime
+        return runtime
+
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
@@ -1539,6 +1551,25 @@ class JarvisLive:
                 name=name,
                 response={"result": "Startup sequence active. Try this action again when JARVIS is ready."},
             )
+
+        # All model/live tool proposals cross the central authority boundary
+        # before any legacy/UI adapter can run. Transcript text cannot approve
+        # its own actions; the gateway returns an explicit ActionReceipt.
+        runtime = self._ensure_owner_runtime()
+        receipt = runtime.gateway.run_tool(
+            name,
+            args,
+            route="live",
+            runtime=runtime,
+        )
+        return types.FunctionResponse(
+            id=fc.id,
+            name=name,
+            response={
+                "result": receipt.result.message,
+                "receipt": receipt.to_dict(),
+            },
+        )
 
         from core.qa_mode import guard_tool_call, qa_block_message
 
@@ -1776,17 +1807,8 @@ class JarvisLive:
         )
 
     async def _execute_tool_batch(self, calls):
-        """Run read-only calls concurrently while preserving mutation order."""
-        mutating = {
-            "send_message", "prepare_message_reply", "email_control", "reminder",
-            "computer_settings", "computer_control", "desktop_control", "file_controller",
-            "file_processor", "code_helper", "dev_agent", "game_updater",
-            "create_presentation", "save_memory", "jarvis_ui_control", "graphics_quality",
-        }
-        call_list = list(calls or [])
-        if any(getattr(call, "name", "") in mutating for call in call_list):
-            return [await self._execute_tool(call) for call in call_list]
-        return list(await asyncio.gather(*(self._execute_tool(call) for call in call_list)))
+        """Preserve model proposal order through the central action gateway."""
+        return [await self._execute_tool(call) for call in list(calls or [])]
 
     async def _send_realtime(self):
         while True:

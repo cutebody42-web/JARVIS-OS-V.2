@@ -124,10 +124,11 @@ class PureActionContractTests(unittest.TestCase):
         self.assertFalse(computer_settings._has_explicit_computer_power_target({}, "restart JARVIS", None))
         self.assertTrue(computer_settings._has_explicit_computer_power_target({}, "restart my computer", None))
 
-    def test_weather_failure_is_returned_instead_of_raised(self):
-        with patch.object(weather_report.webbrowser, "open", return_value=False):
+    def test_weather_egress_requires_consent_without_opening_a_browser(self):
+        with patch.object(weather_report.webbrowser, "open") as browser:
             result = weather_report.weather_action({"city": "London"})
-        self.assertIn("couldn't open", result)
+        self.assertIn("require_confirmation", result)
+        browser.assert_not_called()
 
     def test_file_controller_is_confined_to_configured_safe_root(self):
         with tempfile.TemporaryDirectory() as directory:
