@@ -7,7 +7,16 @@ import sys
 import traceback
 from pathlib import Path
 
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError) as exc:
+    # Headless/API/test environments may have the Python package installed
+    # without the native PortAudio library. Keep module import safe; actual
+    # microphone/speaker paths resolve the dependency lazily when invoked.
+    sd = None
+    _SOUNDDEVICE_IMPORT_ERROR = exc
+else:
+    _SOUNDDEVICE_IMPORT_ERROR = None
 from google import genai
 from google.genai import types
 from api import status as jarvis_status
@@ -20,6 +29,17 @@ import importlib
 import time
 
 from core.live_model import pick_live_model
+
+
+def _require_sounddevice():
+    """Return sounddevice only when an audio path is actually requested."""
+    if sd is None:
+        detail = type(_SOUNDDEVICE_IMPORT_ERROR).__name__ if _SOUNDDEVICE_IMPORT_ERROR else "Unavailable"
+        raise RuntimeError(
+            "Audio I/O is unavailable because sounddevice/PortAudio could not "
+            f"be initialized ({detail})."
+        )
+    return sd
 
 
 def _lazy_action(module_name: str, attribute: str):
@@ -176,7 +196,14 @@ def wait_for_startup_claps(
         return True
 
     required = max(1, int(required))
-    stream_factory = stream_factory or sd.InputStream
+    if stream_factory is None:
+        if sd is None:
+            print("[JARVIS] ⚠️ Startup clap microphone unavailable: PortAudio is not installed.")
+            if os.environ.get("JARVIS_REQUIRE_CLAP_GATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+                print("[JARVIS] ⚠️ Continuing without the clap gate; microphone input is unavailable.")
+                return True
+            return False
+        stream_factory = sd.InputStream
     try:
         import numpy as np
     except ImportError:
@@ -238,7 +265,7 @@ def wait_for_startup_claps(
     sample_rates = [SEND_SAMPLE_RATE, 44100, 48000]
     input_device = None
     try:
-        if stream_factory is sd.InputStream:
+        if sd is not None and stream_factory is sd.InputStream:
             try:
                 default_device = sd.default.device
                 try:
@@ -264,7 +291,7 @@ def wait_for_startup_claps(
         last_error = None
         for sample_rate in sample_rates:
             try:
-                if stream_factory is sd.InputStream:
+                if sd is not None and stream_factory is sd.InputStream:
                     # Validate the format before constructing a live AUHAL
                     # stream; macOS can report a device but reject it with
                     # PaErrorCode -9986 during stream startup.
@@ -1785,7 +1812,8 @@ class JarvisLive:
                 )
 
         try:
-            with sd.InputStream(
+            audio = _require_sounddevice()
+            with audio.InputStream(
                 samplerate=SEND_SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
@@ -1900,7 +1928,8 @@ class JarvisLive:
 
         stream = None
         if not self.external_audio:
-            stream = sd.RawOutputStream(
+            audio = _require_sounddevice()
+            stream = audio.RawOutputStream(
                 samplerate=RECEIVE_SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
