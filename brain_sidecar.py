@@ -70,6 +70,7 @@ def main(argv=None) -> int:
         companion_app = create_sync_app(
             host.node,
             brain=host.brain,
+            approvals=host.approvals,
             run_scheduler=True,
         )
         threading.Thread(
