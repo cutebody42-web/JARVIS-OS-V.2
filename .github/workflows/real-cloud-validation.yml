@@ -464,7 +464,12 @@ jobs:
             adb wait-for-device
             adb install -r "$APK"
             adb shell pm path ai.jarvis.app > artifacts/real-cloud/android/package-path.txt
+            adb shell dumpsys package ai.jarvis.app > artifacts/real-cloud/android/package.txt
             cat artifacts/real-cloud/android/package-path.txt
+            if ! grep -q "android.permission.USE_BIOMETRIC" artifacts/real-cloud/android/package.txt; then
+              echo "Installed JARVIS APK is missing Android biometric permission" >&2
+              exit 1
+            fi
             adb shell monkey -p ai.jarvis.app -c android.intent.category.LAUNCHER 1
             sleep 12
             adb shell dumpsys activity activities > artifacts/real-cloud/android/activity.txt
