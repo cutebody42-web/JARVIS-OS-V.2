@@ -18,4 +18,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install google-genai
-      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_ollama_provider tests.test_hardware_profile tests.test_model_runtime tests.test_model_router tests.test_persona_spec
+      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_ollama_provider tests.test_hardware_profile tests.test_model_runtime tests.test_model_router tests.test_persona_spec tests.test_agent_runtime
