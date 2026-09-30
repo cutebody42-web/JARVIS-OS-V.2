@@ -21,6 +21,7 @@ export type BrainStatus = {
     face_enrolled: boolean;
     face_recognized: boolean;
     face_score: number;
+    face_engine: string;
   };
   voice: {
     available: boolean;
@@ -29,6 +30,17 @@ export type BrainStatus = {
     last_error: string | null;
     privacy: string;
     wake_word: boolean;
+  };
+  approvals: {
+    pending: number;
+    pending_exact_actions: number;
+    recent: Array<{
+      approval_id: string;
+      request_id: string;
+      state: string;
+      message: string;
+      action_id: string | null;
+    }>;
   };
   setup: {
     phase: string;
