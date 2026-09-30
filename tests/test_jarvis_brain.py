@@ -5,12 +5,14 @@ import unittest
 
 from core.hardware_profile import GPUMemoryKind, HardwareSnapshot, PowerSource
 from core.jarvis_brain import (
+    BrainIntent,
     BrainLane,
     JARVIS_CONTEXT_NAMESPACE,
     JARVIS_ENGINEERING,
     JARVIS_GENERAL,
     JARVIS_IDENTITY,
     JARVIS_REALTIME,
+    classify_intent,
     classify_lane,
 )
 from core.model_provider import ModelRequest, ModelResponse, ModelTier
@@ -97,6 +99,47 @@ class JarvisIdentityTests(unittest.TestCase):
         self.assertIs(classify_lane("set the volume to 40"), BrainLane.REALTIME)
         self.assertIs(classify_lane("help me plan tomorrow"), BrainLane.GENERAL)
 
+    def test_ambiguous_language_stays_chat_and_explicit_command_routes_action(self):
+        self.assertIs(classify_intent("help me plan tomorrow"), BrainIntent.CHAT)
+        self.assertIs(classify_intent("explain how volume control works"), BrainIntent.CHAT)
+        self.assertIs(classify_intent("what is the time"), BrainIntent.ACTION)
+        self.assertIs(classify_intent("set the volume to 40"), BrainIntent.ACTION)
+
+
+
+class ConversationContinuityTests(unittest.TestCase):
+    def test_respond_uses_direct_model_path_and_preserves_history_across_lanes(self):
+        captured = []
+
+        class Provider:
+            def generate(self, request):
+                captured.append(request)
+                return ModelResponse(
+                    "first" if len(captured) == 1 else "second",
+                    "ollama",
+                    "jarvis-brain-fast",
+                )
+
+        runtime = FakeRuntime()
+        from core.jarvis_brain import JarvisBrain
+        brain = JarvisBrain(
+            profiler=FakeProfiler(hardware()),
+            model_runtime=runtime,
+        )
+
+        # Swap provider factory after construction by replacing routed factories
+        # on the shared current runtime; the test remains fully offline.
+        brain._runtime._ollama_factory = lambda choice: Provider()
+        brain._runtime._gemini_factory = lambda choice: Provider()
+        brain._runtime._rebuild()
+
+        self.assertEqual(brain.respond("help me plan tomorrow"), "first")
+        self.assertEqual(brain.respond("explain this code bug", task=None), "second")
+
+        self.assertEqual(brain.context_namespace, "jarvis")
+        self.assertEqual(brain.identity, "JARVIS")
+        self.assertIn("Owner: help me plan tomorrow", captured[1].prompt)
+        self.assertIn("JARVIS: first", captured[1].prompt)
 
 class LocalFirstRoutingTests(unittest.TestCase):
     def test_cloud_is_skipped_when_owner_disables_it(self):
