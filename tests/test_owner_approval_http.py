@@ -79,6 +79,7 @@ class ApprovalHTTPTests(unittest.TestCase):
                 "approval_id": self.approval.approval_id,
                 "approved": True,
                 "user_verified": True,
+                "biometry_type": "fingerprint",
             },
             message_id="approval-decision:" + decision_id,
         )
@@ -104,6 +105,27 @@ class ApprovalHTTPTests(unittest.TestCase):
                 "approval_id": self.approval.approval_id,
                 "approved": True,
                 "user_verified": False,
+                "biometry_type": "fingerprint",
+            },
+            message_id="approval-decision:" + request_id,
+        )
+        response = self._post_signed("/nexus/approval/v1/decision", decision)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.manager.get(self.approval.approval_id).state, "pending")
+
+
+    def test_non_fingerprint_biometry_is_rejected(self):
+        request_id = uuid4().hex
+        decision = self.phone.authenticator.sign(
+            "approval.decision",
+            "desktop",
+            {
+                "version": 1,
+                "request_id": request_id,
+                "approval_id": self.approval.approval_id,
+                "approved": True,
+                "user_verified": True,
+                "biometry_type": "face",
             },
             message_id="approval-decision:" + request_id,
         )
