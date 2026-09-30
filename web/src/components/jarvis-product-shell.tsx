@@ -253,6 +253,7 @@ export function JarvisProductShell() {
   const [error, setError] = useState("");
   const [pairEndpoint, setPairEndpoint] = useState("");
   const [pairOffer, setPairOffer] = useState<Record<string, unknown> | null>(null);
+  const [pendingPairings, setPendingPairings] = useState<Array<Record<string, unknown>>>([]);
   const logEnd = useRef<HTMLDivElement>(null);
   const visual = useVisualProfile(status?.device.system_pressure);
 
@@ -291,6 +292,25 @@ export function JarvisProductShell() {
       client.status().then(setStatus).catch(() => undefined);
     }, 5000);
     return () => window.clearInterval(timer);
+  }, [client]);
+
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    async function refreshPairings() {
+      try {
+        const result = await client.pendingPairings();
+        if (!cancelled) setPendingPairings(result.pending);
+      } catch {
+        // Pairing status is auxiliary; Brain chat stays available.
+      }
+    }
+    void refreshPairings();
+    const timer = window.setInterval(refreshPairings, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [client]);
 
   async function initializeBrain() {
@@ -332,12 +352,37 @@ export function JarvisProductShell() {
   }
 
   async function createPairOffer() {
-    if (!client || !pairEndpoint.trim()) return;
+    if (!client) return;
     setError("");
     try {
-      setPairOffer(await client.createPairingOffer(pairEndpoint.trim()));
+      setPairOffer(await client.createPairingOffer(pairEndpoint.trim() || undefined));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Pairing offer could not be created.");
+    }
+  }
+
+  async function approvePairing(pairingId: string) {
+    if (!client) return;
+    setError("");
+    try {
+      await client.approvePairing(pairingId);
+      const next = await client.pendingPairings();
+      setPendingPairings(next.pending);
+      setStatus(await client.status());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Phone approval failed.");
+    }
+  }
+
+  async function rejectPairing(pairingId: string) {
+    if (!client) return;
+    setError("");
+    try {
+      await client.cancelPairing(pairingId);
+      const next = await client.pendingPairings();
+      setPendingPairings(next.pending);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Pairing cancellation failed.");
     }
   }
 
@@ -431,16 +476,50 @@ export function JarvisProductShell() {
 
           <section className="device-link-card">
             <div className="capability-heading"><span>Device Link</span><b>{status?.paired_devices.length ?? 0}</b></div>
-            <p>Pair your phone to this same JARVIS Brain over an authenticated device link.</p>
+            <p>Pair your phone to this same JARVIS Brain. The secure gateway is detected automatically when Tailscale is available.</p>
             <Input
               value={pairEndpoint}
               onChange={(event) => setPairEndpoint(event.target.value)}
-              placeholder="Tailscale/MagicDNS endpoint"
+              placeholder="Advanced: override MagicDNS endpoint"
             />
-            <Button variant="secondary" onClick={createPairOffer} disabled={!pairEndpoint.trim()}>
-              <Link2 size={15} /> Create pairing code
+            <Button variant="secondary" onClick={createPairOffer} disabled={!client}>
+              <Link2 size={15} /> Create pairing QR
             </Button>
-            {pairOffer && <pre className="pair-preview">{JSON.stringify(pairOffer, null, 2)}</pre>}
+            {pairOffer && (
+              <div className="pair-qr-card">
+                {typeof pairOffer.qr_svg_data_url === "string" && (
+                  <img
+                    src={pairOffer.qr_svg_data_url}
+                    alt="Scan to pair the JARVIS mobile companion"
+                    className="pair-qr-image"
+                  />
+                )}
+                <div>
+                  <strong>Scan with JARVIS mobile</strong>
+                  <p>Expires {typeof pairOffer.expires_at === "string" ? new Date(pairOffer.expires_at).toLocaleTimeString() : "soon"}.</p>
+                </div>
+              </div>
+            )}
+            {pendingPairings.length > 0 && (
+              <div className="pair-pending-list">
+                <span className="section-index">OWNER APPROVAL REQUIRED</span>
+                {pendingPairings.map((item) => {
+                  const pairingId = String(item.pairing_id || "");
+                  return (
+                    <div className="pair-pending-item" key={pairingId}>
+                      <div>
+                        <strong>{String(item.candidate_device || "Mobile JARVIS")}</strong>
+                        <small>{String(item.candidate_role || "companion")}</small>
+                      </div>
+                      <div className="pair-actions">
+                        <Button size="sm" onClick={() => void approvePairing(pairingId)}>Approve</Button>
+                        <Button size="sm" variant="secondary" onClick={() => void rejectPairing(pairingId)}>Reject</Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
         </aside>
       </div>
