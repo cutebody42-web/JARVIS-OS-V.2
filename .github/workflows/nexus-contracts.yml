@@ -3,7 +3,7 @@ name: NEXUS architecture contracts
 on:
   pull_request:
   push:
-    branches: [nexus/phase-1-provider-action-contracts]
+    branches: ["nexus/**"]
 
 permissions:
   contents: read
@@ -18,4 +18,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install google-genai
-      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route
+      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_nexus_event_store
