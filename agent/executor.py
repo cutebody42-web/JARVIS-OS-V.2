@@ -14,9 +14,12 @@ from core.model_provider import ModelProvider
 class AgentExecutor:
     MAX_REPLAN_ATTEMPTS = 2
 
-    def __init__(self, awareness=None, *, provider: ModelProvider | None = None):
+    def __init__(self, awareness=None, *, provider: ModelProvider | None = None,
+                 allowed_tools=None, context: str = ""):
         self.awareness = awareness
         self.provider = provider
+        self.allowed_tools = None if allowed_tools is None else frozenset(allowed_tools)
+        self.context = str(context or "")
         self.last_step_results: dict = {}
         self.last_action_receipts: list[ActionReceipt] = []
         self.last_status = ActionStatus.UNVERIFIED
@@ -53,7 +56,9 @@ class AgentExecutor:
             return "Task cancelled before planning."
         local = reflex_plan(goal)
         route = "reflex" if local is not None else "model"
-        plan = local if local is not None else create_plan(goal, provider=self.provider)
+        plan = local if local is not None else create_plan(
+            goal, context=self.context, provider=self.provider
+        )
         completed = []
         for recovery_attempt in range(self.MAX_REPLAN_ATTEMPTS + 1):
             if cancel_flag is not None and cancel_flag.is_set():
@@ -65,8 +70,15 @@ class AgentExecutor:
             failed_step = None
             for step in plan["steps"]:
                 self._awareness("set_active_tool", step["tool"], step.get("description", ""))
-                receipt = run_action(step["tool"], step["parameters"], task_id=task_id,
-                                     step_id=str(step["step"]), route=route, cancel_flag=cancel_flag)
+                receipt = run_action(
+                    step["tool"],
+                    step["parameters"],
+                    task_id=task_id,
+                    step_id=str(step["step"]),
+                    route=route,
+                    cancel_flag=cancel_flag,
+                    allowed_tools=self.allowed_tools,
+                )
                 self.last_action_receipts.append(receipt)
                 self.last_status = receipt.result.status
                 self.last_step_results[len(self.last_action_receipts)] = receipt.result.message
