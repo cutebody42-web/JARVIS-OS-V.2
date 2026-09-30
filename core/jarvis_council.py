@@ -75,17 +75,25 @@ class JarvisCouncil:
             return []
 
         if task is TaskKind.CODING:
-            if snapshot.available_ram_gb >= 7.0 and snapshot.total_ram_gb >= 12:
+            if snapshot.available_ram_gb >= 11.0 and snapshot.total_ram_gb >= 16:
                 return ["jarvis-brain-engineering", "jarvis-brain-fast"]
+            if snapshot.available_ram_gb >= 7.0 and snapshot.total_ram_gb >= 12:
+                return ["jarvis-brain-engineering"]
+            if snapshot.available_ram_gb >= 5.0:
+                return ["jarvis-brain-fast"]
             return ["jarvis-brain-lite"]
 
         if task is TaskKind.REALTIME:
-            if snapshot.available_ram_gb >= 5.0:
+            if snapshot.available_ram_gb >= 8.0:
                 return ["jarvis-brain-fast", "jarvis-brain-lite"]
+            if snapshot.available_ram_gb >= 5.0:
+                return ["jarvis-brain-fast"]
             return ["jarvis-brain-lite"]
 
-        if snapshot.available_ram_gb >= 5.0:
+        if snapshot.available_ram_gb >= 8.0:
             return ["jarvis-brain-fast", "jarvis-brain-lite"]
+        if snapshot.available_ram_gb >= 5.0:
+            return ["jarvis-brain-fast"]
         return ["jarvis-brain-lite"]
 
     def _provider(self, model: str, *, keep_alive: str | int | None = "5m") -> OllamaProvider:
