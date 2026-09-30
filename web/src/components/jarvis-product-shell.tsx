@@ -12,6 +12,7 @@ import {
   currentPairingDeepLink,
   listenForPairingDeepLinks,
   mobileBrainMessage,
+  mobileCompanionStatus,
   mobileDecideApproval,
   mobilePendingApprovals,
   pairMobileCompanion,
@@ -84,6 +85,18 @@ function MobileShell() {
   const mounted = useRef(true);
 
   useEffect(() => () => { mounted.current = false; }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    mobileCompanionStatus()
+      .then((status) => {
+        if (cancelled || !status.paired) return;
+        setIdentity(status.identity);
+        setPairState("paired");
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   const connectOffer = useCallback(async (offer: Record<string, unknown>) => {
     setScanned(offer);
