@@ -32,6 +32,7 @@ from core.jarvis_memory import JarvisMemory
 from core.model_router import TaskKind
 from core.model_runtime import ModelRuntime, ModelRuntimeError
 from core.owner_face import FaceIdentityError, OwnerFaceRecognizer
+from core.nexus.owner_approval import OwnerApprovalManager
 from core.nexus.sync_node import NexusSyncNode
 from core.ollama_bootstrap import (
     OllamaBootstrapError,
@@ -69,6 +70,12 @@ class ModelSelectionRequest(BaseModel):
 
 class FaceCameraRequest(BaseModel):
     camera_index: int = Field(default=0, ge=0, le=8)
+
+
+class ApprovalCreateRequest(BaseModel):
+    summary: str = Field(min_length=1, max_length=500)
+    action_digest: str = Field(min_length=64, max_length=64)
+    ttl_seconds: int = Field(default=180, ge=15, le=600)
 
 
 class PairOfferRequest(BaseModel):
@@ -116,6 +123,7 @@ class LocalBrainHost:
         device_id = self.snapshot.device_id if self.snapshot is not None else "jarvis-desktop"
 
         self.node = NexusSyncNode(self.state_dir / "nexus", device_id)
+        self.approvals = OwnerApprovalManager(self.node.store)
         self.memory = JarvisMemory(self.node.store, self.node.applier)
         self.memory.recover()
 
@@ -282,6 +290,9 @@ class LocalBrainHost:
                 "face_enrolled": self.owner_face.enrolled,
                 "face_recognized": self.owner_face.recognized,
                 "face_score": round(self.owner_face.last_score, 4),
+            },
+            "approvals": {
+                "pending": len(self.approvals.pending()),
             },
             "setup": {
                 "phase": setup.phase,
@@ -466,6 +477,39 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         except OllamaBootstrapError:
             raise HTTPException(status_code=503, detail="Local Brain setup failed") from None
+
+    @app.post("/v1/approval/request", dependencies=[Depends(require_ui)])
+    def create_owner_approval(request: ApprovalCreateRequest) -> dict[str, Any]:
+        try:
+            approval = host.approvals.create(
+                request.summary,
+                request.action_digest,
+                ttl_seconds=request.ttl_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {
+            "approval_id": approval.approval_id,
+            "summary": approval.summary,
+            "action_digest": approval.action_digest,
+            "expires_at": approval.expires_at,
+            "state": approval.state,
+        }
+
+    @app.get("/v1/approval/pending", dependencies=[Depends(require_ui)])
+    def pending_owner_approvals() -> dict[str, Any]:
+        return {
+            "pending": [
+                {
+                    "approval_id": item.approval_id,
+                    "summary": item.summary,
+                    "action_digest": item.action_digest,
+                    "expires_at": item.expires_at,
+                    "state": item.state,
+                }
+                for item in host.approvals.pending()
+            ]
+        }
 
     @app.post("/v1/identity/face/enroll", dependencies=[Depends(require_ui)])
     def enroll_owner_face(request: FaceCameraRequest) -> dict[str, Any]:
