@@ -6,6 +6,9 @@ The owner does not need a separate Python installation.
 """
 
 from PyInstaller.utils.hooks import collect_submodules
+import os
+
+PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 
 hiddenimports = []
 for package in (
@@ -24,19 +27,19 @@ for package in (
     except Exception:
         pass
 
-datas = [("models", "models")]
+datas = [(os.path.join(PROJECT_ROOT, "models"), "models")]
 
-import os
 for source, target in (
     ("assets", "assets"),
     ("core/prompt.txt", "core"),
 ):
-    if os.path.exists(source):
-        datas.append((source, target))
+    absolute = os.path.join(PROJECT_ROOT, source)
+    if os.path.exists(absolute):
+        datas.append((absolute, target))
 
 a = Analysis(
-    ["desktop_app.py"],
-    pathex=["."],
+    [os.path.join(PROJECT_ROOT, "desktop_app.py")],
+    pathex=[PROJECT_ROOT],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
