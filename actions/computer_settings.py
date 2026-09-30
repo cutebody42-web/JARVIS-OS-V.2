@@ -8,13 +8,31 @@ import subprocess
 import platform
 from pathlib import Path
 
+class _UnavailablePyAutoGUI:
+    def __init__(self, error):
+        self._error = error
+
+    def __getattr__(self, name):
+        detail = type(self._error).__name__ if self._error else "Unavailable"
+        raise RuntimeError(
+            "Desktop automation is unavailable because pyautogui could not "
+            f"initialize ({detail})."
+        )
+
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except ImportError:
+    _PYAUTOGUI_IMPORT_ERROR = None
+except Exception as exc:
+    # pyautogui may be installed but unusable in a headless process (for
+    # example Linux without DISPLAY). Importing this action module must remain
+    # safe for hosted/API/tests; actual desktop actions fail only when invoked.
     _PYAUTOGUI = False
+    _PYAUTOGUI_IMPORT_ERROR = exc
+    pyautogui = _UnavailablePyAutoGUI(exc)
 
 try:
     import pyperclip
@@ -667,7 +685,11 @@ def computer_settings(
     session_memory=None,
 ) -> str:
     if not _PYAUTOGUI:
-        return "pyautogui is not installed. Run: pip install pyautogui"
+        detail = type(_PYAUTOGUI_IMPORT_ERROR).__name__ if _PYAUTOGUI_IMPORT_ERROR else "Unavailable"
+        return (
+            "Desktop automation is unavailable in this runtime "
+            f"({detail}). Run it in an interactive desktop session."
+        )
 
     params      = parameters or {}
     raw_action  = params.get("action", "").strip()
