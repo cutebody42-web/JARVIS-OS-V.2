@@ -676,7 +676,7 @@ export function JarvisProductShell() {
                   status?.voice.available
                     ? status.voice.state === "listening"
                       ? "Stop listening"
-                      : "Push to talk — processed locally by Windows speech"
+                      : "Push to talk — processed locally on this device"
                     : "Local voice is unavailable on this device"
                 }
                 onClick={() => void toggleVoice()}
