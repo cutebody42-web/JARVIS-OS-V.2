@@ -12,9 +12,12 @@ import {
   currentPairingDeepLink,
   listenForPairingDeepLinks,
   mobileBrainMessage,
+  mobileDecideApproval,
+  mobilePendingApprovals,
   pairMobileCompanion,
   platformMode,
   type MobileIdentity,
+  type PendingApproval,
   type PlatformMode,
 } from "@/lib/jarvis-runtime";
 
@@ -74,6 +77,7 @@ function MobileShell() {
   const [scanned, setScanned] = useState<Record<string, unknown> | null>(null);
   const [pairState, setPairState] = useState("unpaired");
   const [identity, setIdentity] = useState<MobileIdentity | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -156,6 +160,40 @@ function MobileShell() {
     }
   }
 
+  useEffect(() => {
+    if (!identity) return;
+    let cancelled = false;
+    async function refreshApprovals() {
+      try {
+        const pending = await mobilePendingApprovals();
+        if (!cancelled) setPendingApprovals(pending);
+      } catch {
+        // The secure desktop link may be temporarily unavailable.
+      }
+    }
+    void refreshApprovals();
+    const timer = window.setInterval(refreshApprovals, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [identity]);
+
+  async function decideApproval(approvalId: string, approved: boolean) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await mobileDecideApproval(approvalId, approved);
+      setPendingApprovals(await mobilePendingApprovals());
+      await window.__TAURI__?.haptics?.vibrate({ duration: approved ? 120 : 60 }).catch(() => undefined);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "JARVIS biometric approval failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submitMobile(event: FormEvent) {
     event.preventDefault();
     const content = draft.trim();
@@ -213,7 +251,37 @@ function MobileShell() {
           </>
         ) : (
           <>
-            <p>Authenticated as {identity.device_id}. Messages are signed locally and answered by your desktop JARVIS Brain.</p>
+            <p>Authenticated as {identity.device_id}. Messages and approvals are signed locally with the companion key protected by Android Keystore.</p>
+            {pendingApprovals.length > 0 && (
+              <section className="pair-pending-list">
+                <span className="section-index">BIOMETRIC APPROVAL REQUIRED</span>
+                {pendingApprovals.map((approval) => (
+                  <div className="pair-pending-item" key={approval.approval_id}>
+                    <div>
+                      <strong>{approval.summary}</strong>
+                      <small>Expires {new Date(approval.expires_at).toLocaleTimeString()}</small>
+                    </div>
+                    <div className="pair-actions">
+                      <Button
+                        size="sm"
+                        onClick={() => void decideApproval(approval.approval_id, true)}
+                        disabled={busy}
+                      >
+                        Approve with biometric
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => void decideApproval(approval.approval_id, false)}
+                        disabled={busy}
+                      >
+                        Reject
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </section>
+            )}
             <div className="message-stream mobile-message-stream">
               {messages.length === 0 ? (
                 <div className="empty-log"><span>Secure link established.</span><p>Your continuous JARVIS memory is available through the desktop Brain.</p></div>
