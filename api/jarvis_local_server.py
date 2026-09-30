@@ -100,7 +100,7 @@ class LocalBrainHost:
         self._setup_guard = threading.Lock()
         self.setup = SetupState()
 
-        self.profiler = HardwareProfiler()
+        self.profiler = HardwareProfiler(ollama_base_url=self.ollama_base_url)
         self.snapshot = self._capture_snapshot()
         device_id = self.snapshot.device_id if self.snapshot is not None else "jarvis-desktop"
 
@@ -113,7 +113,7 @@ class LocalBrainHost:
             workspace_root=self.state_dir / "workspace",
             environment="desktop",
         )
-        self.model_runtime = ModelRuntime()
+        self.model_runtime = ModelRuntime(ollama_base_url=self.ollama_base_url)
         self.repair_journal = RepairJournal(self.state_dir / "repair.db")
         self.self_heal = SelfHealController(journal=self.repair_journal)
         self.self_heal.register_runtime_healer(
