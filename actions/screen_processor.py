@@ -17,7 +17,22 @@ from typing import Optional
 from memory.config_manager import get_gemini_key
 
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError) as exc:
+    sd = None
+    _SOUNDDEVICE_IMPORT_ERROR = exc
+else:
+    _SOUNDDEVICE_IMPORT_ERROR = None
+
+def _require_sounddevice():
+    if sd is None:
+        detail = type(_SOUNDDEVICE_IMPORT_ERROR).__name__ if _SOUNDDEVICE_IMPORT_ERROR else "Unavailable"
+        raise RuntimeError(
+            "Vision audio output is unavailable because sounddevice/PortAudio "
+            f"could not initialize ({detail})."
+        )
+    return sd
 
 def _get_voice_name() -> str:
     """Read voice name dynamically so it picks up runtime changes."""
@@ -435,7 +450,8 @@ class _VisionSession:
                 raise
 
     async def _play_loop(self) -> None:
-        stream = sd.RawOutputStream(
+        audio = _require_sounddevice()
+        stream = audio.RawOutputStream(
             samplerate=_RECEIVE_SAMPLE_RATE,
             channels=_CHANNELS,
             dtype="int16",
