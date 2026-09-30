@@ -81,6 +81,34 @@ class AgentRuntime:
         self._active_persona = persona.name
         return persona
 
+    def build_executor(
+        self,
+        *,
+        persona_name: str | None = None,
+        task: TaskKind | None = None,
+        owner_runtime=None,
+    ) -> AgentExecutor:
+        """Build an isolated executor for queue/background use."""
+        persona = (
+            self._personas.get(persona_name)
+            if persona_name is not None
+            else self.active_persona
+        )
+        resolved_task = persona.resolve_task(task)
+        provider = self._provider_factory(
+            persona=persona,
+            task=resolved_task,
+            hardware_profiler=self._hardware,
+            model_runtime=self._model_runtime,
+            router=self._router,
+        )
+        return AgentExecutor(
+            awareness=self._awareness,
+            provider=provider,
+            persona=persona,
+            owner_runtime=owner_runtime,
+        )
+
     def execute(
         self,
         goal: str,
@@ -96,17 +124,9 @@ class AgentRuntime:
             else self.active_persona
         )
         resolved_task = persona.resolve_task(task)
-        provider = self._provider_factory(
-            persona=persona,
+        executor = self.build_executor(
+            persona_name=persona.name,
             task=resolved_task,
-            hardware_profiler=self._hardware,
-            model_runtime=self._model_runtime,
-            router=self._router,
-        )
-        executor = AgentExecutor(
-            awareness=self._awareness,
-            provider=provider,
-            persona=persona,
         )
         context = self._contexts.render(persona.context_namespace)
         result = executor.execute(
