@@ -4,6 +4,7 @@ mod mobile_identity;
 use brain::{ensure_brain_sidecar, platform_mode, BrainState};
 use mobile_identity::{
     mobile_accept_pairing_approval,
+    mobile_companion_status,
     mobile_identity,
     mobile_prepare_pairing,
     mobile_sign_approval_decision,
@@ -55,6 +56,7 @@ pub fn run() {
             platform_mode,
             ensure_brain_sidecar,
             mobile_identity,
+            mobile_companion_status,
             mobile_prepare_pairing,
             mobile_accept_pairing_approval,
             mobile_sign_approval_list,
