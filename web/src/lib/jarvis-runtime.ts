@@ -56,6 +56,10 @@ export type BrainStatus = {
     power_source: string;
     battery_pct: number | null;
   };
+  companion: {
+    available: boolean;
+    endpoint: string | null;
+  };
   paired_devices: Array<{ peer_id: string; endpoint: string }>;
 };
 
