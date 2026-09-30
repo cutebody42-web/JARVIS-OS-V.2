@@ -1,88 +1,166 @@
-"""Opt-in local text provider. No downloads, tools, proxies or cloud fallback."""
-import http.client
-import json
+"""Ollama adapter for the neutral text-generation contract.
+
+The adapter is intentionally text-only at the ModelProvider boundary today.
+Tool schemas are not accepted until ModelRequest grows a provider-neutral tools
+field; action dispatch remains owned by the agent/action kernel.
+
+Streaming is exposed as an optional adapter method for future UI/runtime use,
+while generate() preserves the synchronous ModelProvider contract.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
 import os
-import re
-import threading
-from urllib.parse import urlsplit
+from typing import Iterator
+from urllib.parse import urlparse, urlunparse
 
-from core.model_provider import ModelRequest, ModelResponse
+from core.model_provider import ModelRequest, ModelResponse, ModelTier
 
 
-class LocalProviderError(RuntimeError):
-    pass
+class OllamaProviderError(RuntimeError):
+    """Safe, user-presentable Ollama adapter failure."""
+
+
+@dataclass(frozen=True)
+class OllamaEndpoint:
+    base_url: str
+
+    def __post_init__(self) -> None:
+        raw = self.base_url.strip()
+        if not raw:
+            raise ValueError("Ollama base_url cannot be empty.")
+        if "://" not in raw:
+            raw = f"http://{raw}"
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Ollama base_url must be an http(s) host.")
+        host = parsed.hostname
+        if host in {"0.0.0.0", "::"}:
+            replacement = "127.0.0.1" if host == "0.0.0.0" else "::1"
+            port = f":{parsed.port}" if parsed.port else ""
+            netloc = f"[{replacement}]{port}" if ":" in replacement else f"{replacement}{port}"
+            parsed = parsed._replace(netloc=netloc)
+        object.__setattr__(self, "base_url", urlunparse(parsed).rstrip("/"))
+
+    @property
+    def chat_url(self) -> str:
+        return f"{self.base_url}/api/chat"
 
 
 class OllamaProvider:
-    MAX_REQUEST_BYTES = 65536
-    MAX_RESPONSE_BYTES = 262144
+    """Provider-neutral Ollama chat adapter.
 
-    def __init__(self, model: str, *, base_url="http://127.0.0.1:11434", timeout=60):
-        url = urlsplit(base_url)
-        if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "::1"}
-                or url.username is not None or url.password is not None
-                or url.path not in {"", "/"} or url.query or url.fragment):
-            raise ValueError("Local provider requires a literal loopback HTTP origin.")
-        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", model):
-            raise ValueError("An explicitly configured model identifier is required.")
-        if isinstance(timeout, bool) or not 0 < timeout <= 60:
-            raise ValueError("Timeout must be in (0, 60] seconds.")
-        self.model = model
-        self._host, self._port = url.hostname, url.port or 11434
-        self._timeout = timeout
-        self._connection = None
-        self._lock = threading.Lock()
+    The model mapping is tier-based to match ModelRequest today. Persona/task
+    routing belongs in a later model_router layer rather than this adapter.
+    """
 
-    @classmethod
-    def from_env(cls):
-        return cls(os.environ.get("NEXUS_OLLAMA_MODEL", ""),
-                   base_url=os.environ.get("NEXUS_OLLAMA_URL", "http://127.0.0.1:11434"))
+    def __init__(
+        self,
+        *,
+        fast_model: str = "qwen3.5:4b",
+        standard_model: str = "qwen2.5-coder:7b",
+        base_url: str | None = None,
+        keep_alive: str | int | None = "5m",
+        timeout_seconds: float = 120.0,
+    ):
+        if not fast_model or not standard_model:
+            raise ValueError("Ollama model names must be non-empty.")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive.")
 
-    def close(self):
-        with self._lock:
-            self._disconnect()
+        resolved_base = base_url or os.getenv("OLLAMA_HOST") or "http://127.0.0.1:11434"
+        self._endpoint = OllamaEndpoint(resolved_base)
+        self._models = {
+            ModelTier.FAST: fast_model,
+            ModelTier.STANDARD: standard_model,
+        }
+        self._keep_alive = keep_alive
+        self._timeout = timeout_seconds
 
-    def _disconnect(self):
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
+    def _payload(self, request: ModelRequest, *, stream: bool) -> dict:
+        if not isinstance(request, ModelRequest):
+            raise TypeError("request must be a ModelRequest.")
 
-    def generate(self, request: ModelRequest) -> ModelResponse:
-        if (not isinstance(request, ModelRequest) or not isinstance(request.prompt, str)
-                or not isinstance(request.system_instruction, str)):
-            raise TypeError("Expected a text ModelRequest.")
-        payload = {"model": self.model, "messages": [
-            {"role": "system", "content": request.system_instruction},
-            {"role": "user", "content": request.prompt}], "stream": False,
-            "keep_alive": "5m", "options": {"num_ctx": 4096, "num_predict": 512}}
+        messages: list[dict[str, str]] = []
+        if request.system_instruction.strip():
+            messages.append({"role": "system", "content": request.system_instruction})
+        messages.append({"role": "user", "content": request.prompt})
+
+        payload: dict = {
+            "model": self._models[request.tier],
+            "messages": messages,
+            "stream": stream,
+        }
         if request.json_output:
             payload["format"] = "json"
-        body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        if len(body) > self.MAX_REQUEST_BYTES:
-            raise ValueError("Model request exceeds the byte budget.")
-        with self._lock:
-            try:
-                if self._connection is None:
-                    self._connection = http.client.HTTPConnection(self._host, self._port, timeout=self._timeout)
-                self._connection.request("POST", "/api/chat", body,
-                                         {"Content-Type": "application/json", "Accept": "application/json"})
-                response = self._connection.getresponse()
-                if response.status != 200:
-                    raise LocalProviderError("Local model endpoint rejected the request.")
-                data = response.read(self.MAX_RESPONSE_BYTES + 1)
-                if len(data) > self.MAX_RESPONSE_BYTES:
-                    raise LocalProviderError("Local model response exceeds the byte budget.")
-                value = json.loads(data)
-                if not isinstance(value, dict) or value.get("done") is not True:
-                    raise ValueError("Incomplete response")
-                message = value.get("message")
-                if (not isinstance(message, dict) or message.get("role") != "assistant"
-                        or not isinstance(message.get("content"), str) or message.get("tool_calls")):
-                    raise ValueError("Invalid text response")
-                return ModelResponse(message["content"], "ollama", self.model)
-            except Exception as exc:
-                self._disconnect()
-                # Provider payloads can contain private text: never echo errors.
-                if isinstance(exc, LocalProviderError):
-                    raise
-                raise LocalProviderError("Local model request failed; no fallback was attempted.") from None
+        if self._keep_alive is not None:
+            payload["keep_alive"] = self._keep_alive
+        return payload
+
+    @staticmethod
+    def _safe_request_error(exc: Exception) -> OllamaProviderError:
+        name = type(exc).__name__
+        if name in {"ConnectTimeout", "ReadTimeout", "Timeout"}:
+            return OllamaProviderError("Ollama did not respond before the request timeout.")
+        if name in {"ConnectionError"}:
+            return OllamaProviderError("Ollama is not reachable on the configured local endpoint.")
+        return OllamaProviderError("Ollama request failed.")
+
+    def generate(self, request: ModelRequest) -> ModelResponse:
+        """Return one complete response through the existing ModelProvider contract."""
+        import requests
+
+        payload = self._payload(request, stream=False)
+        try:
+            response = requests.post(
+                self._endpoint.chat_url,
+                json=payload,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except requests.RequestException as exc:
+            raise self._safe_request_error(exc) from None
+        except ValueError:
+            raise OllamaProviderError("Ollama returned an invalid JSON response.") from None
+
+        message = body.get("message") if isinstance(body, dict) else None
+        text = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            raise OllamaProviderError("Ollama returned no text.")
+
+        model = body.get("model") if isinstance(body, dict) else None
+        if not isinstance(model, str) or not model.strip():
+            model = payload["model"]
+        return ModelResponse(text.strip(), "ollama", model)
+
+    def stream(self, request: ModelRequest) -> Iterator[str]:
+        """Yield text chunks without changing the synchronous ModelProvider protocol."""
+        import json
+        import requests
+
+        payload = self._payload(request, stream=True)
+        try:
+            with requests.post(
+                self._endpoint.chat_url,
+                json=payload,
+                timeout=self._timeout,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                for raw_line in response.iter_lines(decode_unicode=True):
+                    if not raw_line:
+                        continue
+                    try:
+                        body = json.loads(raw_line)
+                    except ValueError:
+                        raise OllamaProviderError(
+                            "Ollama returned an invalid streaming JSON response."
+                        ) from None
+                    message = body.get("message") if isinstance(body, dict) else None
+                    chunk = message.get("content") if isinstance(message, dict) else None
+                    if isinstance(chunk, str) and chunk:
+                        yield chunk
+        except requests.RequestException as exc:
+            raise self._safe_request_error(exc) from None
