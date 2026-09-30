@@ -669,15 +669,18 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
 
     @app.post("/v1/pair/offer", dependencies=[Depends(require_ui)])
     def pair_offer(request: PairOfferRequest) -> dict[str, Any]:
-        endpoint = request.endpoint or host.companion_endpoint
-        if endpoint is None:
+        # A custom advertised hostname is only valid when the companion server
+        # is already bound to a real non-loopback interface. Never create a
+        # dead QR that points at an endpoint while no signed gateway is running.
+        if host.companion_endpoint is None:
             raise HTTPException(
                 status_code=409,
                 detail=(
                     "Remote companion gateway is unavailable. "
-                    "Connect Tailscale or configure JARVIS_COMPANION_BIND."
+                    "Connect Tailscale or configure JARVIS_COMPANION_BIND before starting JARVIS."
                 ),
             )
+        endpoint = request.endpoint or host.companion_endpoint
         offer = host.node.pairing.create_offer(
             endpoint,
             ttl_seconds=request.ttl_seconds,
