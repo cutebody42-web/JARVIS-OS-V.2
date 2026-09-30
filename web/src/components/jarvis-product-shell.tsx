@@ -9,6 +9,8 @@ import {
   BrainStatus,
   LocalBrainClient,
   bootstrapDesktopBrain,
+  currentPairingDeepLink,
+  listenForPairingDeepLinks,
   platformMode,
   type PlatformMode,
 } from "@/lib/jarvis-runtime";
@@ -67,6 +69,28 @@ function useVisualProfile(systemPressure: number | null | undefined): VisualProf
 function MobileShell() {
   const [error, setError] = useState("");
   const [scanned, setScanned] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    currentPairingDeepLink()
+      .then((offer) => {
+        if (!cancelled && offer) setScanned(offer);
+      })
+      .catch(() => undefined);
+
+    listenForPairingDeepLinks((offer) => {
+      if (!cancelled) setScanned(offer);
+    })
+      .then((stop) => { unlisten = stop; })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   async function scanPairingCode() {
     setError("");
