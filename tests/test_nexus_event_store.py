@@ -88,40 +88,42 @@ class EventStoreTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_local_event_is_durable_exported_and_counter_survives_restart(self):
+    def test_local_event_is_durable_pending_and_counter_survives_restart(self):
         store = EventStore(self.root, "hp")
         first = store.create_event(
             "memory.add", "pref:theme", {"value": "dark"},
             entity_type="user.preference",
         )
         self.assertTrue(store.seen(first.id))
-        self.assertEqual(store.pending_count(), 0)
-        files = list((self.root / "outbox").glob("*.jsonl"))
-        self.assertEqual(len(files), 1)
-        restored = SyncEvent.from_json_line(files[0].read_text("utf-8"))
-        self.assertEqual(restored.id, first.id)
-        self.assertEqual(restored.entity_type, "user.preference")
+        self.assertEqual(store.pending_local_count(), 1)
+        self.assertEqual(store.pending_count(), 1)
+        self.assertEqual(list((self.root / "outbox").glob("*.jsonl")), [])
 
         restarted = EventStore(self.root, "hp")
+        self.assertEqual(restarted.pending_local()[0].id, first.id)
         second = restarted.create_event(
             "memory.add", "pref:lang", {"value": "ar"},
             entity_type="user.preference",
         )
         self.assertEqual(second.vclock["hp"], first.vclock["hp"] + 1)
 
-    def test_interrupted_export_is_recoverable_without_event_loss(self):
+    def test_interrupted_export_is_recoverable_after_local_materialization(self):
         store = EventStore(self.root, "hp")
+        event = store.create_event(
+            "memory.add", "fact:1", {"value": 1},
+            entity_type="memory.fact",
+            export=False,
+        )
+        with store._connect() as db:
+            db.execute(
+                "UPDATE nexus_sync_events SET apply_state = 'applied' WHERE event_id = ?",
+                (event.id,),
+            )
+
         with patch.object(store, "_write_event_file", side_effect=OSError("disk interruption")):
             with self.assertRaises(OSError):
-                store.create_event(
-                    "memory.add", "fact:1", {"value": 1},
-                    entity_type="memory.fact",
-                )
-        with store._connect() as db:
-            event_id = db.execute(
-                "SELECT event_id FROM nexus_sync_events WHERE exported = 0"
-            ).fetchone()["event_id"]
-        self.assertTrue(store.seen(event_id))
+                store.flush_pending()
+        self.assertTrue(store.seen(event.id))
         self.assertEqual(store.pending_count(), 1)
 
         restarted = EventStore(self.root, "hp")
@@ -177,12 +179,19 @@ class EventStoreTests(unittest.TestCase):
         )
         self.assertFalse(store.accept_remote(local))
 
-    def test_tombstone_survives_spool_round_trip(self):
+    def test_tombstone_survives_spool_round_trip_after_apply(self):
         store = EventStore(self.root, "hp")
         event = store.create_event(
             "memory.delete", "memory:old", {},
             entity_type="memory.fact", tombstone=True,
+            export=False,
         )
+        with store._connect() as db:
+            db.execute(
+                "UPDATE nexus_sync_events SET apply_state = 'applied' WHERE event_id = ?",
+                (event.id,),
+            )
+        self.assertEqual(store.flush_pending(), 1)
         recovered = SyncEvent.from_json_line(
             next((self.root / "outbox").glob("*.jsonl")).read_text("utf-8")
         )

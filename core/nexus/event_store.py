@@ -373,7 +373,7 @@ class EventStore:
                     event_id, device_id, entity_id, entity_type, event_type, vclock_json,
                     payload_json, timestamp, tombstone, direction, exported,
                     apply_state, schema_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'outbound', 0, 'applied', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'outbound', 0, 'pending', ?)
                 """,
                 (
                     event.id,
@@ -432,7 +432,7 @@ class EventStore:
             raise ValueError("limit must be a positive integer")
         query = """
             SELECT * FROM nexus_sync_events
-            WHERE direction = 'outbound' AND exported = 0
+            WHERE direction = 'outbound' AND exported = 0 AND apply_state = 'applied'
             ORDER BY rowid
         """
         params: tuple[Any, ...] = ()
@@ -550,6 +550,48 @@ class EventStore:
                 """
             ).fetchone()
         return int(row["count"])
+
+    def pending_local(self, limit: int | None = None) -> tuple[SyncEvent, ...]:
+        """Return durable local outbound events awaiting materialization."""
+        if limit is not None and (isinstance(limit, bool) or limit <= 0):
+            raise ValueError("limit must be a positive integer")
+        query = """
+            SELECT * FROM nexus_sync_events
+            WHERE direction = 'outbound' AND apply_state = 'pending'
+            ORDER BY rowid
+        """
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        with self._connect() as db:
+            return tuple(self._row_to_event(row) for row in db.execute(query, params))
+
+    def pending_local_count(self) -> int:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT COUNT(*) AS count FROM nexus_sync_events
+                WHERE direction = 'outbound' AND apply_state = 'pending'
+                """
+            ).fetchone()
+        return int(row["count"])
+
+    def outbound_applied(self, limit: int | None = None) -> tuple[SyncEvent, ...]:
+        """Return local events safe to synchronize to peers."""
+        if limit is not None and (isinstance(limit, bool) or limit <= 0):
+            raise ValueError("limit must be a positive integer")
+        query = """
+            SELECT * FROM nexus_sync_events
+            WHERE direction = 'outbound' AND apply_state = 'applied'
+            ORDER BY rowid
+        """
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        with self._connect() as db:
+            return tuple(self._row_to_event(row) for row in db.execute(query, params))
 
     def pending_inbound(self, limit: int | None = None) -> tuple[SyncEvent, ...]:
         """Return durable remote events that still need merge/application.
