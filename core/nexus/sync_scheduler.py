@@ -10,9 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import time
-from typing import Mapping
+from typing import Mapping, Protocol, runtime_checkable
 
-from core.nexus.sync_daemon import SyncDaemon, SyncReport, SyncTransport, _validate_peer_id
+from core.nexus.sync_daemon import SyncReport, SyncTransport, _validate_peer_id
+
+
+@runtime_checkable
+class SyncPeerDriver(Protocol):
+    def sync_peer(self, peer_id: str, transport: SyncTransport) -> SyncReport:
+        ...
 
 
 class ScheduleDisposition(str, Enum):
@@ -40,7 +46,7 @@ class ScheduledResult:
 class SyncScheduler:
     def __init__(
         self,
-        daemon: SyncDaemon,
+        daemon: SyncPeerDriver,
         *,
         base_backoff_seconds: float = 2.0,
         max_backoff_seconds: float = 300.0,
@@ -48,8 +54,8 @@ class SyncScheduler:
         idle_interval_seconds: float = 30.0,
         monotonic=None,
     ):
-        if not isinstance(daemon, SyncDaemon):
-            raise TypeError("daemon must be SyncDaemon")
+        if not isinstance(daemon, SyncPeerDriver):
+            raise TypeError("daemon must implement sync_peer(peer_id, transport)")
         for name, value in (
             ("base_backoff_seconds", base_backoff_seconds),
             ("max_backoff_seconds", max_backoff_seconds),
