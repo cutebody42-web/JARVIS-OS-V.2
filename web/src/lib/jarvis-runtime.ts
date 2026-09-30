@@ -22,6 +22,14 @@ export type BrainStatus = {
     face_recognized: boolean;
     face_score: number;
   };
+  voice: {
+    available: boolean;
+    engine: string | null;
+    state: "idle" | "listening" | "processing" | "speaking" | "error";
+    last_error: string | null;
+    privacy: string;
+    wake_word: boolean;
+  };
   setup: {
     phase: string;
     percent: number;
@@ -209,6 +217,39 @@ export class LocalBrainClient {
       "/v1/identity/face/forget",
       { method: "POST", body: "{}" },
     );
+  }
+
+  voiceStatus() {
+    return this.request<BrainStatus["voice"]>("/v1/voice/status");
+  }
+
+  voiceListen(language = "en-US", timeoutSeconds = 8) {
+    return this.request<{
+      text: string;
+      confidence: number | null;
+      engine: string;
+      state: string;
+    }>("/v1/voice/listen", {
+      method: "POST",
+      body: JSON.stringify({
+        language,
+        timeout_seconds: timeoutSeconds,
+      }),
+    });
+  }
+
+  voiceSpeak(text: string) {
+    return this.request<{ spoken: boolean; state: string }>("/v1/voice/speak", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  voiceStop() {
+    return this.request<{ stopped: boolean; state: string }>("/v1/voice/stop", {
+      method: "POST",
+      body: "{}",
+    });
   }
 
   selectManualModel(model?: string) {
