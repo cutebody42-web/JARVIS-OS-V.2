@@ -250,6 +250,11 @@ class MergeApplier:
                 )
             if ledger["apply_state"] == "applied":
                 db.rollback()
+                if expected_direction == "outbound":
+                    # A previous materialization may have committed before JSONL
+                    # export failed. Retrying an already-applied local event must
+                    # retry that derived export.
+                    self._store.flush_pending()
                 return ApplyResult(event.id, ApplyStatus.ALREADY_APPLIED)
             if ledger["apply_state"] == "failed":
                 db.rollback()
