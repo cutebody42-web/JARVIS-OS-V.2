@@ -63,6 +63,14 @@ pub struct MobileApprovalRequest {
     pub body: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MobileCompanionStatus {
+    pub identity: MobileIdentity,
+    pub paired: bool,
+    pub desktop_device: Option<String>,
+    pub key_protection: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct DesktopTrust {
     desktop_device: String,
@@ -328,6 +336,19 @@ fn load_trust(app: &AppHandle) -> Result<DesktopTrust, String> {
 pub fn mobile_identity(app: AppHandle) -> Result<MobileIdentity, String> {
     let key = signing_key(&app)?;
     Ok(identity_for(&key))
+}
+
+#[tauri::command]
+pub fn mobile_companion_status(app: AppHandle) -> Result<MobileCompanionStatus, String> {
+    let key = signing_key(&app)?;
+    let identity = identity_for(&key);
+    let trust = load_trust(&app).ok();
+    Ok(MobileCompanionStatus {
+        key_protection: identity.key_protection.clone(),
+        identity,
+        paired: trust.is_some(),
+        desktop_device: trust.map(|value| value.desktop_device),
+    })
 }
 
 #[tauri::command]
