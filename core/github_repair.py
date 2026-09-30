@@ -316,6 +316,23 @@ class GitHubRepairCoordinator:
         ):
             required.add("Build JARVIS Windows installer")
 
+        real_runtime_prefixes = (
+            "brain_sidecar.py",
+            "api/jarvis_local_server.py",
+            "core/",
+            "agent/",
+            "actions/",
+            "memory/",
+            "models/",
+            "packaging/",
+            "web/",
+        )
+        if any(
+            any(path == prefix or path.startswith(prefix) for prefix in real_runtime_prefixes)
+            for path in paths
+        ):
+            required.add("Real JARVIS cloud validation")
+
         return tuple(sorted(required))
 
     @staticmethod
