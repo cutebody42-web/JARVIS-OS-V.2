@@ -12,12 +12,14 @@ import {
   chooseModelStore,
   currentPairingDeepLink,
   listenForPairingDeepLinks,
+  mobileBiometricStatus,
   mobileBrainMessage,
   mobileCompanionStatus,
   mobileDecideApproval,
   mobilePendingApprovals,
   pairMobileCompanion,
   platformMode,
+  type MobileBiometricStatus,
   type MobileIdentity,
   type PendingApproval,
   type PlatformMode,
@@ -79,6 +81,7 @@ function MobileShell() {
   const [scanned, setScanned] = useState<Record<string, unknown> | null>(null);
   const [pairState, setPairState] = useState("unpaired");
   const [identity, setIdentity] = useState<MobileIdentity | null>(null);
+  const [biometric, setBiometric] = useState<MobileBiometricStatus | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -86,6 +89,25 @@ function MobileShell() {
   const mounted = useRef(true);
 
   useEffect(() => () => { mounted.current = false; }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    mobileBiometricStatus()
+      .then((status) => {
+        if (!cancelled) setBiometric(status);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBiometric({
+            available: false,
+            fingerprint: false,
+            biometryType: 0,
+            error: "Fingerprint readiness check failed.",
+          });
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +167,11 @@ function MobileShell() {
   async function scanPairingCode() {
     setError("");
     try {
+      if (!biometric?.fingerprint) {
+        throw new Error(
+          biometric?.error || "Enroll and enable a fingerprint on this phone before pairing JARVIS."
+        );
+      }
       const scanner = window.__TAURI__?.barcodeScanner;
       if (!scanner) throw new Error("QR scanner is unavailable in this mobile build.");
       const permission = await scanner.requestPermissions();
@@ -243,15 +270,26 @@ function MobileShell() {
         <Reactor state={busy ? "THINKING" : identity ? "LISTENING" : "MUTED"} />
         <p className="section-index">{identity ? "COMPANION / SECURE LINK" : "COMPANION / SECURE PAIRING"}</p>
         <h1>{identity ? "At your service." : scanned ? "Confirm this device." : "Connect to your JARVIS Brain."}</h1>
+        {!identity && (
+          <p className="section-index" aria-live="polite">
+            {!biometric
+              ? "SECURITY / CHECKING FINGERPRINT"
+              : biometric.fingerprint
+                ? "SECURITY / FINGERPRINT READY"
+                : "SECURITY / FINGERPRINT REQUIRED"}
+          </p>
+        )}
 
         {!identity ? (
           <>
             <p>
               {pairState === "awaiting-owner"
                 ? "Pairing proof accepted. Approve this phone on the desktop JARVIS app."
-                : "Scan the desktop QR. Your phone becomes another authenticated face of the same JARVIS — with the same memory and Brain."}
+                : biometric && !biometric.fingerprint
+                  ? "Enroll a fingerprint in Android settings first. JARVIS does not fall back to a phone PIN for sensitive approvals."
+                  : "Scan the desktop QR. Your phone becomes another authenticated face of the same JARVIS — with the same memory and Brain."}
             </p>
-            <Button onClick={scanPairingCode} disabled={busy}>
+            <Button onClick={scanPairingCode} disabled={busy || biometric?.fingerprint !== true}>
               {busy ? <LoaderCircle className="spin" size={16} /> : <Smartphone size={16} />}
               {busy ? "Securing device link" : "Scan desktop QR"}
             </Button>
