@@ -17,7 +17,7 @@ import threading
 from typing import Callable
 
 from core.hardware_profile import HardwareProfiler
-from core.model_provider import ModelProvider, ModelTier
+from core.model_provider import ModelProvider, ModelRequest, ModelTier
 from core.model_router import (
     LocalModelCandidate,
     ModelRouter,
@@ -38,6 +38,11 @@ class BrainLane(str, Enum):
     GENERAL = "general"
     REALTIME = "realtime"
     ENGINEERING = "engineering"
+
+
+class BrainIntent(str, Enum):
+    CHAT = "chat"
+    ACTION = "action"
 
 
 @dataclass(frozen=True)
@@ -195,6 +200,14 @@ _REALTIME_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ACTION_RE = re.compile(
+    r"\b(open|close|launch|start|stop|pause|resume|mute|unmute|"
+    r"set (?:the )?(?:volume|brightness)|search (?:the )?web|"
+    r"look up|what(?:'s| is) the (?:time|weather)|weather (?:in|for)|"
+    r"remind me|set (?:a )?timer)\b",
+    re.IGNORECASE,
+)
+
 
 def classify_lane(goal: str) -> BrainLane:
     """Deterministic, conservative lane choice.
@@ -219,6 +232,17 @@ def lane_task(lane: BrainLane) -> TaskKind:
     return TaskKind.GENERAL
 
 
+def classify_intent(text: str) -> BrainIntent:
+    """Conservative action routing.
+
+    Ambiguous text stays conversational. Only explicit, admitted operational
+    wording enters AgentExecutor/OwnerKernel.
+    """
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be non-empty")
+    return BrainIntent.ACTION if _ACTION_RE.search(text.strip()) else BrainIntent.CHAT
+
+
 class JarvisBrain:
     """Single JARVIS runtime with hidden hot-switched cognition lanes."""
 
@@ -238,6 +262,8 @@ class JarvisBrain:
         self.policy = policy or BrainPolicy()
         self._lock = threading.RLock()
         self._lane = BrainLane.GENERAL
+        self._history: list[tuple[str, str]] = []
+        self._history_limit = 16
         self._runtime = PersonaAgentRuntime(
             JARVIS_GENERAL,
             task=TaskKind.GENERAL,
@@ -280,6 +306,82 @@ class JarvisBrain:
             self._runtime.switch_persona(profile, task=lane_task(lane))
             self._lane = lane
 
+    @staticmethod
+    def _lane_for_task(goal: str, task: TaskKind | None) -> BrainLane:
+        if task is None:
+            return classify_lane(goal)
+        if task is TaskKind.CODING:
+            return BrainLane.ENGINEERING
+        if task is TaskKind.REALTIME:
+            return BrainLane.REALTIME
+        if task is TaskKind.GENERAL:
+            return BrainLane.GENERAL
+        raise ValueError("unsupported task kind")
+
+    def _history_prompt(self, message: str) -> str:
+        with self._lock:
+            history = tuple(self._history[-self._history_limit:])
+        if not history:
+            return message
+        transcript = "\n".join(
+            ("Owner" if role == "user" else JARVIS_IDENTITY) + ": " + content
+            for role, content in history
+        )
+        return (
+            "Continue the same conversation and preserve context.\n\n"
+            f"Recent conversation:\n{transcript}\n\n"
+            f"Owner: {message}"
+        )
+
+    def _remember_turn(self, user_text: str, response_text: str) -> None:
+        with self._lock:
+            self._history.extend((("user", user_text), ("assistant", response_text)))
+            if len(self._history) > self._history_limit * 2:
+                self._history = self._history[-self._history_limit * 2:]
+
+    def clear_session_history(self) -> None:
+        """Clear transient conversation history without deleting durable memory."""
+        with self._lock:
+            self._history.clear()
+
+    def respond(
+        self,
+        message: str,
+        *,
+        task: TaskKind | None = None,
+        tier: ModelTier | None = None,
+    ) -> str:
+        """Generate a direct conversational response with no tool execution."""
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("message must be non-empty text")
+        clean = message.strip()
+        lane = self._lane_for_task(clean, task)
+        self._switch_lane(lane)
+
+        if tier is None:
+            tier = ModelTier.FAST if lane is BrainLane.REALTIME else ModelTier.STANDARD
+
+        with self._lock:
+            provider = self._runtime.provider
+
+        response = provider.generate(
+            ModelRequest(
+                prompt=self._history_prompt(clean),
+                system_instruction=(
+                    "Respond directly as JARVIS. This is a conversational cognition request, "
+                    "not an action plan. Do not claim that any external action occurred. "
+                    "If an action is required, explain what needs execution rather than fabricating it."
+                ),
+                tier=tier,
+                json_output=False,
+            )
+        )
+        text = response.text.strip()
+        if not text:
+            raise RuntimeError("JARVIS Brain returned an empty response.")
+        self._remember_turn(clean, text)
+        return text
+
     def execute(
         self,
         goal: str,
@@ -288,19 +390,38 @@ class JarvisBrain:
         speak=None,
         cancel_flag=None,
     ) -> str:
-        if task is None:
-            lane = classify_lane(goal)
-        elif task is TaskKind.CODING:
-            lane = BrainLane.ENGINEERING
-        elif task is TaskKind.REALTIME:
-            lane = BrainLane.REALTIME
-        elif task is TaskKind.GENERAL:
-            lane = BrainLane.GENERAL
-        else:
-            raise ValueError("unsupported task kind")
+        """Execute an explicit operational goal through AgentExecutor/OwnerKernel."""
+        if not isinstance(goal, str) or not goal.strip():
+            raise ValueError("goal must be non-empty text")
+        clean = goal.strip()
+        lane = self._lane_for_task(clean, task)
         self._switch_lane(lane)
         with self._lock:
             runtime = self._runtime
-        return runtime.execute(goal, speak=speak, cancel_flag=cancel_flag)
+        result = runtime.execute(clean, speak=speak, cancel_flag=cancel_flag)
+        self._remember_turn(clean, result)
+        return result
 
-    ask = execute
+    def handle(
+        self,
+        message: str,
+        *,
+        task: TaskKind | None = None,
+        speak=None,
+        cancel_flag=None,
+    ) -> str:
+        """Single public entry point: chat by default, act only on explicit intent."""
+        intent = classify_intent(message)
+        if intent is BrainIntent.ACTION:
+            return self.execute(
+                message,
+                task=task,
+                speak=speak,
+                cancel_flag=cancel_flag,
+            )
+        response = self.respond(message, task=task)
+        if speak:
+            speak(response)
+        return response
+
+    ask = respond
