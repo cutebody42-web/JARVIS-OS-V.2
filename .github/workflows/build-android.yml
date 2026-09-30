@@ -1,0 +1,110 @@
+name: Build JARVIS Android companion
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/build-android.yml"
+  push:
+    branches: ["product/**"]
+    paths:
+      - "web/**"
+      - ".github/workflows/build-android.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android platform tools
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-37" "build-tools;37.0.0"
+
+      - name: Resolve Android NDK
+        shell: bash
+        run: |
+          if [ -n "${ANDROID_NDK_LATEST_HOME:-}" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          elif [ -n "${ANDROID_NDK_HOME:-}" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+            NDK="$ANDROID_NDK_HOME"
+          else
+            NDK="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+            echo "No Android NDK is available on the runner" >&2
+            exit 1
+          fi
+          echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+
+      - name: Install Rust Android target
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add aarch64-linux-android
+          rustc --version
+          cargo --version
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Initialize generated Android project
+        working-directory: web
+        env:
+          CI: "true"
+        run: npx --yes @tauri-apps/cli@2.12.0 android init --ci
+
+      - name: Build installable Android APK
+        working-directory: web
+        env:
+          CI: "true"
+        run: npx --yes @tauri-apps/cli@2.12.0 android build --debug --apk --target aarch64 --ci
+
+      - name: Collect APK and provenance
+        shell: bash
+        run: |
+          mkdir -p artifacts/android
+          APK="$(find web/src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            echo "Tauri Android APK was not produced" >&2
+            exit 1
+          fi
+          cp "$APK" artifacts/android/JARVIS-Companion.apk
+          sha256sum artifacts/android/JARVIS-Companion.apk | awk '{print "sha256="$1}' > artifacts/android/build-info.txt
+          echo "commit=${{ github.sha }}" >> artifacts/android/build-info.txt
+          echo "shell=tauri-mobile" >> artifacts/android/build-info.txt
+          echo "architecture=aarch64" >> artifacts/android/build-info.txt
+          echo "pairing_scheme=jarvis://" >> artifacts/android/build-info.txt
+          echo "debug_signed=true" >> artifacts/android/build-info.txt
+          echo "play_store_signed=false" >> artifacts/android/build-info.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Android-Companion
+          path: |
+            artifacts/android/JARVIS-Companion.apk
+            artifacts/android/build-info.txt
+          if-no-files-found: error
