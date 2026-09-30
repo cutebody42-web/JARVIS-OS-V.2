@@ -152,6 +152,32 @@ class PairingTests(unittest.TestCase):
                 candidate_role=PeerRole.COMPANION,
             )
 
+    def test_status_polling_is_proof_authenticated(self):
+        offer = self.offer()
+        request = PairingManager.build_request(
+            offer,
+            "phone-status",
+            self.phone_signer,
+            candidate_role=PeerRole.COMPANION,
+        )
+        self.manager.receive_request(request)
+
+        self.assertEqual(self.manager.status_for_request(request), "pending")
+        self.manager.approve(offer.pairing_id)
+        self.assertEqual(self.manager.status_for_request(request), "approved")
+
+        bad = PairingRequest(
+            request.version,
+            request.pairing_id,
+            request.candidate_device,
+            request.candidate_public_key,
+            request.candidate_role,
+            request.candidate_endpoint,
+            "f" * 64,
+        )
+        with self.assertRaises(PermissionError):
+            self.manager.status_for_request(bad)
+
     def test_endpoint_url_confusion_is_rejected(self):
         with self.assertRaises(ValueError):
             self.manager.create_offer(
