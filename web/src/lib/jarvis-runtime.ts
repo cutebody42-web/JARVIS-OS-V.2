@@ -80,6 +80,13 @@ export type MobileCompanionStatus = {
   key_protection: string;
 };
 
+export type MobileBiometricStatus = {
+  available: boolean;
+  fingerprint: boolean;
+  biometryType: number;
+  error: string | null;
+};
+
 export type MobileBrainRequest = {
   request_id: string;
   endpoint: string;
@@ -148,6 +155,34 @@ export async function platformMode(): Promise<PlatformMode> {
 
 export async function mobileCompanionStatus(): Promise<MobileCompanionStatus> {
   return core().invoke<MobileCompanionStatus>("mobile_companion_status");
+}
+
+export async function mobileBiometricStatus(): Promise<MobileBiometricStatus> {
+  const biometric = window.__TAURI__?.biometric;
+  if (!biometric) {
+    return {
+      available: false,
+      fingerprint: false,
+      biometryType: 0,
+      error: "Mobile biometric authentication is unavailable in this build.",
+    };
+  }
+  try {
+    const status = await biometric.checkStatus();
+    return {
+      available: Boolean(status.isAvailable),
+      fingerprint: Boolean(status.isAvailable && status.biometryType === 1),
+      biometryType: Number(status.biometryType || 0),
+      error: status.error || null,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      fingerprint: false,
+      biometryType: 0,
+      error: error instanceof Error ? error.message : "Biometric status check failed.",
+    };
+  }
 }
 
 export async function ensureDesktopBrain(): Promise<BrainConnection> {
