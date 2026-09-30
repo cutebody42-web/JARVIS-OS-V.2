@@ -56,6 +56,13 @@ pub struct MobileBrainRequest {
     pub body: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MobileApprovalRequest {
+    pub request_id: String,
+    pub endpoint: String,
+    pub body: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct DesktopTrust {
     desktop_device: String,
@@ -455,3 +462,141 @@ pub fn mobile_verify_brain_response(
     }
     Ok(payload)
 }
+
+fn sign_companion_request(
+    app: &AppHandle,
+    kind: &str,
+    message_id: &str,
+    payload: Value,
+    path: &str,
+) -> Result<(String, String), String> {
+    let trust = load_trust(app)?;
+    let key = signing_key(app)?;
+    let identity = identity_for(&key);
+    let issued_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .map_err(|error| format!("JARVIS approval timestamp failed ({error})."))?;
+
+    let mut unsigned = BTreeMap::<String, Value>::new();
+    unsigned.insert("issued_at".into(), json!(issued_at));
+    unsigned.insert("kind".into(), json!(kind));
+    unsigned.insert("message_id".into(), json!(message_id));
+    unsigned.insert("payload".into(), payload);
+    unsigned.insert("receiver_device".into(), json!(trust.desktop_device));
+    unsigned.insert("sender_device".into(), json!(identity.device_id));
+    unsigned.insert("version".into(), json!(AUTH_VERSION));
+
+    let unsigned_value = serde_json::to_value(&unsigned).map_err(|error| error.to_string())?;
+    let signature = URL_SAFE_NO_PAD.encode(key.sign(&canonical(&unsigned_value)?).to_bytes());
+    let mut envelope = unsigned;
+    envelope.insert("signature".into(), json!(signature));
+    let body = serde_json::to_string(&envelope)
+        .map_err(|error| format!("JARVIS approval request encoding failed ({error})."))?;
+    Ok((
+        format!("{}{}", trust.desktop_endpoint.trim_end_matches('/'), path),
+        body,
+    ))
+}
+
+#[tauri::command]
+pub fn mobile_sign_approval_list(app: AppHandle) -> Result<MobileApprovalRequest, String> {
+    let request_id = Uuid::new_v4().simple().to_string();
+    let payload = json!({
+        "version": 1,
+        "request_id": request_id,
+    });
+    let message_id = format!("approval-list:{request_id}");
+    let (endpoint, body) = sign_companion_request(
+        &app,
+        "approval.list",
+        &message_id,
+        payload,
+        "/nexus/approval/v1/pending",
+    )?;
+    Ok(MobileApprovalRequest { request_id, endpoint, body })
+}
+
+#[tauri::command]
+pub fn mobile_verify_approval_list_response(
+    app: AppHandle,
+    request_id: String,
+    signed_response: String,
+) -> Result<Value, String> {
+    let trust = load_trust(&app)?;
+    let key = signing_key(&app)?;
+    let identity = identity_for(&key);
+    let payload = verify_signed_envelope(
+        &signed_response,
+        &trust.desktop_public_key,
+        "approval.pending",
+        &trust.desktop_device,
+        &identity.device_id,
+        &format!("approval-pending:{request_id}"),
+    )?;
+    if payload.get("version").and_then(Value::as_u64) != Some(1)
+        || payload.get("request_id").and_then(Value::as_str) != Some(request_id.as_str())
+        || !payload.get("pending").map(Value::is_array).unwrap_or(false)
+    {
+        return Err("JARVIS approval list response mismatch.".into());
+    }
+    Ok(payload)
+}
+
+#[tauri::command]
+pub fn mobile_sign_approval_decision(
+    app: AppHandle,
+    approval_id: String,
+    approved: bool,
+) -> Result<MobileApprovalRequest, String> {
+    let approval_id = approval_id.trim().to_string();
+    if approval_id.is_empty() || approval_id.len() > 128 {
+        return Err("Invalid JARVIS approval id.".into());
+    }
+    let request_id = Uuid::new_v4().simple().to_string();
+    let payload = json!({
+        "version": 1,
+        "request_id": request_id,
+        "approval_id": approval_id,
+        "approved": approved,
+        "user_verified": true,
+    });
+    let message_id = format!("approval-decision:{request_id}");
+    let (endpoint, body) = sign_companion_request(
+        &app,
+        "approval.decision",
+        &message_id,
+        payload,
+        "/nexus/approval/v1/decision",
+    )?;
+    Ok(MobileApprovalRequest { request_id, endpoint, body })
+}
+
+#[tauri::command]
+pub fn mobile_verify_approval_receipt(
+    app: AppHandle,
+    request_id: String,
+    signed_response: String,
+) -> Result<Value, String> {
+    let trust = load_trust(&app)?;
+    let key = signing_key(&app)?;
+    let identity = identity_for(&key);
+    let payload = verify_signed_envelope(
+        &signed_response,
+        &trust.desktop_public_key,
+        "approval.receipt",
+        &trust.desktop_device,
+        &identity.device_id,
+        &format!("approval-receipt:{request_id}"),
+    )?;
+    if payload.get("version").and_then(Value::as_u64) != Some(1)
+        || payload.get("request_id").and_then(Value::as_str) != Some(request_id.as_str())
+        || !matches!(
+            payload.get("state").and_then(Value::as_str),
+            Some("approved") | Some("rejected")
+        )
+    {
+        return Err("JARVIS approval receipt mismatch.".into());
+    }
+    Ok(payload)
+}
+
