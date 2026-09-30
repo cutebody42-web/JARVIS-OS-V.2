@@ -1,48 +1,67 @@
-"""Offline contract tests for the local Ollama provider adapter."""
+"""Contract tests for the hardened tier-aware local Ollama provider."""
 
 import json
 import unittest
 from unittest.mock import Mock, patch
 
 from core.model_provider import ModelProvider, ModelRequest, ModelTier
-from core.providers.ollama import OllamaProvider, OllamaProviderError
+from core.providers.ollama import (
+    LocalProviderError,
+    OllamaProvider,
+    OllamaProviderError,
+)
+
+
+class FakeStreamResponse:
+    status = 200
+
+    def __init__(self, lines):
+        self._lines = list(lines)
+
+    def readline(self, _limit):
+        return self._lines.pop(0) if self._lines else b""
+
+
+class FakeStreamConnection:
+    def __init__(self, *_args, **_kwargs):
+        self.request_args = None
+        self.closed = False
+        self.response = FakeStreamResponse([
+            json.dumps({"message": {"role": "assistant", "content": "Hel"}}).encode() + b"\n",
+            json.dumps({"message": {"role": "assistant", "content": "lo"}}).encode() + b"\n",
+            json.dumps({"done": True, "message": {"role": "assistant", "content": ""}}).encode() + b"\n",
+        ])
+
+    def request(self, *args, **kwargs):
+        self.request_args = (args, kwargs)
+
+    def getresponse(self):
+        return self.response
+
+    def close(self):
+        self.closed = True
 
 
 class OllamaProviderTests(unittest.TestCase):
     def test_structurally_implements_model_provider(self):
         self.assertIsInstance(OllamaProvider(), ModelProvider)
+        self.assertIs(OllamaProviderError, LocalProviderError)
 
-    def test_generate_translates_neutral_request_without_actions(self):
+    def test_payload_maps_neutral_tiers_without_tools(self):
         provider = OllamaProvider(
             fast_model="fast-local",
             standard_model="coder-local",
-            base_url="http://127.0.0.1:11434/",
             keep_alive="3m",
         )
-        response = Mock()
-        response.raise_for_status.return_value = None
-        response.json.return_value = {
-            "model": "coder-local",
-            "message": {"role": "assistant", "content": "  result text  "},
-        }
-
-        with patch("requests.post", return_value=response) as post:
-            result = provider.generate(
-                ModelRequest(
-                    prompt="solve",
-                    system_instruction="You are Jarvis.",
-                    tier=ModelTier.STANDARD,
-                    json_output=True,
-                )
-            )
-
-        self.assertEqual(result.text, "result text")
-        self.assertEqual(result.provider, "ollama")
-        self.assertEqual(result.model, "coder-local")
-        call = post.call_args
-        self.assertEqual(call.args[0], "http://127.0.0.1:11434/api/chat")
-        self.assertEqual(call.kwargs["timeout"], 120.0)
-        payload = call.kwargs["json"]
+        payload = provider._payload(
+            ModelRequest(
+                prompt="solve",
+                system_instruction="You are Jarvis.",
+                tier=ModelTier.STANDARD,
+                json_output=True,
+            ),
+            stream=False,
+        )
         self.assertEqual(payload["model"], "coder-local")
         self.assertEqual(
             payload["messages"],
@@ -54,86 +73,90 @@ class OllamaProviderTests(unittest.TestCase):
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["format"], "json")
         self.assertEqual(payload["keep_alive"], "3m")
+        self.assertEqual(payload["options"], {"num_ctx": 4096, "num_predict": 512})
         self.assertNotIn("tools", payload)
 
     def test_fast_tier_omits_empty_system_and_json_format(self):
         provider = OllamaProvider(fast_model="friday-local")
-        response = Mock()
-        response.raise_for_status.return_value = None
-        response.json.return_value = {"message": {"content": "hello"}}
-
-        with patch("requests.post", return_value=response) as post:
-            result = provider.generate(ModelRequest("hi"))
-
-        self.assertEqual(result.model, "friday-local")
-        payload = post.call_args.kwargs["json"]
+        payload = provider._payload(ModelRequest("hi"), stream=False)
+        self.assertEqual(payload["model"], "friday-local")
         self.assertEqual(payload["messages"], [{"role": "user", "content": "hi"}])
         self.assertNotIn("format", payload)
 
-    def test_stream_yields_content_chunks(self):
-        provider = OllamaProvider(base_url="http://localhost:11434", keep_alive=60)
-        response = Mock()
-        response.raise_for_status.return_value = None
-        response.iter_lines.return_value = [
-            json.dumps({"message": {"content": "Hel"}}),
-            "",
-            json.dumps({"message": {"content": "lo"}}),
-            json.dumps({"done": True, "message": {"content": ""}}),
-        ]
-        response.__enter__ = Mock(return_value=response)
-        response.__exit__ = Mock(return_value=False)
-
-        with patch("requests.post", return_value=response) as post:
-            chunks = list(provider.stream(ModelRequest("say hello")))
-
-        self.assertEqual(chunks, ["Hel", "lo"])
-        self.assertTrue(post.call_args.kwargs["stream"])
-        self.assertEqual(post.call_args.kwargs["json"]["keep_alive"], 60)
-
-    def test_network_errors_fail_closed_without_raw_details(self):
-        import requests
-
-        provider = OllamaProvider()
-        secretish = "http://token@example.invalid/private"
+    def test_stream_yields_bounded_text_chunks(self):
+        connection = FakeStreamConnection()
         with patch(
-            "requests.post",
-            side_effect=requests.ConnectionError(secretish),
+            "core.providers.ollama.http.client.HTTPConnection",
+            return_value=connection,
         ):
-            with self.assertRaises(OllamaProviderError) as caught:
-                provider.generate(ModelRequest("hello"))
-        self.assertNotIn("token", str(caught.exception))
-        self.assertIn("not reachable", str(caught.exception))
+            provider = OllamaProvider(
+                base_url="http://127.0.0.1:11434",
+                keep_alive=60,
+            )
+            chunks = list(provider.stream(ModelRequest("say hello")))
+        self.assertEqual(chunks, ["Hel", "lo"])
+        self.assertTrue(connection.closed)
+        sent = json.loads(connection.request_args[0][2])
+        self.assertTrue(sent["stream"])
+        self.assertEqual(sent["keep_alive"], 60)
 
-    def test_invalid_or_empty_responses_fail_closed(self):
-        provider = OllamaProvider()
-        invalid_json = Mock()
-        invalid_json.raise_for_status.return_value = None
-        invalid_json.json.side_effect = ValueError("bad JSON")
-
-        empty = Mock()
-        empty.raise_for_status.return_value = None
-        empty.json.return_value = {"message": {"content": "   "}}
-
-        for response in (invalid_json, empty):
-            with self.subTest(response=response), patch("requests.post", return_value=response):
-                with self.assertRaises(OllamaProviderError):
-                    provider.generate(ModelRequest("hello"))
-
-    def test_scheme_less_ollama_host_is_accepted(self):
+    def test_strict_loopback_origin_and_safe_bind_normalization(self):
         provider = OllamaProvider(base_url="127.0.0.1:1234")
-        self.assertEqual(provider._endpoint.chat_url, "http://127.0.0.1:1234/api/chat")
-
-    def test_unspecified_bind_host_becomes_connectable_loopback(self):
-        provider = OllamaProvider(base_url="0.0.0.0:11434")
-        self.assertEqual(provider._endpoint.chat_url, "http://127.0.0.1:11434/api/chat")
+        self.assertEqual(
+            provider._endpoint.chat_url,
+            "http://127.0.0.1:1234/api/chat",
+        )
+        bind = OllamaProvider(base_url="0.0.0.0:11434")
+        self.assertEqual(
+            bind._endpoint.chat_url,
+            "http://127.0.0.1:11434/api/chat",
+        )
+        for url in (
+            "http://localhost:11434",
+            "http://example.com",
+            "https://127.0.0.1",
+            "http://127.0.0.1/path",
+            "http://user:pass@127.0.0.1",
+            "http://127.0.0.1?redirect=x",
+        ):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                OllamaProvider(base_url=url)
 
     def test_constructor_validation(self):
         with self.assertRaises(ValueError):
-            OllamaProvider(base_url="ftp://example.com")
-        with self.assertRaises(ValueError):
             OllamaProvider(timeout_seconds=0)
         with self.assertRaises(ValueError):
+            OllamaProvider(timeout_seconds=61)
+        with self.assertRaises(ValueError):
             OllamaProvider(fast_model="")
+        with self.assertRaises(ValueError):
+            OllamaProvider(model="bad model name")
+
+    def test_request_size_limit_is_checked_before_network(self):
+        provider = OllamaProvider()
+        with self.assertRaises(ValueError):
+            provider.generate(ModelRequest("x" * 65536))
+
+    def test_complete_response_rejects_tool_calls_and_incomplete_values(self):
+        for value in (
+            {"done": False},
+            [],
+            {
+                "done": True,
+                "message": {
+                    "role": "assistant",
+                    "content": "ok",
+                    "tool_calls": [{"function": "shell"}],
+                },
+            },
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(LocalProviderError):
+                    provider = OllamaProvider()
+                    provider._decode_complete(
+                        json.dumps(value).encode(),
+                        "model",
+                    )
 
 
 if __name__ == "__main__":
