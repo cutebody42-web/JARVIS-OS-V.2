@@ -51,6 +51,10 @@ declare global {
       haptics?: {
         vibrate(options?: Record<string, unknown>): Promise<void>;
       };
+      deepLink?: {
+        getCurrent(): Promise<string[] | null>;
+        onOpenUrl(handler: (urls: string[]) => void): Promise<() => void>;
+      };
     };
   }
 }
@@ -158,4 +162,48 @@ export async function bootstrapDesktopBrain() {
   const client = new LocalBrainClient(connection);
   await client.waitUntilReachable();
   return client;
+}
+
+
+export function decodePairingDeepLink(url: string): Record<string, unknown> | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "jarvis:" || parsed.hostname !== "pair") return null;
+    const encoded = parsed.searchParams.get("offer");
+    if (!encoded) return null;
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4 || 4)) % 4);
+    const json = decodeURIComponent(escape(atob(padded)));
+    const value = JSON.parse(json);
+    return value && typeof value === "object" ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function currentPairingDeepLink() {
+  const deepLink = window.__TAURI__?.deepLink;
+  if (!deepLink) return null;
+  const urls = await deepLink.getCurrent();
+  for (const url of urls || []) {
+    const offer = decodePairingDeepLink(url);
+    if (offer) return offer;
+  }
+  return null;
+}
+
+export async function listenForPairingDeepLinks(
+  handler: (offer: Record<string, unknown>) => void,
+) {
+  const deepLink = window.__TAURI__?.deepLink;
+  if (!deepLink) return () => undefined;
+  return deepLink.onOpenUrl((urls) => {
+    for (const url of urls) {
+      const offer = decodePairingDeepLink(url);
+      if (offer) {
+        handler(offer);
+        break;
+      }
+    }
+  });
 }
