@@ -1,24 +1,50 @@
 """Local owner face identity for JARVIS.
 
-Enrollment stores only normalized numeric face templates in the OS secret store;
-camera frames are processed in memory and discarded. Face identity is an
-owner-presence signal, not a replacement for companion biometric approval.
+Enrollment stores only normalized numeric face templates in the OS secret store.
+Camera frames are processed in memory and discarded. Face identity is a
+convenience/presence signal only; sensitive operations still require the paired
+phone biometric approval path.
+
+The production camera path uses OpenCV Zoo YuNet + SFace. Model files are
+downloaded lazily from the official OpenCV Hugging Face mirror, verified by
+pinned SHA-256, and cached under JARVIS user data.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
+from pathlib import Path
 import threading
 import time
 from typing import Iterable
 
+from core.app_paths import user_data_dir
 from core.secret_store import SecretStore, get_secret_store
 
 
 _FACE_KEY = "identity.owner.face.v1"
-_TEMPLATE_VERSION = 1
+_TEMPLATE_VERSION = 2
+_ENGINE = "opencv_sface_2021dec"
+
+_YUNET_URL = (
+    "https://huggingface.co/opencv/opencv_zoo/resolve/main/"
+    "models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+)
+_YUNET_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+
+_SFACE_URL = (
+    "https://huggingface.co/opencv/opencv_zoo/resolve/main/"
+    "models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+)
+_SFACE_SHA256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+
+# OpenCV's public SFace example uses 0.363 cosine similarity as the generic
+# same-identity boundary. Owner enrollment can safely be stricter because we
+# have several templates from the same person.
+_SFACE_BASELINE_COSINE = 0.363
 
 
 class FaceIdentityError(RuntimeError):
@@ -48,6 +74,17 @@ def _cosine(left: list[float], right: list[float]) -> float:
     return sum(a * b for a, b in zip(left, right))
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
 class OwnerFaceRecognizer:
     def __init__(
         self,
@@ -55,6 +92,8 @@ class OwnerFaceRecognizer:
         secret_store: SecretStore | None = None,
         recognition_ttl_seconds: float = 300.0,
         clock=time.monotonic,
+        model_dir: str | Path | None = None,
+        http_get=None,
     ):
         if recognition_ttl_seconds <= 0:
             raise ValueError("recognition_ttl_seconds must be positive")
@@ -62,8 +101,17 @@ class OwnerFaceRecognizer:
         self._ttl = float(recognition_ttl_seconds)
         self._clock = clock
         self._guard = threading.RLock()
+        self._vision_guard = threading.RLock()
         self._recognized_until = 0.0
         self._last_score = 0.0
+        self._model_dir = (
+            Path(model_dir).expanduser()
+            if model_dir is not None
+            else user_data_dir() / "vision"
+        )
+        self._http_get = http_get
+        self._detector = None
+        self._recognizer = None
 
     def _payload(self) -> dict | None:
         raw = self.store.get(_FACE_KEY)
@@ -73,9 +121,15 @@ class OwnerFaceRecognizer:
             value = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise FaceIdentityError("Stored owner face identity is invalid.") from exc
+        if not isinstance(value, dict):
+            raise FaceIdentityError("Stored owner face identity is invalid.")
+        # Previous prototype embeddings are deliberately not mixed with SFace
+        # embeddings. Treat them as unenrolled so the UI asks for a fresh,
+        # stronger enrollment instead of silently comparing incompatible data.
+        if value.get("version") != _TEMPLATE_VERSION:
+            return None
         if (
-            not isinstance(value, dict)
-            or value.get("version") != _TEMPLATE_VERSION
+            value.get("engine") != _ENGINE
             or not isinstance(value.get("templates"), list)
             or not isinstance(value.get("threshold"), (int, float))
         ):
@@ -100,6 +154,10 @@ class OwnerFaceRecognizer:
         with self._guard:
             return self._last_score
 
+    @property
+    def engine(self) -> str:
+        return _ENGINE
+
     def forget(self) -> None:
         self.store.delete(_FACE_KEY)
         with self._guard:
@@ -119,11 +177,18 @@ class OwnerFaceRecognizer:
             for right in templates[index + 1:]:
                 similarities.append(_cosine(left, right))
         mean_intra = sum(similarities) / max(1, len(similarities))
-        # Conservative adaptive threshold; never below 0.82.
-        threshold = max(0.82, min(0.95, mean_intra - 0.08))
+
+        # Keep a margin below the owner's own enrollment variation while staying
+        # stricter than OpenCV's generic SFace same-identity threshold.
+        threshold = max(
+            0.45,
+            _SFACE_BASELINE_COSINE,
+            min(0.72, mean_intra - 0.10),
+        )
 
         payload = {
             "version": _TEMPLATE_VERSION,
+            "engine": _ENGINE,
             "threshold": round(threshold, 6),
             "templates": [[round(value, 7) for value in item] for item in templates],
         }
@@ -140,45 +205,141 @@ class OwnerFaceRecognizer:
         threshold = float(payload["threshold"])
         return score >= threshold, score
 
-    @staticmethod
-    def _extract_embedding(frame) -> list[float] | None:
+    def _download_verified(self, url: str, target: Path, expected_sha256: str) -> Path:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_file() and _sha256_file(target) == expected_sha256:
+            return target
+
+        getter = self._http_get
+        if getter is None:
+            import requests
+            getter = requests.get
+
+        temp = target.with_suffix(target.suffix + ".partial")
+        temp.unlink(missing_ok=True)
+        digest = hashlib.sha256()
+        try:
+            response = getter(
+                url,
+                stream=True,
+                timeout=(8, 180),
+                allow_redirects=True,
+                headers={"User-Agent": "JARVIS-owner-face/2"},
+            )
+            response.raise_for_status()
+            with temp.open("wb") as handle:
+                for block in response.iter_content(chunk_size=1024 * 1024):
+                    if not block:
+                        continue
+                    digest.update(block)
+                    handle.write(block)
+        except Exception as exc:
+            temp.unlink(missing_ok=True)
+            raise FaceIdentityError(
+                f"JARVIS could not prepare the face recognition model ({type(exc).__name__})."
+            ) from None
+
+        if digest.hexdigest() != expected_sha256:
+            temp.unlink(missing_ok=True)
+            raise FaceIdentityError("Downloaded face recognition model failed integrity verification.")
+        temp.replace(target)
+        return target
+
+    def _vision_models(self):
         try:
             import cv2
-            import numpy as np
         except Exception as exc:
             raise FaceIdentityError("OpenCV face identity runtime is unavailable.") from exc
 
+        with self._vision_guard:
+            if self._detector is not None and self._recognizer is not None:
+                return self._detector, self._recognizer
+
+            detector_path = self._download_verified(
+                _YUNET_URL,
+                self._model_dir / "face_detection_yunet_2023mar.onnx",
+                _YUNET_SHA256,
+            )
+            recognizer_path = self._download_verified(
+                _SFACE_URL,
+                self._model_dir / "face_recognition_sface_2021dec.onnx",
+                _SFACE_SHA256,
+            )
+            try:
+                if hasattr(cv2, "FaceDetectorYN_create"):
+                    detector = cv2.FaceDetectorYN_create(
+                        str(detector_path),
+                        "",
+                        (320, 320),
+                        0.85,
+                        0.3,
+                        5000,
+                    )
+                else:
+                    detector = cv2.FaceDetectorYN.create(
+                        str(detector_path),
+                        "",
+                        (320, 320),
+                        0.85,
+                        0.3,
+                        5000,
+                    )
+                if hasattr(cv2, "FaceRecognizerSF_create"):
+                    recognizer = cv2.FaceRecognizerSF_create(
+                        str(recognizer_path),
+                        "",
+                    )
+                else:
+                    recognizer = cv2.FaceRecognizerSF.create(
+                        str(recognizer_path),
+                        "",
+                    )
+            except Exception as exc:
+                raise FaceIdentityError(
+                    f"OpenCV SFace initialization failed ({type(exc).__name__})."
+                ) from None
+
+            self._detector = detector
+            self._recognizer = recognizer
+            return detector, recognizer
+
+    def _extract_embedding(self, frame) -> list[float] | None:
+        try:
+            import numpy as np
+        except Exception as exc:
+            raise FaceIdentityError("NumPy face identity runtime is unavailable.") from exc
+
         if frame is None or getattr(frame, "size", 0) == 0:
             return None
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        detector = cv2.CascadeClassifier(cascade_path)
-        if detector.empty():
-            raise FaceIdentityError("OpenCV face detector could not be loaded.")
-        faces = detector.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(80, 80),
-        )
-        if len(faces) != 1:
-            return None
-        x, y, w, h = [int(value) for value in faces[0]]
-        pad_x = max(4, int(w * 0.08))
-        pad_y = max(4, int(h * 0.10))
-        x0, y0 = max(0, x - pad_x), max(0, y - pad_y)
-        x1, y1 = min(gray.shape[1], x + w + pad_x), min(gray.shape[0], y + h + pad_y)
-        face = gray[y0:y1, x0:x1]
-        if face.size == 0:
+        detector, recognizer = self._vision_models()
+        height, width = frame.shape[:2]
+        if width < 80 or height < 80:
             return None
 
-        face = cv2.resize(face, (128, 128), interpolation=cv2.INTER_AREA)
-        face = cv2.equalizeHist(face)
-        matrix = np.asarray(face, dtype=np.float32) / 255.0
-        dct = cv2.dct(matrix)
-        # Low/mid frequency facial structure; discard DC brightness term.
-        vector = dct[:24, :24].reshape(-1)[1:]
-        return _normalize(vector.tolist())
+        with self._vision_guard:
+            try:
+                detector.setInputSize((int(width), int(height)))
+                _, faces = detector.detect(frame)
+            except Exception as exc:
+                raise FaceIdentityError(
+                    f"Owner face detection failed ({type(exc).__name__})."
+                ) from None
+
+            if faces is None or len(faces) != 1:
+                return None
+            face = np.asarray(faces[0], dtype=np.float32)
+            try:
+                aligned = recognizer.alignCrop(frame, face)
+                feature = recognizer.feature(aligned)
+            except Exception as exc:
+                raise FaceIdentityError(
+                    f"Owner face embedding failed ({type(exc).__name__})."
+                ) from None
+
+        values = np.asarray(feature, dtype=np.float32).reshape(-1)
+        if values.size < 32:
+            return None
+        return _normalize(values.tolist())
 
     def _camera_embeddings(
         self,
@@ -199,6 +360,10 @@ class OwnerFaceRecognizer:
         if not 2 <= timeout_seconds <= 30:
             raise ValueError("timeout_seconds must be between 2 and 30")
 
+        # Prepare verified models before opening the camera so a one-time network
+        # download cannot hold the webcam open.
+        self._vision_models()
+
         backend = getattr(cv2, "CAP_DSHOW", 0)
         capture = cv2.VideoCapture(camera_index, backend) if backend else cv2.VideoCapture(camera_index)
         if not capture.isOpened():
@@ -216,7 +381,7 @@ class OwnerFaceRecognizer:
                 embedding = self._extract_embedding(frame)
                 if embedding is not None:
                     samples.append(embedding)
-                time.sleep(0.08)
+                time.sleep(0.10)
         finally:
             capture.release()
         return samples
@@ -237,9 +402,7 @@ class OwnerFaceRecognizer:
             raise FaceIdentityError(
                 "JARVIS could not collect enough single-face samples for reliable enrollment."
             )
-        count = self.enroll_embeddings(embeddings)
-        # Enrollment itself does not silently count as later authentication.
-        return count
+        return self.enroll_embeddings(embeddings)
 
     def verify_from_camera(
         self,
