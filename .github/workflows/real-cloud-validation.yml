@@ -1,0 +1,249 @@
+name: Real JARVIS cloud validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["product/**"]
+    paths:
+      - "brain_sidecar.py"
+      - "api/jarvis_local_server.py"
+      - "core/**"
+      - "agent/**"
+      - "actions/**"
+      - "memory/**"
+      - "models/**"
+      - "packaging/**"
+      - "web/**"
+      - ".github/workflows/real-cloud-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-real-runtime:
+    name: Windows VM — install and run JARVIS
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      JARVIS_SMOKE_PORT: "18765"
+      JARVIS_SMOKE_TOKEN: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build embedded Brain executable
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.10,<7"
+          pyinstaller --clean --noconfirm packaging/windows/JARVIS-Brain.spec
+          if (!(Test-Path "dist/jarvis-brain.exe")) { throw "Packaged JARVIS Brain executable was not produced" }
+          New-Item -ItemType Directory -Force "web/src-tauri/binaries" | Out-Null
+          Copy-Item "dist/jarvis-brain.exe" "web/src-tauri/binaries/jarvis-brain-x86_64-pc-windows-msvc.exe" -Force
+
+      - name: Run packaged Brain and exercise live API
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "artifacts/real-cloud/windows" | Out-Null
+          $brain = Start-Process -FilePath "$PWD/dist/jarvis-brain.exe" -ArgumentList @("--port",$env:JARVIS_SMOKE_PORT,"--ui-token",$env:JARVIS_SMOKE_TOKEN,"--parent-pid","$PID","--state-dir","$env:RUNNER_TEMP\jarvis-smoke-state") -PassThru -RedirectStandardOutput "artifacts/real-cloud/windows/brain-stdout.txt" -RedirectStandardError "artifacts/real-cloud/windows/brain-stderr.txt"
+          $ready = $false
+          for ($i = 0; $i -lt 45; $i++) {
+            if ($brain.HasExited) { Get-Content "artifacts/real-cloud/windows/brain-stderr.txt" -ErrorAction SilentlyContinue; throw "Packaged JARVIS Brain exited before becoming healthy" }
+            try {
+              $health = Invoke-RestMethod -Uri "http://127.0.0.1:$env:JARVIS_SMOKE_PORT/v1/health" -TimeoutSec 2
+              if ($health.ok -eq $true -and $health.identity -eq "JARVIS") { $ready = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 1
+          }
+          if (!$ready) { throw "Packaged JARVIS Brain did not become healthy" }
+          $headers = @{ Authorization = "Bearer $env:JARVIS_SMOKE_TOKEN" }
+          $status = Invoke-RestMethod -Headers $headers -Uri "http://127.0.0.1:$env:JARVIS_SMOKE_PORT/v1/status" -TimeoutSec 5
+          if ($status.identity -ne "JARVIS") { throw "Live status identity mismatch" }
+          if (!$status.device.device_id) { throw "Live status did not expose a device id" }
+          $health | ConvertTo-Json -Depth 8 | Out-File "artifacts/real-cloud/windows/live-health.json" -Encoding utf8
+          $status | ConvertTo-Json -Depth 8 | Out-File "artifacts/real-cloud/windows/live-status.json" -Encoding utf8
+          Stop-Process -Id $brain.Id -Force
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Prepare Rust and libsodium
+        shell: pwsh
+        run: |
+          rustup update stable
+          rustup default stable
+          $env:VCPKG_DEFAULT_TRIPLET = "x64-windows"
+          vcpkg install libsodium:x64-windows
+          "SODIUM_USE_PKG_CONFIG=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DEFAULT_TRIPLET=x64-windows" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Generate Windows icons
+        working-directory: web
+        shell: pwsh
+        run: npx --yes @tauri-apps/cli@2.12.0 icon src-tauri/jarvis-icon.svg
+
+      - name: Build real NSIS installer
+        working-directory: web
+        shell: pwsh
+        run: npx --yes @tauri-apps/cli@2.12.0 build --bundles nsis
+
+      - name: Silent-install and launch desktop product
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "web/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if ($null -eq $installer) { throw "NSIS installer was not produced" }
+          Copy-Item $installer.FullName "artifacts/real-cloud/windows/JARVIS-Setup.exe" -Force
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "JARVIS installer exited with code $($install.ExitCode)" }
+          $roots = @($env:LOCALAPPDATA, $env:ProgramFiles, [Environment]::GetFolderPath("ProgramFilesX86")) | Where-Object { $_ -and (Test-Path $_) }
+          $exe = $null
+          foreach ($root in $roots) {
+            $exe = Get-ChildItem $root -Filter "JARVIS.exe" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($exe) { break }
+          }
+          if ($null -eq $exe) { throw "Installed JARVIS.exe could not be located" }
+          "installed_exe=$($exe.FullName)" | Out-File "artifacts/real-cloud/windows/install-result.txt"
+          $desktop = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep -Seconds 15
+          if ($desktop.HasExited) { throw "Installed JARVIS desktop exited during startup" }
+          $jarvisProcesses = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match "jarvis" } | Select-Object Id,ProcessName,Path
+          $jarvisProcesses | Format-List | Out-File "artifacts/real-cloud/windows/processes.txt"
+          if (-not ($jarvisProcesses | Where-Object { $_.ProcessName -match "^JARVIS$|jarvis-shell" })) { throw "Installed JARVIS desktop process was not observable" }
+          try {
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -AssemblyName System.Drawing
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size)
+            $bitmap.Save("$PWD/artifacts/real-cloud/windows/windows-desktop.png")
+            $graphics.Dispose(); $bitmap.Dispose()
+          } catch { "screenshot_unavailable=$($_.Exception.GetType().Name)" | Out-File "artifacts/real-cloud/windows/screenshot-note.txt" }
+          Stop-Process -Id $desktop.Id -Force -ErrorAction SilentlyContinue
+          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match "jarvis-brain" } | Stop-Process -Force -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: JARVIS-Real-Windows-VM-Evidence
+          path: artifacts/real-cloud/windows
+          if-no-files-found: warn
+
+  android-real-runtime:
+    name: Android emulator — install and run JARVIS
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Resolve Android NDK and Rust target
+        shell: bash
+        run: |
+          if [ -n "$ANDROID_NDK_LATEST_HOME" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          elif [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+            NDK="$ANDROID_NDK_HOME"
+          else
+            NDK="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then echo "Android NDK is unavailable" >&2; exit 1; fi
+          echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          rustup update stable
+          rustup default stable
+          rustup target add x86_64-linux-android
+
+      - name: Initialize Android project
+        working-directory: web
+        env:
+          CI: "true"
+        run: npx --yes @tauri-apps/cli@2.12.0 android init
+
+      - name: Pin generated SDK to API 35
+        working-directory: web
+        shell: bash
+        run: |
+          find src-tauri/gen/android -type f \( -name "*.gradle.kts" -o -name "*.gradle" \) -print0 | while IFS= read -r -d "" file; do
+            sed -i -E "s/compileSdk([[:space:]]*=[[:space:]]*)[0-9]+/compileSdk\\1 35/g" "$file"
+            sed -i -E "s/targetSdk([[:space:]]*=[[:space:]]*)[0-9]+/targetSdk\\1 35/g" "$file"
+          done
+
+      - name: Build x86_64 emulator APK
+        working-directory: web
+        env:
+          CI: "true"
+        run: npx --yes @tauri-apps/cli@2.12.0 android build --debug --apk --target x86_64
+
+      - name: Collect emulator APK
+        shell: bash
+        run: |
+          mkdir -p artifacts/real-cloud/android
+          APK="$(find web/src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" | head -n 1)"
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then echo "x86_64 emulator APK was not produced" >&2; exit 1; fi
+          cp "$APK" artifacts/real-cloud/android/JARVIS-Emulator.apk
+          echo "APK=$GITHUB_WORKSPACE/artifacts/real-cloud/android/JARVIS-Emulator.apk" >> "$GITHUB_ENV"
+
+      - name: Boot emulator and exercise real mobile app
+        uses: ReactiveCircus/android-emulator-runner@ed009f5318f15b1cf93a191b856c4f1748a2d4c1
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          target: google_apis
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            adb wait-for-device
+            adb install -r "$APK"
+            adb shell pm path ai.jarvis.app | tee artifacts/real-cloud/android/package-path.txt
+            adb shell monkey -p ai.jarvis.app -c android.intent.category.LAUNCHER 1
+            sleep 12
+            adb shell dumpsys activity activities > artifacts/real-cloud/android/activity.txt
+            if ! grep -q "ai.jarvis.app" artifacts/real-cloud/android/activity.txt; then echo "JARVIS Android app is not present in activity state" >&2; exit 1; fi
+            adb shell am start -W -a android.intent.action.VIEW -d "jarvis://pair?smoke=cloud-validation" ai.jarvis.app > artifacts/real-cloud/android/deep-link.txt || true
+            sleep 4
+            adb exec-out screencap -p > artifacts/real-cloud/android/android-screen.png
+            adb shell uiautomator dump /sdcard/jarvis-window.xml >/dev/null || true
+            adb pull /sdcard/jarvis-window.xml artifacts/real-cloud/android/jarvis-window.xml || true
+            adb logcat -d > artifacts/real-cloud/android/logcat.txt
+            if grep -E "FATAL EXCEPTION: main|Process: ai\.jarvis\.app.*has died" artifacts/real-cloud/android/logcat.txt; then echo "JARVIS Android app crashed in the emulator" >&2; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: JARVIS-Real-Android-Emulator-Evidence
+          path: artifacts/real-cloud/android
+          if-no-files-found: warn
