@@ -1,0 +1,317 @@
+"use client";
+
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Activity, ArrowUp, Cpu, Link2, LoaderCircle, Mic2, RadioTower, ShieldCheck, Smartphone, Zap } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Reactor } from "@/components/reactor";
+import {
+  BrainStatus,
+  LocalBrainClient,
+  bootstrapDesktopBrain,
+  platformMode,
+  type PlatformMode,
+} from "@/lib/jarvis-runtime";
+
+type LocalMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  at: string;
+};
+
+type VisualProfile = {
+  tier: "eco" | "balanced" | "high" | "ultra";
+  refreshHz: number;
+};
+
+function useVisualProfile(systemPressure: number | null | undefined): VisualProfile {
+  const [profile, setProfile] = useState<VisualProfile>({ tier: "balanced", refreshHz: 60 });
+
+  useEffect(() => {
+    let cancelled = false;
+    let frame = 0;
+    const stamps: number[] = [];
+
+    function sample(now: number) {
+      if (cancelled) return;
+      stamps.push(now);
+      frame += 1;
+      if (frame < 45) {
+        requestAnimationFrame(sample);
+        return;
+      }
+      const duration = stamps[stamps.length - 1] - stamps[0];
+      const measured = duration > 0 ? ((stamps.length - 1) * 1000) / duration : 60;
+      const common = [30, 60, 75, 90, 120, 144, 165, 180, 240];
+      const refreshHz = common.reduce((best, value) =>
+        Math.abs(value - measured) < Math.abs(best - measured) ? value : best
+      , 60);
+      const cores = navigator.hardwareConcurrency || 4;
+      const memory = Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory || 4);
+      const pressure = systemPressure ?? 0.5;
+      let tier: VisualProfile["tier"] = "balanced";
+      if (pressure > 0.88 || cores <= 4 || memory <= 4) tier = "eco";
+      else if (pressure < 0.45 && cores >= 12 && memory >= 12 && refreshHz >= 120) tier = "ultra";
+      else if (pressure < 0.7 && cores >= 8 && memory >= 8) tier = "high";
+      if (!cancelled) setProfile({ tier, refreshHz });
+    }
+
+    requestAnimationFrame(sample);
+    return () => { cancelled = true; };
+  }, [systemPressure]);
+
+  return profile;
+}
+
+function MobileShell() {
+  const [error, setError] = useState("");
+  const [scanned, setScanned] = useState<Record<string, unknown> | null>(null);
+
+  async function scanPairingCode() {
+    setError("");
+    try {
+      const scanner = window.__TAURI__?.barcodeScanner;
+      if (!scanner) throw new Error("QR scanner is unavailable in this mobile build.");
+      const permission = await scanner.requestPermissions();
+      if (!String(permission).startsWith("granted")) {
+        throw new Error("Camera permission is required to pair JARVIS.");
+      }
+      const result = await scanner.scan({ cameraDirection: "back", windowed: false });
+      const value = JSON.parse(result.content);
+      if (!value || typeof value !== "object") throw new Error("Invalid JARVIS pairing code.");
+      setScanned(value as Record<string, unknown>);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Pairing scan failed.");
+    }
+  }
+
+  return (
+    <main className="product-shell mobile-product-shell">
+      <section className="mobile-pair-stage">
+        <div className="wordmark"><span className="wordmark-mark">J</span> JARVIS</div>
+        <Reactor state={scanned ? "THINKING" : "LISTENING"} />
+        <p className="section-index">COMPANION / SECURE PAIRING</p>
+        <h1>{scanned ? "Desktop found." : "Connect to your JARVIS Brain."}</h1>
+        <p>
+          {scanned
+            ? "The pairing invitation was scanned. Device identity and biometric approval are required before this phone can access JARVIS."
+            : "On your desktop, open Device Link and scan the QR code. Your phone becomes another face of the same JARVIS — not a second assistant."}
+        </p>
+        <Button onClick={scanPairingCode}><Smartphone size={16} /> Scan desktop QR</Button>
+        {scanned && (
+          <pre className="pair-preview">{JSON.stringify({
+            inviter_device: scanned.inviter_device,
+            expires_at: scanned.expires_at,
+          }, null, 2)}</pre>
+        )}
+        {error && <p className="console-error">{error}</p>}
+      </section>
+    </main>
+  );
+}
+
+export function JarvisProductShell() {
+  const [mode, setMode] = useState<PlatformMode | null>(null);
+  const [client, setClient] = useState<LocalBrainClient | null>(null);
+  const [status, setStatus] = useState<BrainStatus | null>(null);
+  const [messages, setMessages] = useState<LocalMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(true);
+  const [error, setError] = useState("");
+  const [pairEndpoint, setPairEndpoint] = useState("");
+  const [pairOffer, setPairOffer] = useState<Record<string, unknown> | null>(null);
+  const logEnd = useRef<HTMLDivElement>(null);
+  const visual = useVisualProfile(status?.device.system_pressure);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function boot() {
+      try {
+        const nextMode = await platformMode();
+        if (cancelled) return;
+        setMode(nextMode);
+        if (nextMode === "desktop") {
+          const nextClient = await bootstrapDesktopBrain();
+          if (cancelled) return;
+          setClient(nextClient);
+          setStatus(await nextClient.status());
+        }
+      } catch (reason) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "JARVIS failed to initialize.");
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    }
+
+    void boot();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    logEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages]);
+
+  useEffect(() => {
+    if (!client) return;
+    const timer = window.setInterval(() => {
+      client.status().then(setStatus).catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [client]);
+
+  async function initializeBrain() {
+    if (!client) return;
+    setBusy(true);
+    setError("");
+    const poll = window.setInterval(() => client.status().then(setStatus).catch(() => undefined), 800);
+    try {
+      setStatus(await client.setupLocalBrain());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Local Brain setup failed.");
+      setStatus(await client.status().catch(() => status));
+    } finally {
+      window.clearInterval(poll);
+      setBusy(false);
+    }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const content = draft.trim();
+    if (!client || !content || !status?.brain_ready || busy) return;
+    setDraft("");
+    setError("");
+    setMessages((items) => [...items, {
+      id: crypto.randomUUID(), role: "user", content, at: new Date().toISOString(),
+    }]);
+    setBusy(true);
+    try {
+      const reply = await client.message(content);
+      setMessages((items) => [...items, {
+        id: crypto.randomUUID(), role: "assistant", content: reply.text, at: new Date().toISOString(),
+      }]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "JARVIS could not complete the request.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createPairOffer() {
+    if (!client || !pairEndpoint.trim()) return;
+    setError("");
+    try {
+      setPairOffer(await client.createPairingOffer(pairEndpoint.trim()));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Pairing offer could not be created.");
+    }
+  }
+
+  const pressure = status?.device.system_pressure;
+  const state = busy ? "THINKING" : status?.brain_ready ? "LISTENING" : "MUTED";
+  const ram = useMemo(() => {
+    if (!status?.device.ram_total_gb) return "—";
+    return `${status.device.ram_available_gb?.toFixed(1) ?? "?"} / ${status.device.ram_total_gb.toFixed(1)} GB`;
+  }, [status]);
+
+  if (mode === "mobile") return <MobileShell />;
+
+  if (busy && !client) {
+    return <div className="boot-screen"><div className="boot-pulse" aria-label="Starting JARVIS Brain" /></div>;
+  }
+
+  return (
+    <main className="console-shell product-shell" data-visual-tier={visual.tier} data-refresh={visual.refreshHz}>
+      <header className="console-header">
+        <div className="wordmark"><span className="wordmark-mark">J</span> JARVIS <small>BRAIN / LOCAL-FIRST</small></div>
+        <div className="header-state"><span className="state-dot" /><span>{status?.brain_ready ? "ONLINE" : "SETUP"}</span></div>
+        <div className="operator-menu"><span>{visual.tier.toUpperCase()} · {visual.refreshHz} HZ</span></div>
+      </header>
+
+      <div className="console-grid">
+        <section className="mission-log">
+          <div className="panel-heading"><div><p className="section-index">MEMORY / CONTINUOUS</p><h2>Mission log</h2></div><RadioTower size={17} /></div>
+          <div className="message-stream">
+            {messages.length === 0 ? (
+              <div className="empty-log">
+                <span>{status?.brain_ready ? "JARVIS is ready." : "Local Brain is not initialized yet."}</span>
+                <p>Your desktop and paired phone share one identity, one semantic memory and one owner-authority boundary.</p>
+              </div>
+            ) : messages.map((message) => (
+              <article key={message.id} className={`message message-${message.role}`}>
+                <div><span>{message.role === "assistant" ? "JARVIS" : "YOU"}</span><time>{new Date(message.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>
+                <p>{message.content}</p>
+              </article>
+            ))}
+            <div ref={logEnd} />
+          </div>
+        </section>
+
+        <section className="command-stage">
+          <div className="state-caption"><span className="state-dot" /> JARVIS BRAIN / {status?.setup.phase?.toUpperCase() || "BOOT"}</div>
+          <Reactor state={state} />
+          <div className="voice-caption">
+            <h1>{status?.brain_ready ? (busy ? "Reasoning" : "At your service.") : "Initialize local intelligence."}</h1>
+            <p>{status?.setup.message || "Establishing local Brain link."}</p>
+          </div>
+
+          {!status?.brain_ready ? (
+            <div className="brain-setup-card">
+              <Button onClick={initializeBrain} disabled={!client || busy}>
+                {busy ? <LoaderCircle className="spin" size={16} /> : <Zap size={16} />}
+                {busy ? "Preparing JARVIS Brain" : "Initialize Local Brain"}
+              </Button>
+              <p>Downloads only the local models your current hardware can support. No separate Python installation is required.</p>
+            </div>
+          ) : (
+            <form className="command-composer" onSubmit={submit}>
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                placeholder="Speak to JARVIS"
+                rows={2}
+              />
+              <Button type="button" variant="secondary" size="icon" aria-label="Voice channel"><Mic2 size={18} /></Button>
+              <Button type="submit" size="icon" disabled={!draft.trim() || busy}><ArrowUp size={18} /></Button>
+            </form>
+          )}
+          {error && <p className="console-error" role="alert">{error}</p>}
+        </section>
+
+        <aside className="systems-panel">
+          <div className="panel-heading"><div><p className="section-index">SYSTEM / ADAPTIVE</p><h2>Operational state</h2></div><Activity size={17} /></div>
+          <dl className="status-readout">
+            <div><dt>JARVIS Brain</dt><dd data-on={status?.brain_ready}>{status?.brain_ready ? "LOCAL" : "SETUP"}</dd></div>
+            <div><dt>Memory</dt><dd data-on="true"><ShieldCheck size={13} /> CONTINUOUS</dd></div>
+            <div><dt>RAM available</dt><dd>{ram}</dd></div>
+            <div><dt>System pressure</dt><dd>{pressure == null ? "—" : `${Math.round(pressure * 100)}%`}</dd></div>
+            <div><dt>Power</dt><dd>{status?.device.power_source?.toUpperCase() || "—"}</dd></div>
+            <div><dt>Visual profile</dt><dd data-on="true"><Cpu size={13} /> {visual.tier.toUpperCase()}</dd></div>
+          </dl>
+
+          <section className="device-link-card">
+            <div className="capability-heading"><span>Device Link</span><b>{status?.paired_devices.length ?? 0}</b></div>
+            <p>Pair your phone to this same JARVIS Brain over an authenticated device link.</p>
+            <Input
+              value={pairEndpoint}
+              onChange={(event) => setPairEndpoint(event.target.value)}
+              placeholder="Tailscale/MagicDNS endpoint"
+            />
+            <Button variant="secondary" onClick={createPairOffer} disabled={!pairEndpoint.trim()}>
+              <Link2 size={15} /> Create pairing code
+            </Button>
+            {pairOffer && <pre className="pair-preview">{JSON.stringify(pairOffer, null, 2)}</pre>}
+          </section>
+        </aside>
+      </div>
+    </main>
+  );
+}
