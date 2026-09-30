@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "identity": "JARVIS",
+  "namespace": "jarvis",
+  "models": [
+    {
+      "alias": "jarvis-brain-fast",
+      "base": "qwen3.5:4b",
+      "role": "general_realtime",
+      "min_ram_gb": 4
+    },
+    {
+      "alias": "jarvis-brain-engineering",
+      "base": "qwen2.5-coder:7b",
+      "role": "engineering",
+      "min_ram_gb": 6
+    },
+    {
+      "alias": "jarvis-brain-lite",
+      "base": "qwen3:1.7b",
+      "role": "low_memory_fallback",
+      "min_ram_gb": 2
+    }
+  ]
+}
