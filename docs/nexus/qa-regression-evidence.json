@@ -1,0 +1,368 @@
+{
+  "base_commit": "6e0516da98894644591fbbae32951db9120d97e7",
+  "original_full_discovery": {
+    "tests_run": 356,
+    "failures": 4,
+    "errors": 67
+  },
+  "after_audio_import_fix_only": {
+    "tests_run": 391,
+    "failures": 25,
+    "errors": 66,
+    "failed_ids": [
+      "test_action_helpers.ActionHelperTests.test_cancel_visible_gmail_draft_discards_compose_window",
+      "test_action_helpers.ActionHelperTests.test_email_approval_sends_exact_pending_draft_on_macos",
+      "test_action_helpers.ActionHelperTests.test_email_inbox_formats_message_ids_without_body_content",
+      "test_action_helpers.ActionHelperTests.test_email_prepare_requires_separate_approval",
+      "test_action_helpers.ActionHelperTests.test_file_controller_does_not_open_missing_file",
+      "test_action_helpers.ActionHelperTests.test_file_controller_opens_file_with_default_macos_app",
+      "test_action_helpers.ActionHelperTests.test_gmail_approval_sends_rfc_message_and_clears_pending_draft",
+      "test_action_helpers.ActionHelperTests.test_gmail_connect_stores_refresh_credentials_in_secret_store",
+      "test_action_helpers.ActionHelperTests.test_gmail_inbox_uses_real_gmail_query_and_metadata",
+      "test_action_helpers.ActionHelperTests.test_gmail_prepare_failure_does_not_create_pending_email",
+      "test_action_helpers.ActionHelperTests.test_gmail_read_extracts_plain_text_without_marking_message_read",
+      "test_action_helpers.ActionHelperTests.test_instagram_send_prepares_then_approves_visible_draft",
+      "test_action_helpers.ActionHelperTests.test_open_app_normalization_removes_polite_noise",
+      "test_action_helpers.ActionHelperTests.test_pending_message_can_be_cancelled_without_sending",
+      "test_action_helpers.ActionHelperTests.test_reply_draft_requires_approval_before_send",
+      "test_action_helpers.ActionHelperTests.test_screen_analysis_hands_finished_result_to_speech",
+      "test_action_helpers.ActionHelperTests.test_screen_capture_failure_is_spoken",
+      "test_action_helpers.ActionHelperTests.test_spotify_link_is_played_directly_on_macos",
+      "test_action_helpers.ActionHelperTests.test_spotify_plain_query_opens_search_without_false_playback_claim",
+      "test_action_helpers.ActionHelperTests.test_spotify_stop_pauses_and_rewinds_on_macos",
+      "test_action_helpers.ActionHelperTests.test_visible_gmail_approval_uses_browser_send_not_gmail_api",
+      "test_ui_regressions.UIRegressionTests.test_fresh_install_voice_defaults_to_charon",
+      "test_ui_regressions.UIRegressionTests.test_graphics_setting_preserves_saved_theme",
+      "test_ui_regressions.UIRegressionTests.test_setup_overlay_is_centered_after_first_show",
+      "test_ui_regressions.UIRegressionTests.test_tools_panel_ignores_generic_system_lifecycle_messages",
+      "test_ui_regressions.UIRegressionTests.test_aligned_intro_renders_once_with_the_selected_voice",
+      "test_ui_regressions.UIRegressionTests.test_audio_driven_intro_never_finishes_on_wall_clock_deadline",
+      "test_ui_regressions.UIRegressionTests.test_audio_driven_intro_waits_for_playback_clock_before_first_chapter",
+      "test_ui_regressions.UIRegressionTests.test_auto_graphics_result_is_saved_with_device_report",
+      "test_ui_regressions.UIRegressionTests.test_chapter_signal_tracks_caption_boundaries",
+      "test_ui_regressions.UIRegressionTests.test_core_spotlight_is_compact_and_circular",
+      "test_ui_regressions.UIRegressionTests.test_each_selected_voice_uses_its_own_intro_cache",
+      "test_ui_regressions.UIRegressionTests.test_exact_intro_timing_sidecar_overrides_estimated_boundaries",
+      "test_ui_regressions.UIRegressionTests.test_explicit_self_quit_commands_route_to_jarvis",
+      "test_ui_regressions.UIRegressionTests.test_failed_tour_replay_returns_to_comms_and_releases_lock",
+      "test_ui_regressions.UIRegressionTests.test_full_tour_is_chaptered_for_a_ninety_second_delivery",
+      "test_ui_regressions.UIRegressionTests.test_gemini_voice_selection_drives_tour_and_survives_restart",
+      "test_ui_regressions.UIRegressionTests.test_graphics_settings_include_auto_choice",
+      "test_ui_regressions.UIRegressionTests.test_guided_tour_switches_real_tabs_and_restores_original",
+      "test_ui_regressions.UIRegressionTests.test_intro_cache_is_versioned_by_performance_and_mastering",
+      "test_ui_regressions.UIRegressionTests.test_intro_caption_boundaries_snap_to_pcm_pauses",
+      "test_ui_regressions.UIRegressionTests.test_intro_captions_use_the_live_subtitle_widget",
+      "test_ui_regressions.UIRegressionTests.test_intro_completion_is_the_operational_readiness_transition",
+      "test_ui_regressions.UIRegressionTests.test_intro_does_not_force_fullscreen",
+      "test_ui_regressions.UIRegressionTests.test_intro_generation_uses_tts_renderer_before_mastering",
+      "test_ui_regressions.UIRegressionTests.test_intro_has_no_platform_voice_fallback",
+      "test_ui_regressions.UIRegressionTests.test_intro_mastering_keeps_raw_pcm_valid_and_peak_safe",
+      "test_ui_regressions.UIRegressionTests.test_intro_overlay_renders_and_finishes_once",
+      "test_ui_regressions.UIRegressionTests.test_intro_pcm_duration_is_used_as_the_audio_clock",
+      "test_ui_regressions.UIRegressionTests.test_intro_plays_only_prepared_selected_gemini_voice",
+      "test_ui_regressions.UIRegressionTests.test_intro_quota_error_never_substitutes_a_different_voice",
+      "test_ui_regressions.UIRegressionTests.test_intro_renderer_uses_dedicated_tts_with_exact_script",
+      "test_ui_regressions.UIRegressionTests.test_intro_settings_preserve_existing_ui_preferences",
+      "test_ui_regressions.UIRegressionTests.test_intro_voice_preparation_retries_and_caches_selected_voice",
+      "test_ui_regressions.UIRegressionTests.test_key_validation_does_not_complete_intro_early",
+      "test_ui_regressions.UIRegressionTests.test_legacy_graphics_setting_migrates_to_auto_until_overridden",
+      "test_ui_regressions.UIRegressionTests.test_legacy_intro_completion_replays_once_after_version_upgrade",
+      "test_ui_regressions.UIRegressionTests.test_live_intro_reveals_the_real_console_widgets_in_sequence",
+      "test_ui_regressions.UIRegressionTests.test_long_intro_renderer_has_extended_timeout",
+      "test_ui_regressions.UIRegressionTests.test_manual_graphics_choice_wins_over_late_auto_result",
+      "test_ui_regressions.UIRegressionTests.test_manual_tour_replay_activates_hard_interaction_lock",
+      "test_ui_regressions.UIRegressionTests.test_mission_empty_states_are_visible_until_real_activity_arrives",
+      "test_ui_regressions.UIRegressionTests.test_operational_readiness_requires_every_startup_gate_to_clear",
+      "test_ui_regressions.UIRegressionTests.test_qss_alpha_colors_are_explicit_rgba",
+      "test_ui_regressions.UIRegressionTests.test_reduced_motion_spotlight_moves_without_animation",
+      "test_ui_regressions.UIRegressionTests.test_replay_selected_during_setup_applies_to_current_launch",
+      "test_ui_regressions.UIRegressionTests.test_segmented_intro_renderer_returns_exact_pcm_boundaries",
+      "test_ui_regressions.UIRegressionTests.test_segmented_intro_uses_exact_tts_chapter_boundaries",
+      "test_ui_regressions.UIRegressionTests.test_segmented_tts_retries_when_model_returns_no_audio",
+      "test_ui_regressions.UIRegressionTests.test_segmented_tts_stops_immediately_on_quota_error",
+      "test_ui_regressions.UIRegressionTests.test_settings_copy_distinguishes_greeting_from_interface_tour",
+      "test_ui_regressions.UIRegressionTests.test_settings_exposes_replay_preference_after_setup",
+      "test_ui_regressions.UIRegressionTests.test_setup_api_guide_expands_without_clearing_the_key",
+      "test_ui_regressions.UIRegressionTests.test_setup_api_guide_opens_official_ai_studio_page",
+      "test_ui_regressions.UIRegressionTests.test_setup_exposes_replay_preference",
+      "test_ui_regressions.UIRegressionTests.test_setup_validation_state_is_visible_and_recoverable",
+      "test_ui_regressions.UIRegressionTests.test_single_render_stops_immediately_on_quota_error",
+      "test_ui_regressions.UIRegressionTests.test_startup_backdrop_covers_the_live_console_during_setup",
+      "test_ui_regressions.UIRegressionTests.test_startup_gate_blocks_text_callbacks_until_ready",
+      "test_ui_regressions.UIRegressionTests.test_successful_tour_handoff_finishes_on_comms",
+      "test_ui_regressions.UIRegressionTests.test_successful_validation_keeps_setup_until_voice_is_ready",
+      "test_ui_regressions.UIRegressionTests.test_time_aware_greeting_boundaries",
+      "test_ui_regressions.UIRegressionTests.test_tour_and_greeting_use_distinct_caches",
+      "test_ui_regressions.UIRegressionTests.test_tour_chapters_cover_every_guided_region",
+      "test_ui_regressions.UIRegressionTests.test_tour_leaves_tools_for_comms_on_the_next_non_tool_chapter",
+      "test_ui_regressions.UIRegressionTests.test_tour_mask_uses_quieter_single_focus_treatment",
+      "test_ui_regressions.UIRegressionTests.test_tour_popup_cleanup_ignores_deleted_qt_wrappers",
+      "test_ui_regressions.UIRegressionTests.test_tour_start_failure_is_reported_and_does_not_escape_qt_slot",
+      "test_ui_regressions.UIRegressionTests.test_tour_temporarily_suppresses_presence_popups",
+      "test_ui_regressions.UIRegressionTests.test_unavailable_hardware_metrics_are_not_fabricated",
+      "test_ui_regressions.UIRegressionTests.test_voice_and_text_chapter_reveals_the_real_comms_input"
+    ]
+  },
+  "contract_migration": {
+    "retired_ui_specs": [
+      "test_aligned_intro_renders_once_with_the_selected_voice",
+      "test_audio_driven_intro_never_finishes_on_wall_clock_deadline",
+      "test_audio_driven_intro_waits_for_playback_clock_before_first_chapter",
+      "test_auto_graphics_result_is_saved_with_device_report",
+      "test_chapter_signal_tracks_caption_boundaries",
+      "test_core_spotlight_is_compact_and_circular",
+      "test_each_selected_voice_uses_its_own_intro_cache",
+      "test_exact_intro_timing_sidecar_overrides_estimated_boundaries",
+      "test_explicit_self_quit_commands_route_to_jarvis",
+      "test_failed_tour_replay_returns_to_comms_and_releases_lock",
+      "test_fresh_install_voice_defaults_to_charon",
+      "test_full_tour_is_chaptered_for_a_ninety_second_delivery",
+      "test_gemini_voice_selection_drives_tour_and_survives_restart",
+      "test_graphics_settings_include_auto_choice",
+      "test_guided_tour_switches_real_tabs_and_restores_original",
+      "test_intro_cache_is_versioned_by_performance_and_mastering",
+      "test_intro_caption_boundaries_snap_to_pcm_pauses",
+      "test_intro_captions_use_the_live_subtitle_widget",
+      "test_intro_completion_is_the_operational_readiness_transition",
+      "test_intro_does_not_force_fullscreen",
+      "test_intro_generation_uses_tts_renderer_before_mastering",
+      "test_intro_has_no_platform_voice_fallback",
+      "test_intro_mastering_keeps_raw_pcm_valid_and_peak_safe",
+      "test_intro_overlay_renders_and_finishes_once",
+      "test_intro_pcm_duration_is_used_as_the_audio_clock",
+      "test_intro_plays_only_prepared_selected_gemini_voice",
+      "test_intro_quota_error_never_substitutes_a_different_voice",
+      "test_intro_renderer_uses_dedicated_tts_with_exact_script",
+      "test_intro_settings_preserve_existing_ui_preferences",
+      "test_intro_voice_preparation_retries_and_caches_selected_voice",
+      "test_key_validation_does_not_complete_intro_early",
+      "test_legacy_graphics_setting_migrates_to_auto_until_overridden",
+      "test_legacy_intro_completion_replays_once_after_version_upgrade",
+      "test_live_intro_reveals_the_real_console_widgets_in_sequence",
+      "test_long_intro_renderer_has_extended_timeout",
+      "test_manual_graphics_choice_wins_over_late_auto_result",
+      "test_manual_tour_replay_activates_hard_interaction_lock",
+      "test_mission_empty_states_are_visible_until_real_activity_arrives",
+      "test_operational_readiness_requires_every_startup_gate_to_clear",
+      "test_reduced_motion_spotlight_moves_without_animation",
+      "test_replay_selected_during_setup_applies_to_current_launch",
+      "test_segmented_intro_renderer_returns_exact_pcm_boundaries",
+      "test_segmented_intro_uses_exact_tts_chapter_boundaries",
+      "test_segmented_tts_retries_when_model_returns_no_audio",
+      "test_segmented_tts_stops_immediately_on_quota_error",
+      "test_settings_copy_distinguishes_greeting_from_interface_tour",
+      "test_settings_exposes_replay_preference_after_setup",
+      "test_setup_api_guide_expands_without_clearing_the_key",
+      "test_setup_api_guide_opens_official_ai_studio_page",
+      "test_setup_exposes_replay_preference",
+      "test_setup_validation_state_is_visible_and_recoverable",
+      "test_single_render_stops_immediately_on_quota_error",
+      "test_startup_backdrop_covers_the_live_console_during_setup",
+      "test_startup_gate_blocks_text_callbacks_until_ready",
+      "test_successful_tour_handoff_finishes_on_comms",
+      "test_successful_validation_keeps_setup_until_voice_is_ready",
+      "test_time_aware_greeting_boundaries",
+      "test_tour_and_greeting_use_distinct_caches",
+      "test_tour_chapters_cover_every_guided_region",
+      "test_tour_leaves_tools_for_comms_on_the_next_non_tool_chapter",
+      "test_tour_mask_uses_quieter_single_focus_treatment",
+      "test_tour_start_failure_is_reported_and_does_not_escape_qt_slot",
+      "test_tour_temporarily_suppresses_presence_popups",
+      "test_voice_and_text_chapter_reveals_the_real_comms_input"
+    ],
+    "retired_count": 64,
+    "new_behavior_tests": 40,
+    "explanation": "391 expanded baseline - 64 obsolete UI specifications + 40 current behavior/authorization tests = 367. No skip/xfail; see qa-contract-migration.md."
+  },
+  "full_cloud": {
+    "suite": "full",
+    "measured_at": "2026-09-29T16:31:52.355642+00:00",
+    "python": "3.12.14",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "tests_run": 367,
+    "passed": 367,
+    "failures": [],
+    "errors": [],
+    "skipped": [],
+    "environment_dependent_errors": [],
+    "successful": true,
+    "hardware_certified": false,
+    "limits": "Offscreen/mocked tests verify code only. No microphone, camera, desktop, Windows, iGPU or laptop measurements."
+  },
+  "minimal_contracts": {
+    "tests_run": 79,
+    "passed": 79,
+    "failures": 0,
+    "errors": 0
+  },
+  "staged_qa": {
+    "checks": [
+      {
+        "name": "source compilation",
+        "status": "passed",
+        "duration_seconds": 0.029894710999997187
+      },
+      {
+        "name": "dependency consistency",
+        "status": "passed",
+        "duration_seconds": 0.3130091040000025
+      },
+      {
+        "name": "complete unittest suite",
+        "status": "passed",
+        "duration_seconds": 8.95288641899998
+      },
+      {
+        "name": "offscreen UI evidence",
+        "status": "passed",
+        "duration_seconds": 0.5835077329999763
+      },
+      {
+        "name": "tracked secret scan",
+        "status": "passed",
+        "duration_seconds": 0.01367386900000156
+      }
+    ],
+    "findings": [
+      {
+        "severity": "P2",
+        "title": "Broad exception handling reduces failure visibility",
+        "subsystem": "Observability",
+        "impact": "Real integration failures may be swallowed or reduced to generic UI messages.",
+        "reproduction": "Trigger mocked permission, network, and subprocess failures and inspect structured logs.",
+        "expected": "Failures retain actionable context and are observable in QA reports.",
+        "actual": "Found 470 broad Exception handlers in runtime modules.",
+        "evidence": ""
+      },
+      {
+        "severity": "P2",
+        "title": "Deprecated Gemini SDK remains in runtime paths",
+        "subsystem": "Dependencies",
+        "impact": "Those integrations no longer receive fixes and may break as Gemini APIs evolve.",
+        "reproduction": "Run the unit suite and exercise tools importing google.generativeai.",
+        "expected": "Runtime integrations consistently use the supported google.genai SDK.",
+        "actual": "Affected files: actions/code_helper.py, actions/computer_settings.py, actions/desktop.py, actions/dev_agent.py, actions/flight_finder.py, actions/youtube_video.py",
+        "evidence": ""
+      },
+      {
+        "severity": "P2",
+        "title": "UI contains extensive hard-coded color values",
+        "subsystem": "Theming",
+        "impact": "Some controls may not update consistently when themes change.",
+        "reproduction": "Switch through all themes and inspect existing overlays and detached panels.",
+        "expected": "Runtime colors come from theme tokens or are explicitly invariant.",
+        "actual": "Found 263 hexadecimal color literals in ui.py.",
+        "evidence": ""
+      }
+    ]
+  },
+  "cloud_checklist": {
+    "status_counts": {
+      "blocked": 1,
+      "deferred": 5,
+      "partial": 9,
+      "passed": 3
+    },
+    "cases": [
+      {
+        "name": "Clean startup and API-only gate",
+        "status": "passed",
+        "notes": "Startup gating and setup isolation were exercised offscreen."
+      },
+      {
+        "name": "Invalid then valid Gemini key",
+        "status": "passed",
+        "notes": "Validation failure and recovery were tested with a mocked Gemini boundary; no paid API call was made."
+      },
+      {
+        "name": "Selected voice and introduction",
+        "status": "partial",
+        "notes": "Voice selection/persistence tested with a fake engine boundary. The proposed cinematic introduction is not implemented; real playback is DEFERRED."
+      },
+      {
+        "name": "Subtitle and audio synchronization",
+        "status": "partial",
+        "notes": "Subtitle turn-completion and mute behavior tested offscreen. Actual audio synchronization is DEFERRED."
+      },
+      {
+        "name": "Microphone turn-taking and interruption",
+        "status": "deferred",
+        "notes": "DEFERRED: cloud runner has no authorized target microphone/speaker; no stream opened."
+      },
+      {
+        "name": "Gemini disconnect and reconnect",
+        "status": "partial",
+        "notes": "Offline/fallback behavior passed with fault injection; a real network interruption was not performed."
+      },
+      {
+        "name": "Window and secondary display",
+        "status": "partial",
+        "notes": "Physical displays: DEFERRED. Minimum and standard sizes rendered. Physical window movement remains manual."
+      },
+      {
+        "name": "Themes, graphics, settings, compact mode",
+        "status": "partial",
+        "notes": "Themes and graphics passed automatically; physical dock detachment and compact-mode feel remain manual."
+      },
+      {
+        "name": "Keyboard and focus accessibility",
+        "status": "partial",
+        "notes": "Rendered focusable surfaces were inspected. 0 custom controls lack an accessible name; full VoiceOver navigation remains manual."
+      },
+      {
+        "name": "Controlled browser page",
+        "status": "blocked",
+        "notes": "Local page worked, but the Playwright runtime is unavailable."
+      },
+      {
+        "name": "Temporary file workflow",
+        "status": "passed",
+        "notes": "Verified consented workspace create/read through the Owner Kernel. Outside writes and unsupported rename denied."
+      },
+      {
+        "name": "Messaging draft safety",
+        "status": "partial",
+        "notes": "All irreversible and out-of-workspace probes were rejected before execution. Draft typing and cancellation remain manual because they affect a visible composer."
+      },
+      {
+        "name": "Read-only message awareness",
+        "status": "deferred",
+        "notes": "Reading a real Messages or Instagram conversation requires user-selected content and macOS permissions; automation will not inspect private conversations."
+      },
+      {
+        "name": "Reminder lifecycle",
+        "status": "deferred",
+        "notes": "Creating a real launchd reminder changes macOS state, so this remains supervised even in QA mode."
+      },
+      {
+        "name": "Screen and permission handling",
+        "status": "deferred",
+        "notes": "DEFERRED: real screen/camera permission and capture require the authorized physical device. No capture attempted."
+      },
+      {
+        "name": "Read-only information tools",
+        "status": "partial",
+        "notes": "Tool contracts and failure behavior passed without opening external sites. Live external-service results remain DEFERRED."
+      },
+      {
+        "name": "Reversible desktop actions",
+        "status": "deferred",
+        "notes": "The safety guard passed, but automated keyboard or mouse input is intentionally not injected into the operator desktop."
+      },
+      {
+        "name": "Thirty-minute soak",
+        "status": "partial",
+        "notes": "Short harness stability probe completed; the 30-minute real JARVIS soak remains DEFERRED and is required for certification."
+      }
+    ]
+  },
+  "local_browser_limit": "Bundled Node executable failed; using the available system Node reached Playwright. Official Chromium downloads yielded invalid/truncated archives, leaving the local browser probe BLOCKED. GitHub Actions explicitly installs Chromium and requires success. No local browser pass claimed.",
+  "commands": [
+    "python scripts/cloud_validation.py --suite full --output artifacts/full-tests.json",
+    "python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_owner_kernel tests.test_local_provider tests.test_missions",
+    "python scripts/qa.py automated",
+    "python scripts/qa.py checklist-auto"
+  ],
+  "hardware_certified": false,
+  "no_merge_or_deployment": true
+}
