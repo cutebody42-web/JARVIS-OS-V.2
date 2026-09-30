@@ -13,6 +13,7 @@ import json
 import threading
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from core.jarvis_brain import JarvisBrain
 from core.nexus.brain_rpc import SignedBrainEndpoint
@@ -78,6 +79,16 @@ def create_sync_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^(tauri://localhost|https?://tauri\.localhost)$",
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Accept"],
+        expose_headers=["Content-Type"],
+        max_age=600,
     )
 
     @app.get("/nexus/sync/v1/health")
