@@ -447,7 +447,7 @@ jobs:
           echo "APK=$GITHUB_WORKSPACE/artifacts/real-cloud/android/JARVIS-Emulator.apk" >> "$GITHUB_ENV"
 
       - name: Boot emulator and exercise real mobile app
-        uses: ReactiveCircus/android-emulator-runner@ed009f5318f15b1cf93a191b856c4f1748a2d4c1
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 36
           arch: x86_64
