@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from api.nexus_sync_server import create_sync_app
 from core.nexus.pairing import PairingManager
-from core.nexus.peer_auth import DeviceSigner
+from core.nexus.peer_auth import DeviceSigner, PeerRole
 from core.nexus.signed_transport import MEDIA_TYPE, batch_to_payload
 from core.nexus.sync_daemon import SyncBatch, SyncReport
 from core.nexus.sync_node import NexusSyncNode
@@ -36,7 +36,7 @@ class FakeRegistry:
     def __init__(self, peers):
         self.peers = list(peers)
 
-    def active_peers(self):
+    def active_sync_peers(self):
         return tuple(FakePeer(value) for value in self.peers)
 
 
@@ -196,7 +196,7 @@ class SyncNodeTests(unittest.TestCase):
             offer,
             "phone",
             phone.signer,
-            "http://phone.tailnet.ts.net:8765",
+            candidate_role=PeerRole.COMPANION,
         )
 
         app = create_sync_app(desktop, run_scheduler=False)
@@ -213,7 +213,10 @@ class SyncNodeTests(unittest.TestCase):
 
         peer = desktop.pairing.approve(offer.pairing_id)
         self.assertEqual(peer.peer_id, "phone")
+        self.assertEqual(peer.role, PeerRole.COMPANION)
+        self.assertIsNone(peer.endpoint)
         self.assertIsNotNone(desktop.registry.get_peer("phone"))
+        self.assertEqual(desktop.registry.active_sync_peers(), ())
 
     def test_pairing_http_rejects_bad_proof(self):
         desktop = NexusSyncNode(
@@ -233,7 +236,7 @@ class SyncNodeTests(unittest.TestCase):
             offer,
             "phone-bad",
             phone.signer,
-            "http://phone-bad.tailnet.ts.net:8765",
+            candidate_role=PeerRole.COMPANION,
         )
         value = request.to_dict()
         value["proof"] = "0" * 64
