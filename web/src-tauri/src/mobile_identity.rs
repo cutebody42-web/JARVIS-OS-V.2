@@ -569,10 +569,14 @@ pub fn mobile_sign_approval_decision(
     app: AppHandle,
     approval_id: String,
     approved: bool,
+    biometry_type: String,
 ) -> Result<MobileApprovalRequest, String> {
     let approval_id = approval_id.trim().to_string();
     if approval_id.is_empty() || approval_id.len() > 128 {
         return Err("Invalid JARVIS approval id.".into());
+    }
+    if biometry_type != "fingerprint" {
+        return Err("Sensitive JARVIS approvals require Android fingerprint verification.".into());
     }
     let request_id = Uuid::new_v4().simple().to_string();
     let payload = json!({
@@ -581,6 +585,7 @@ pub fn mobile_sign_approval_decision(
         "approval_id": approval_id,
         "approved": approved,
         "user_verified": true,
+        "biometry_type": "fingerprint",
     });
     let message_id = format!("approval-decision:{request_id}");
     let (endpoint, body) = sign_companion_request(
