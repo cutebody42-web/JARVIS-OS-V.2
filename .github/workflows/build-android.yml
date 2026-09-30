@@ -29,6 +29,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -117,7 +119,7 @@ jobs:
           fi
           cp "$APK" artifacts/android/JARVIS-Companion.apk
           sha256sum artifacts/android/JARVIS-Companion.apk | awk '{print "sha256="$1}' > artifacts/android/build-info.txt
-          echo "commit=${{ github.sha }}" >> artifacts/android/build-info.txt
+          echo "commit=${{ github.event.pull_request.head.sha || github.sha }}" >> artifacts/android/build-info.txt
           echo "shell=tauri-mobile" >> artifacts/android/build-info.txt
           echo "architecture=aarch64" >> artifacts/android/build-info.txt
           echo "pairing_scheme=jarvis://" >> artifacts/android/build-info.txt

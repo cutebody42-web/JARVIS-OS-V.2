@@ -44,6 +44,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -118,7 +120,7 @@ jobs:
           }
           Copy-Item $installer.FullName "artifacts/windows/JARVIS-Setup.exe" -Force
           $hash = (Get-FileHash "artifacts/windows/JARVIS-Setup.exe" -Algorithm SHA256).Hash.ToLower()
-          "commit=${{ github.sha }}" | Out-File artifacts/windows/build-info.txt -Encoding utf8
+          "commit=${{ github.event.pull_request.head.sha || github.sha }}" | Out-File artifacts/windows/build-info.txt -Encoding utf8
           "sha256=$hash" | Out-File artifacts/windows/build-info.txt -Encoding utf8 -Append
           "desktop_shell=tauri" | Out-File artifacts/windows/build-info.txt -Encoding utf8 -Append
           "brain_sidecar=embedded_pyinstaller" | Out-File artifacts/windows/build-info.txt -Encoding utf8 -Append
