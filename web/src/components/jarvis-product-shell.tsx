@@ -826,14 +826,23 @@ export function JarvisProductShell() {
 
           <section className="device-link-card">
             <div className="capability-heading"><span>Device Link</span><b>{status?.paired_devices.length ?? 0}</b></div>
-            <p>Pair your phone to this same JARVIS Brain. The secure gateway is detected automatically when Tailscale is available.</p>
+            <p>
+              {status?.companion.available
+                ? "Secure companion gateway is online. Pair your phone to this same JARVIS Brain."
+                : "Phone pairing is waiting for a secure non-loopback gateway. Connect Tailscale, then restart JARVIS; a dead or unreachable QR will never be generated."}
+            </p>
             <Input
               value={pairEndpoint}
               onChange={(event) => setPairEndpoint(event.target.value)}
-              placeholder="Advanced: override MagicDNS endpoint"
+              placeholder="Advanced: override advertised MagicDNS endpoint"
+              disabled={!status?.companion.available}
             />
-            <Button variant="secondary" onClick={createPairOffer} disabled={!client}>
-              <Link2 size={15} /> Create pairing QR
+            <Button
+              variant="secondary"
+              onClick={createPairOffer}
+              disabled={!client || !status?.companion.available}
+            >
+              <Link2 size={15} /> {status?.companion.available ? "Create pairing QR" : "Gateway offline"}
             </Button>
             {pairOffer && (
               <div className="pair-qr-card">
