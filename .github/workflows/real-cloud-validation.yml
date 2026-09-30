@@ -42,7 +42,6 @@ jobs:
     timeout-minutes: 60
     env:
       OLLAMA_HOST: "127.0.0.1:11435"
-      OLLAMA_MODELS: ${{ runner.temp }}/jarvis-ollama-models
 
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +52,8 @@ jobs:
           set -euo pipefail
           curl -fsSL https://ollama.com/install.sh | sh
           ollama --version
+          export OLLAMA_MODELS="$RUNNER_TEMP/jarvis-ollama-models"
+          echo "OLLAMA_MODELS=$OLLAMA_MODELS" >> "$GITHUB_ENV"
           mkdir -p "$OLLAMA_MODELS" artifacts/real-cloud/local-ai
 
       - name: Start isolated JARVIS Ollama
@@ -68,14 +69,17 @@ jobs:
           cat artifacts/real-cloud/local-ai/ollama.log
           exit 1
 
-      - name: Pull 1B+ base and create JARVIS alias
+      - name: Pull JARVIS Core 1B and one hidden expert
         shell: bash
         run: |
           set -euo pipefail
+          ollama pull llama3.2:1b
           ollama pull qwen3:1.7b
+          ollama create jarvis-core-1b -f models/jarvis-core-1b.Modelfile
           ollama create jarvis-brain-lite -f models/jarvis-brain-lite.Modelfile
           ollama list | tee artifacts/real-cloud/local-ai/ollama-list.txt
-          ollama show jarvis-brain-lite | tee artifacts/real-cloud/local-ai/ollama-show.txt
+          ollama show jarvis-core-1b | tee artifacts/real-cloud/local-ai/ollama-show-core.txt
+          ollama show jarvis-brain-lite | tee artifacts/real-cloud/local-ai/ollama-show-expert.txt
 
       - name: Verify parameter floor and execute real generation
         shell: bash
@@ -86,11 +90,13 @@ jobs:
           from pathlib import Path
 
           manifest = json.loads(Path("models/manifest.json").read_text("utf-8"))
-          lite = next(item for item in manifest["models"] if item["alias"] == "jarvis-brain-lite")
-          assert float(lite["parameters_b"]) >= 1.0, lite
+          core = next(item for item in manifest["models"] if item["alias"] == "jarvis-core-1b")
+          expert = next(item for item in manifest["models"] if item["alias"] == "jarvis-brain-lite")
+          assert float(core["parameters_b"]) >= 1.0, core
+          assert float(expert["parameters_b"]) >= 1.0, expert
 
           shown = subprocess.check_output(
-              ["ollama", "show", "jarvis-brain-lite"],
+              ["ollama", "show", "jarvis-core-1b"],
               text=True,
               encoding="utf-8",
               errors="replace",
@@ -104,8 +110,8 @@ jobs:
               raise SystemExit(f"Loaded model is below 1B parameters: {params_b:.3f}B")
 
           payload = json.dumps({
-              "model": "jarvis-brain-lite",
-              "prompt": "In one short sentence, say you are online and ready to help.",
+              "model": "jarvis-core-1b",
+              "prompt": "Return one compact internal routing brief for this owner request: plan tomorrow efficiently.",
               "stream": False,
               "options": {"temperature": 0},
           }).encode("utf-8")
@@ -122,8 +128,10 @@ jobs:
               raise SystemExit("Real local inference did not return a completed non-empty response")
           evidence = {
               "model": result.get("model"),
-              "manifest_parameters_b": lite["parameters_b"],
+              "manifest_parameters_b": core["parameters_b"],
               "verified_parameters_b": params_b,
+              "hidden_expert": expert["alias"],
+              "hidden_expert_parameters_b": expert["parameters_b"],
               "done": result.get("done"),
               "response": text,
               "eval_count": result.get("eval_count"),
