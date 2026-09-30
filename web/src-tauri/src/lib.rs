@@ -1,6 +1,14 @@
 mod brain;
+mod mobile_identity;
 
 use brain::{ensure_brain_sidecar, platform_mode, BrainState};
+use mobile_identity::{
+    mobile_accept_pairing_approval,
+    mobile_identity,
+    mobile_prepare_pairing,
+    mobile_sign_brain_request,
+    mobile_verify_brain_response,
+};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,7 +43,12 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             platform_mode,
-            ensure_brain_sidecar
+            ensure_brain_sidecar,
+            mobile_identity,
+            mobile_prepare_pairing,
+            mobile_accept_pairing_approval,
+            mobile_sign_brain_request,
+            mobile_verify_brain_response
         ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");
