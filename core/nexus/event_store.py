@@ -23,7 +23,8 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = {1, 2}
 _DEVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
@@ -116,6 +117,7 @@ class SyncEvent:
     id: str
     device: str
     entity_id: str
+    entity_type: str
     type: str
     vclock: Mapping[str, int]
     payload: Mapping[str, Any]
@@ -124,13 +126,17 @@ class SyncEvent:
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(f"unsupported sync event schema: {self.schema_version}")
         if not isinstance(self.id, str) or not self.id.strip() or len(self.id) > 128:
             raise ValueError("event id must be a non-empty string up to 128 characters")
         _validate_device_id(self.device)
         if not isinstance(self.entity_id, str) or not self.entity_id.strip():
             raise ValueError("entity_id must be a non-empty string")
+        if not isinstance(self.entity_type, str) or not self.entity_type.strip():
+            raise ValueError("entity_type must be a non-empty string")
+        if self.schema_version >= 2 and self.entity_type == "legacy.unknown":
+            raise ValueError("schema v2 events require an explicit entity_type")
         if not isinstance(self.type, str) or not self.type.strip():
             raise ValueError("event type must be a non-empty string")
         _parse_timestamp(self.timestamp)
@@ -156,6 +162,7 @@ class SyncEvent:
             "id": self.id,
             "device": self.device,
             "entity_id": self.entity_id,
+            "entity_type": self.entity_type,
             "vclock": dict(self.vclock),
             "type": self.type,
             "payload": _thaw_json(self.payload),
@@ -181,6 +188,7 @@ class SyncEvent:
             "id",
             "device",
             "entity_id",
+            "entity_type",
             "vclock",
             "type",
             "payload",
@@ -190,15 +198,19 @@ class SyncEvent:
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"unknown sync event fields: {sorted(unknown)}")
+        schema_version = value.get("schema_version", SCHEMA_VERSION)
         required = {"id", "device", "entity_id", "vclock", "type", "payload", "timestamp"}
+        if schema_version >= 2:
+            required.add("entity_type")
         missing = required - set(value)
         if missing:
             raise ValueError(f"missing sync event fields: {sorted(missing)}")
         return cls(
-            schema_version=value.get("schema_version", SCHEMA_VERSION),
+            schema_version=schema_version,
             id=value["id"],
             device=value["device"],
             entity_id=value["entity_id"],
+            entity_type=value.get("entity_type", "legacy.unknown"),
             vclock=value["vclock"],
             type=value["type"],
             payload=value["payload"],
@@ -246,6 +258,7 @@ class EventStore:
                     event_id TEXT PRIMARY KEY,
                     device_id TEXT NOT NULL,
                     entity_id TEXT NOT NULL,
+                    entity_type TEXT NOT NULL DEFAULT 'legacy.unknown',
                     event_type TEXT NOT NULL,
                     vclock_json TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
@@ -253,6 +266,8 @@ class EventStore:
                     tombstone INTEGER NOT NULL CHECK(tombstone IN (0, 1)),
                     direction TEXT NOT NULL CHECK(direction IN ('outbound', 'inbound')),
                     exported INTEGER NOT NULL CHECK(exported IN (0, 1)),
+                    apply_state TEXT NOT NULL DEFAULT 'applied'
+                        CHECK(apply_state IN ('pending', 'applied', 'failed')),
                     schema_version INTEGER NOT NULL
                 );
 
@@ -260,6 +275,23 @@ class EventStore:
                     ON nexus_sync_events(direction, exported, timestamp);
                 """
             )
+            columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(nexus_sync_events)")
+            }
+            if "entity_type" not in columns:
+                db.execute(
+                    "ALTER TABLE nexus_sync_events ADD COLUMN entity_type "
+                    "TEXT NOT NULL DEFAULT 'legacy.unknown'"
+                )
+            if "apply_state" not in columns:
+                db.execute(
+                    "ALTER TABLE nexus_sync_events ADD COLUMN apply_state "
+                    "TEXT NOT NULL DEFAULT 'applied'"
+                )
+                db.execute(
+                    "UPDATE nexus_sync_events SET apply_state = 'pending' "
+                    "WHERE direction = 'inbound'"
+                )
             db.execute(
                 "INSERT OR IGNORE INTO nexus_sync_clock(device_id, counter) VALUES (?, 0)",
                 (self.device_id,),
@@ -279,6 +311,7 @@ class EventStore:
             id=row["event_id"],
             device=row["device_id"],
             entity_id=row["entity_id"],
+            entity_type=row["entity_type"],
             type=row["event_type"],
             vclock=json.loads(row["vclock_json"]),
             payload=json.loads(row["payload_json"]),
@@ -293,6 +326,7 @@ class EventStore:
         entity_id: str,
         payload: Mapping[str, Any],
         *,
+        entity_type: str,
         tombstone: bool = False,
         event_id: str | None = None,
         timestamp: str | None = None,
@@ -326,6 +360,7 @@ class EventStore:
                 id=event_id,
                 device=self.device_id,
                 entity_id=entity_id,
+                entity_type=entity_type,
                 type=event_type,
                 vclock=clock,
                 payload=payload,
@@ -335,15 +370,16 @@ class EventStore:
             db.execute(
                 """
                 INSERT INTO nexus_sync_events(
-                    event_id, device_id, entity_id, event_type, vclock_json,
+                    event_id, device_id, entity_id, entity_type, event_type, vclock_json,
                     payload_json, timestamp, tombstone, direction, exported,
-                    schema_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'outbound', 0, ?)
+                    apply_state, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'outbound', 0, 'applied', ?)
                 """,
                 (
                     event.id,
                     event.device,
                     event.entity_id,
+                    event.entity_type,
                     event.type,
                     json.dumps(dict(event.vclock), sort_keys=True, separators=(",", ":")),
                     json.dumps(
@@ -442,15 +478,16 @@ class EventStore:
             db.execute(
                 """
                 INSERT INTO nexus_sync_events(
-                    event_id, device_id, entity_id, event_type, vclock_json,
+                    event_id, device_id, entity_id, entity_type, event_type, vclock_json,
                     payload_json, timestamp, tombstone, direction, exported,
-                    schema_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'inbound', 1, ?)
+                    apply_state, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbound', 1, 'pending', ?)
                 """,
                 (
                     event.id,
                     event.device,
                     event.entity_id,
+                    event.entity_type,
                     event.type,
                     json.dumps(dict(event.vclock), sort_keys=True, separators=(",", ":")),
                     json.dumps(
@@ -510,6 +547,37 @@ class EventStore:
                 """
                 SELECT COUNT(*) AS count FROM nexus_sync_events
                 WHERE direction = 'outbound' AND exported = 0
+                """
+            ).fetchone()
+        return int(row["count"])
+
+    def pending_inbound(self, limit: int | None = None) -> tuple[SyncEvent, ...]:
+        """Return durable remote events that still need merge/application.
+
+        This method does not mark events applied. The future merge-applier must
+        commit application state together with memory mutation, or otherwise use
+        event-id idempotency, before changing apply_state.
+        """
+        if limit is not None and (isinstance(limit, bool) or limit <= 0):
+            raise ValueError("limit must be a positive integer")
+        query = """
+            SELECT * FROM nexus_sync_events
+            WHERE direction = 'inbound' AND apply_state = 'pending'
+            ORDER BY rowid
+        """
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        with self._connect() as db:
+            return tuple(self._row_to_event(row) for row in db.execute(query, params))
+
+    def pending_apply_count(self) -> int:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT COUNT(*) AS count FROM nexus_sync_events
+                WHERE direction = 'inbound' AND apply_state = 'pending'
                 """
             ).fetchone()
         return int(row["count"])
