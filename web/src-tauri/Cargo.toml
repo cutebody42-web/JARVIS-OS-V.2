@@ -30,6 +30,9 @@ sha2 = "0.10"
 hmac = "0.12"
 time = { version = "0.3", features = ["formatting"] }
 
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+rfd = "0.15"
+
 [target.'cfg(target_os = "android")'.dependencies]
 android-native-keyring-store = "1"
 keyring-core = "1"
