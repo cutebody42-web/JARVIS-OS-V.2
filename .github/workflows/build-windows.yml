@@ -90,6 +90,7 @@ jobs:
           vcpkg install libsodium:x64-windows
           "VCPKG_ROOT=$vcpkgRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "SODIUM_USE_PKG_CONFIG=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "VCPKGRS_DYNAMIC=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Generate branded platform icons
