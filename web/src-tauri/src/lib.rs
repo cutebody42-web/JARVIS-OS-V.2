@@ -1,7 +1,7 @@
 mod brain;
 mod mobile_identity;
 
-use brain::{ensure_brain_sidecar, platform_mode, BrainState};
+use brain::{choose_model_store, ensure_brain_sidecar, platform_mode, BrainState};
 use mobile_identity::{
     mobile_accept_pairing_approval,
     mobile_companion_status,
@@ -54,6 +54,7 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             platform_mode,
+            choose_model_store,
             ensure_brain_sidecar,
             mobile_identity,
             mobile_companion_status,
