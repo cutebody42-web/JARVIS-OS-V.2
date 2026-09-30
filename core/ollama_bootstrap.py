@@ -260,7 +260,7 @@ def _run_ollama(
         raise OllamaBootstrapError("Ollama model provisioning failed.")
 
 
-_PARAMETER_SIZE_RE = re.compile(r"^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*([BM])\\s*$", re.IGNORECASE)
+_PARAMETER_SIZE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([BM])\s*$", re.IGNORECASE)
 
 
 def parameter_size_b(value: str) -> float:
