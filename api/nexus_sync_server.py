@@ -119,6 +119,42 @@ def create_sync_app(
             "owner_approval_required": True,
         }
 
+    @app.post("/nexus/companion/v1/ping")
+    async def companion_ping(request: Request) -> Response:
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != MEDIA_TYPE:
+            raise HTTPException(status_code=415, detail="Unsupported JARVIS companion media type")
+        body = await _bounded_body(request, limit=64 * 1024)
+        try:
+            peer, payload, message_id = await asyncio.to_thread(
+                node.authenticator.verify,
+                body,
+                expected_kind="companion.ping",
+            )
+            if set(payload) != {"version", "nonce"} or payload["version"] != 1:
+                raise ValueError("invalid companion ping payload")
+            nonce = payload["nonce"]
+            if not isinstance(nonce, str) or not nonce or len(nonce) > 128:
+                raise ValueError("invalid companion ping nonce")
+            if message_id != "ping:" + nonce:
+                raise PermissionError("companion ping message id mismatch")
+            signed = node.authenticator.sign(
+                "companion.pong",
+                peer.peer_id,
+                {
+                    "version": 1,
+                    "nonce": nonce,
+                    "identity": "JARVIS",
+                    "approved": True,
+                },
+                message_id="pong:" + nonce,
+            )
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Companion is not approved") from None
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid companion ping") from None
+        return Response(content=signed, media_type=MEDIA_TYPE)
+
     if brain_endpoint is not None:
         @app.post("/nexus/brain/v1/message")
         async def brain_message(request: Request) -> Response:
