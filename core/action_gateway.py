@@ -61,7 +61,8 @@ class ActionGateway:
         self.__kernel.close()
 
     def run_tool(self, tool, arguments, *, task_id=None, step_id="1", route="model",
-                 cancel_flag=None, additional_denial="", runtime=None):
+                 cancel_flag=None, additional_denial="",
+                 additional_denial_rule="preflight.denied", runtime=None):
         invalid = ""
         try:
             if type(tool) is not str or not 0 < len(tool) <= 120:
@@ -72,17 +73,29 @@ class ActionGateway:
             tool = tool if type(tool) is str and len(tool) <= 120 else "invalid_tool"
             request = ActionRequest("invalid.arguments", canonical_arguments({"rejected": True}))
             invalid = "Invalid or unregistered arguments; no action was invoked."
-        return self.run_request(request, tool=tool, task_id=task_id, step_id=step_id,
-                                route=route, cancel_flag=cancel_flag,
-                                additional_denial=invalid or additional_denial, runtime=runtime)
+        return self.run_request(
+            request,
+            tool=tool,
+            task_id=task_id,
+            step_id=step_id,
+            route=route,
+            cancel_flag=cancel_flag,
+            additional_denial=invalid or additional_denial,
+            additional_denial_rule=(
+                "preflight.invalid" if invalid else additional_denial_rule
+            ),
+            runtime=runtime,
+        )
 
     def run_request(self, request: ActionRequest, *, tool=None, task_id=None, step_id="1",
                     route="owner", ticket_id=None, cancel_flag=None,
-                    additional_denial="", runtime=None):
+                    additional_denial="", additional_denial_rule="preflight.denied",
+                    runtime=None):
         start = datetime.now(timezone.utc).isoformat()
         tick = time.perf_counter()
         if request.capability_id == "task.submit" and route not in {"live", "owner"}:
             additional_denial = "Only the live host can enqueue a model task; workers cannot spawn workers."
+            additional_denial_rule = "worker.spawn.denied"
         entry = REGISTRY.get(request.capability_id)
         resource = entry.capability.resource_lock if entry else None
         with _lock_for(resource, self.context):
@@ -101,8 +114,18 @@ class ActionGateway:
             qa = guard_tool_call(qa_tool, qa_args)
             if cancelled or additional_denial or not qa.allowed:
                 reason = "Task cancelled." if cancelled else additional_denial or qa_block_message(qa)
-                auth = AuthorizationResult(A.DENY, "execution.cancelled" if cancelled else "preflight.denied",
-                                           reason, request.capability_id, request.arguments_digest)
+                rule = (
+                    "execution.cancelled"
+                    if cancelled
+                    else additional_denial_rule if additional_denial else "preflight.denied"
+                )
+                auth = AuthorizationResult(
+                    A.DENY,
+                    rule,
+                    reason,
+                    request.capability_id,
+                    request.arguments_digest,
+                )
             else:
                 auth = self.__kernel.authorize(request, ticket_id=ticket_id)
             if cancelled:

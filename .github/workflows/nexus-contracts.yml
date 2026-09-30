@@ -3,7 +3,11 @@ name: NEXUS architecture contracts
 on:
   pull_request:
   push:
-    branches: [nexus/phase-1-provider-action-contracts, nexus/phase-2-sovereign-owner-kernel, nexus/phase-3-durable-mission-slice]
+    branches:
+      - nexus/phase-1-provider-action-contracts
+      - nexus/phase-2-sovereign-owner-kernel
+      - nexus/phase-3-durable-mission-slice
+      - nexus/integration-v2-runtime-sync
 
 permissions:
   contents: read
@@ -11,14 +15,36 @@ permissions:
 jobs:
   offline-contracts:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install google-genai
-      - run: python -m unittest -v tests.test_nexus_contracts tests.test_nexus_text_route tests.test_owner_kernel tests.test_local_provider tests.test_missions
+      - run: pip install google-genai requests psutil keyring
+      - name: Run integrated NEXUS contracts
+        run: >-
+          python -m unittest -v
+          tests.test_nexus_contracts
+          tests.test_nexus_text_route
+          tests.test_owner_kernel
+          tests.test_local_provider
+          tests.test_missions
+          tests.test_ollama_provider
+          tests.test_hardware_profile
+          tests.test_model_runtime
+          tests.test_model_router
+          tests.test_persona_spec
+          tests.test_agent_runtime
+          tests.test_nexus_event_store
+          tests.test_nexus_merge
+          tests.test_nexus_merge_applier
+          tests.test_nexus_sync_daemon
+          tests.test_nexus_tailscale_transport
+          tests.test_nexus_sync_scheduler
+          tests.test_nexus_device_registry
+          tests.test_windows_broker
+          tests.test_improvement_pipeline
       - uses: actions/checkout@v4
         with:
           ref: fffb487cc79adb827d21918ade107bebcdc2c03c
