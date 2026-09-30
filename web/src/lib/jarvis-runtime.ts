@@ -59,6 +59,19 @@ export type MobileBrainRequest = {
   body: string;
 };
 
+export type MobileApprovalRequest = {
+  request_id: string;
+  endpoint: string;
+  body: string;
+};
+
+export type PendingApproval = {
+  approval_id: string;
+  summary: string;
+  action_digest: string;
+  expires_at: string;
+};
+
 export type BrainReply = {
   identity: "JARVIS";
   text: string;
@@ -288,6 +301,9 @@ async function requireMobileOwnerPresence(reason: string) {
   const biometric = window.__TAURI__?.biometric;
   if (!biometric) throw new Error("Mobile owner authentication is unavailable.");
   const status = await biometric.checkStatus();
+  if (!status.isAvailable) {
+    throw new Error(status.error || "Fingerprint/biometric approval is unavailable on this phone.");
+  }
   await biometric.authenticate(reason, {
     allowDeviceCredential: true,
     confirmationRequired: true,
@@ -401,3 +417,65 @@ export async function mobileBrainMessage(
     lane: payload.lane,
   };
 }
+
+export async function mobilePendingApprovals(): Promise<PendingApproval[]> {
+  const request = await core().invoke<MobileApprovalRequest>("mobile_sign_approval_list");
+  const response = await fetch(request.endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": NEXUS_MEDIA_TYPE,
+      Accept: NEXUS_MEDIA_TYPE,
+    },
+    body: request.body,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `JARVIS approval check failed (${response.status})`);
+  }
+  const signedResponse = await response.text();
+  const payload = await core().invoke<{
+    version: number;
+    request_id: string;
+    pending: PendingApproval[];
+  }>("mobile_verify_approval_list_response", {
+    requestId: request.request_id,
+    signedResponse,
+  });
+  return Array.isArray(payload.pending) ? payload.pending : [];
+}
+
+export async function mobileDecideApproval(
+  approvalId: string,
+  approved: boolean,
+): Promise<Record<string, unknown>> {
+  await requireMobileOwnerPresence(
+    approved
+      ? "Confirm this JARVIS action with your fingerprint or device biometric"
+      : "Confirm rejecting this JARVIS action",
+  );
+  const request = await core().invoke<MobileApprovalRequest>(
+    "mobile_sign_approval_decision",
+    { approvalId, approved },
+  );
+  const response = await fetch(request.endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": NEXUS_MEDIA_TYPE,
+      Accept: NEXUS_MEDIA_TYPE,
+    },
+    body: request.body,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `JARVIS approval decision failed (${response.status})`);
+  }
+  const signedResponse = await response.text();
+  return core().invoke<Record<string, unknown>>(
+    "mobile_verify_approval_receipt",
+    {
+      requestId: request.request_id,
+      signedResponse,
+    },
+  );
+}
+
