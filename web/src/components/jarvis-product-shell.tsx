@@ -252,6 +252,7 @@ export function JarvisProductShell() {
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [modelStore, setModelStore] = useState("");
+  const [manualModel, setManualModel] = useState("");
   const [pairEndpoint, setPairEndpoint] = useState("");
   const [pairOffer, setPairOffer] = useState<Record<string, unknown> | null>(null);
   const [pendingPairings, setPendingPairings] = useState<Array<Record<string, unknown>>>([]);
@@ -273,6 +274,7 @@ export function JarvisProductShell() {
           const nextStatus = await nextClient.status();
           setStatus(nextStatus);
           setModelStore(nextStatus.model_store ?? "");
+          setManualModel(nextStatus.manual_model ?? "");
         }
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "JARVIS failed to initialize.");
@@ -351,6 +353,20 @@ export function JarvisProductShell() {
       setError(reason instanceof Error ? reason.message : "JARVIS could not complete the request.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function chooseManualModel(value: string) {
+    setManualModel(value);
+    if (!client) return;
+    setError("");
+    try {
+      const next = await client.selectManualModel(value || undefined);
+      setStatus(next);
+      setManualModel(next.manual_model ?? "");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Local model selection failed.");
+      setManualModel(status?.manual_model ?? "");
     }
   }
 
@@ -482,12 +498,30 @@ export function JarvisProductShell() {
           <dl className="status-readout">
             <div><dt>JARVIS Brain</dt><dd data-on={status?.brain_ready}>{status?.brain_ready ? "LOCAL" : "SETUP"}</dd></div>
             <div><dt>Model store</dt><dd title={status?.model_store || undefined}>{status?.model_store ? "OWNER PATH" : "DEFAULT"}</dd></div>
+            <div><dt>Core</dt><dd data-on="true">{status?.council.core_model ?? "jarvis-core-1b"}</dd></div>
+            <div><dt>Hidden experts</dt><dd>{status?.council.parallel_experts ?? 2} parallel</dd></div>
             <div><dt>Memory</dt><dd data-on="true"><ShieldCheck size={13} /> CONTINUOUS</dd></div>
             <div><dt>RAM available</dt><dd>{ram}</dd></div>
             <div><dt>System pressure</dt><dd>{pressure == null ? "—" : `${Math.round(pressure * 100)}%`}</dd></div>
             <div><dt>Power</dt><dd>{status?.device.power_source?.toUpperCase() || "—"}</dd></div>
             <div><dt>Visual profile</dt><dd data-on="true"><Cpu size={13} /> {visual.tier.toUpperCase()}</dd></div>
           </dl>
+
+          <section className="device-link-card">
+            <div className="capability-heading"><span>Local models</span><b>{status?.available_models.length ?? 0}</b></div>
+            <p>JARVIS chooses hidden experts automatically. Override only when you want a specific installed local model to join the council.</p>
+            <select
+              value={manualModel}
+              onChange={(event) => void chooseManualModel(event.target.value)}
+              aria-label="Optional manual local model"
+              disabled={!client || busy}
+            >
+              <option value="">Automatic expert selection</option>
+              {(status?.available_models ?? []).map((model) => (
+                <option key={model} value={model}>{model}</option>
+              ))}
+            </select>
+          </section>
 
           <section className="device-link-card">
             <div className="capability-heading"><span>Device Link</span><b>{status?.paired_devices.length ?? 0}</b></div>
