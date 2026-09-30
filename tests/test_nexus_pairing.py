@@ -7,7 +7,7 @@ import unittest
 
 from core.nexus.event_store import EventStore
 from core.nexus.pairing import PairingManager, PairingRequest
-from core.nexus.peer_auth import DeviceSigner, PeerRegistry
+from core.nexus.peer_auth import DeviceSigner, PeerRegistry, PeerRole
 
 
 NOW = datetime(2026, 9, 30, 13, 30, tzinfo=timezone.utc)
@@ -82,6 +82,7 @@ class PairingTests(unittest.TestCase):
             request.pairing_id,
             request.candidate_device,
             request.candidate_public_key,
+            request.candidate_role,
             request.candidate_endpoint,
             "0" * 64,
         )
@@ -121,6 +122,35 @@ class PairingTests(unittest.TestCase):
         offer = self.offer()
         with self.assertRaises(PermissionError):
             self.manager.approve(offer.pairing_id)
+
+    def test_companion_pairing_requires_no_sync_endpoint(self):
+        offer = self.offer()
+        request = PairingManager.build_request(
+            offer,
+            "phone-companion",
+            self.phone_signer,
+            candidate_role=PeerRole.COMPANION,
+        )
+
+        pending = self.manager.receive_request(request)
+        self.assertEqual(pending.candidate_role, PeerRole.COMPANION)
+        self.assertIsNone(pending.candidate_endpoint)
+
+        peer = self.manager.approve(offer.pairing_id)
+        self.assertEqual(peer.role, PeerRole.COMPANION)
+        self.assertIsNone(peer.endpoint)
+        self.assertEqual(self.registry.active_sync_peers(), ())
+
+    def test_companion_rejects_fake_sync_endpoint(self):
+        offer = self.offer()
+        with self.assertRaises(ValueError):
+            PairingManager.build_request(
+                offer,
+                "phone-companion",
+                self.phone_signer,
+                "http://phone.tailnet.ts.net:8765",
+                candidate_role=PeerRole.COMPANION,
+            )
 
     def test_endpoint_url_confusion_is_rejected(self):
         with self.assertRaises(ValueError):
