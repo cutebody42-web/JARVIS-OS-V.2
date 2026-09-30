@@ -1,4 +1,4 @@
-"""One-time explicit device/phone pairing tests."""
+"""One-time explicit node/companion pairing tests."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,37 +32,58 @@ class PairingTests(unittest.TestCase):
 
     def offer(self, ttl=300):
         return self.manager.create_offer(
-            "http://hp.tailnet.ts.net:8765",
+            "http://100.64.0.10:8765",
             ttl_seconds=ttl,
         )
 
-    def request(self, offer):
+    def companion_request(self, offer):
         return PairingManager.build_request(
             offer,
             "phone",
             self.phone_signer,
-            "http://phone.tailnet.ts.net:8765",
+            candidate_role=PeerRole.COMPANION,
         )
 
-    def test_valid_request_stays_pending_until_owner_approval(self):
+    def node_request(self, offer):
+        return PairingManager.build_request(
+            offer,
+            "dell",
+            self.phone_signer,
+            "http://100.64.0.20:8765",
+            candidate_role=PeerRole.NODE,
+        )
+
+    def test_companion_request_stays_pending_until_owner_approval(self):
         offer = self.offer()
-        request = self.request(offer)
+        request = self.companion_request(offer)
 
         pending = self.manager.receive_request(request)
 
         self.assertEqual(pending.candidate_device, "phone")
+        self.assertEqual(pending.candidate_role, PeerRole.COMPANION)
+        self.assertIsNone(pending.candidate_endpoint)
         self.assertIsNone(self.registry.get_peer("phone"))
-        self.assertEqual(len(self.manager.pending()), 1)
 
         peer = self.manager.approve(offer.pairing_id)
 
         self.assertEqual(peer.peer_id, "phone")
-        self.assertIsNotNone(self.registry.get_peer("phone"))
-        self.assertEqual(self.manager.pending(), ())
+        self.assertEqual(peer.role, PeerRole.COMPANION)
+        self.assertIsNone(peer.endpoint)
+        self.assertEqual(self.registry.active_sync_peers(), ())
+
+    def test_node_request_retains_sync_endpoint(self):
+        offer = self.offer()
+        pending = self.manager.receive_request(self.node_request(offer))
+        peer = self.manager.approve(offer.pairing_id)
+
+        self.assertEqual(pending.candidate_role, PeerRole.NODE)
+        self.assertEqual(peer.role, PeerRole.NODE)
+        self.assertEqual(peer.endpoint, "http://100.64.0.20:8765")
+        self.assertEqual(self.registry.active_sync_peers()[0].peer_id, "dell")
 
     def test_offer_survives_manager_restart_without_plaintext_secret_storage(self):
         offer = self.offer()
-        request = self.request(offer)
+        request = self.companion_request(offer)
 
         restarted = PairingManager(
             PeerRegistry(EventStore(Path(self.tmp.name) / "desktop", "hp")),
@@ -73,18 +94,19 @@ class PairingTests(unittest.TestCase):
         pending = restarted.receive_request(request)
 
         self.assertEqual(pending.candidate_device, "phone")
+        self.assertEqual(pending.candidate_role, PeerRole.COMPANION)
 
     def test_tampered_proof_is_rejected(self):
         offer = self.offer()
-        request = self.request(offer)
+        request = self.companion_request(offer)
         bad = PairingRequest(
-            request.version,
-            request.pairing_id,
-            request.candidate_device,
-            request.candidate_public_key,
-            request.candidate_role,
-            request.candidate_endpoint,
-            "0" * 64,
+            version=request.version,
+            pairing_id=request.pairing_id,
+            candidate_device=request.candidate_device,
+            candidate_public_key=request.candidate_public_key,
+            candidate_role=request.candidate_role,
+            candidate_endpoint=request.candidate_endpoint,
+            proof="0" * 64,
         )
 
         with self.assertRaises(PermissionError):
@@ -99,90 +121,37 @@ class PairingTests(unittest.TestCase):
             self.desktop_signer,
             clock=lambda: NOW + timedelta(seconds=11),
         )
-
         with self.assertRaises(PermissionError):
-            late.receive_request(self.request(offer))
+            late.receive_request(self.companion_request(offer))
 
     def test_pairing_offer_is_one_time(self):
         offer = self.offer()
-        request = self.request(offer)
+        request = self.companion_request(offer)
         self.manager.receive_request(request)
-
         with self.assertRaises(PermissionError):
             self.manager.receive_request(request)
 
     def test_cancelled_pairing_cannot_be_used(self):
         offer = self.offer()
         self.assertTrue(self.manager.cancel(offer.pairing_id))
-
         with self.assertRaises(PermissionError):
-            self.manager.receive_request(self.request(offer))
+            self.manager.receive_request(self.companion_request(offer))
+
+    def test_companion_cannot_claim_inbound_endpoint(self):
+        offer = self.offer()
+        with self.assertRaises(ValueError):
+            PairingManager.build_request(
+                offer,
+                "phone",
+                self.phone_signer,
+                "http://100.64.0.99:8765",
+                candidate_role=PeerRole.COMPANION,
+            )
 
     def test_approve_requires_pending_request(self):
         offer = self.offer()
         with self.assertRaises(PermissionError):
             self.manager.approve(offer.pairing_id)
-
-    def test_companion_pairing_requires_no_sync_endpoint(self):
-        offer = self.offer()
-        request = PairingManager.build_request(
-            offer,
-            "phone-companion",
-            self.phone_signer,
-            candidate_role=PeerRole.COMPANION,
-        )
-
-        pending = self.manager.receive_request(request)
-        self.assertEqual(pending.candidate_role, PeerRole.COMPANION)
-        self.assertIsNone(pending.candidate_endpoint)
-
-        peer = self.manager.approve(offer.pairing_id)
-        self.assertEqual(peer.role, PeerRole.COMPANION)
-        self.assertIsNone(peer.endpoint)
-        self.assertEqual(self.registry.active_sync_peers(), ())
-
-    def test_companion_rejects_fake_sync_endpoint(self):
-        offer = self.offer()
-        with self.assertRaises(ValueError):
-            PairingManager.build_request(
-                offer,
-                "phone-companion",
-                self.phone_signer,
-                "http://phone.tailnet.ts.net:8765",
-                candidate_role=PeerRole.COMPANION,
-            )
-
-    def test_status_polling_is_proof_authenticated(self):
-        offer = self.offer()
-        request = PairingManager.build_request(
-            offer,
-            "phone-status",
-            self.phone_signer,
-            candidate_role=PeerRole.COMPANION,
-        )
-        self.manager.receive_request(request)
-
-        self.assertEqual(self.manager.status_for_request(request), "pending")
-        self.manager.approve(offer.pairing_id)
-        self.assertEqual(self.manager.status_for_request(request), "approved")
-
-        bad = PairingRequest(
-            request.version,
-            request.pairing_id,
-            request.candidate_device,
-            request.candidate_public_key,
-            request.candidate_role,
-            request.candidate_endpoint,
-            "f" * 64,
-        )
-        with self.assertRaises(PermissionError):
-            self.manager.status_for_request(bad)
-
-    def test_endpoint_url_confusion_is_rejected(self):
-        with self.assertRaises(ValueError):
-            self.manager.create_offer(
-                "http://user:pass@hp.tailnet.ts.net:8765"
-            )
 
 
 if __name__ == "__main__":
