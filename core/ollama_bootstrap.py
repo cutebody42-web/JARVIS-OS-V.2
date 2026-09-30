@@ -117,11 +117,9 @@ def load_brain_manifest() -> tuple[BrainModelSpec, ...]:
             or min_ram < 0
             or isinstance(parameters_b, bool)
             or not isinstance(parameters_b, (int, float))
-            or parameters_b < 1.0
+            or parameters_b <= 0
         ):
-            raise OllamaBootstrapError(
-                "JARVIS Brain model manifest is invalid or below the 1B parameter floor."
-            )
+            raise OllamaBootstrapError("JARVIS Brain model manifest is invalid.")
         modelfile = resource_path("models", f"{alias}.Modelfile")
         if not modelfile.is_file():
             raise OllamaBootstrapError(f"Missing Modelfile for {alias}.")
@@ -298,25 +296,31 @@ def select_brain_models(
     snapshot: HardwareSnapshot | None,
 ) -> tuple[BrainModelSpec, ...]:
     specs = tuple(specs)
+    core = next((spec for spec in specs if spec.role == "coordinator"), None)
+    if core is None:
+        raise OllamaBootstrapError("JARVIS Core coordinator is missing from the model manifest.")
+
     if snapshot is None:
-        # Conservative bootstrap: smallest lane only. Other lanes are pulled
-        # lazily when hardware telemetry becomes available.
-        lite = [spec for spec in specs if spec.role == "low_memory_fallback"]
-        return tuple(lite[:1])
+        # Unknown hardware still gets the dedicated JARVIS Core 1B coordinator.
+        return (core,)
 
     capacity = max(snapshot.available_ram_gb, snapshot.total_ram_gb * 0.45)
     eligible = [spec for spec in specs if spec.min_ram_gb <= capacity]
 
-    # Always keep a low-memory fallback if the manifest contains one.
+    # JARVIS Core 1B is always provisioned; experts are additive and hidden.
+    if core not in eligible:
+        eligible.append(core)
+
+    # Keep a low-memory expert fallback where possible.
     lite = next((spec for spec in specs if spec.role == "low_memory_fallback"), None)
-    if lite is not None and lite not in eligible:
+    if lite is not None and lite.min_ram_gb <= capacity and lite not in eligible:
         eligible.append(lite)
 
     # On <=10 GB systems avoid downloading the 7B engineering lane by default.
     if snapshot.total_ram_gb <= 10:
         eligible = [spec for spec in eligible if spec.role != "engineering"]
 
-    order = {"low_memory_fallback": 0, "general_realtime": 1, "engineering": 2}
+    order = {"coordinator": 0, "low_memory_fallback": 1, "general_realtime": 2, "engineering": 3}
     return tuple(sorted(eligible, key=lambda spec: order.get(spec.role, 99)))
 
 
