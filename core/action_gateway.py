@@ -61,7 +61,8 @@ class ActionGateway:
         self.__kernel.close()
 
     def run_tool(self, tool, arguments, *, task_id=None, step_id="1", route="model",
-                 cancel_flag=None, additional_denial="", runtime=None):
+                 cancel_flag=None, additional_denial="",
+                 additional_denial_rule="preflight.denied", runtime=None):
         invalid = ""
         try:
             if type(tool) is not str or not 0 < len(tool) <= 120:
@@ -72,13 +73,20 @@ class ActionGateway:
             tool = tool if type(tool) is str and len(tool) <= 120 else "invalid_tool"
             request = ActionRequest("invalid.arguments", canonical_arguments({"rejected": True}))
             invalid = "Invalid or unregistered arguments; no action was invoked."
-        return self.run_request(request, tool=tool, task_id=task_id, step_id=step_id,
-                                route=route, cancel_flag=cancel_flag,
-                                additional_denial=invalid or additional_denial, runtime=runtime)
+        return self.run_request(
+            request, tool=tool, task_id=task_id, step_id=step_id,
+            route=route, cancel_flag=cancel_flag,
+            additional_denial=invalid or additional_denial,
+            additional_denial_rule=(
+                "arguments.invalid" if invalid else additional_denial_rule
+            ),
+            runtime=runtime,
+        )
 
     def run_request(self, request: ActionRequest, *, tool=None, task_id=None, step_id="1",
                     route="owner", ticket_id=None, cancel_flag=None,
-                    additional_denial="", runtime=None):
+                    additional_denial="", additional_denial_rule="preflight.denied",
+                    runtime=None):
         start = datetime.now(timezone.utc).isoformat()
         tick = time.perf_counter()
         if request.capability_id == "task.submit" and route not in {"live", "owner"}:
@@ -101,8 +109,13 @@ class ActionGateway:
             qa = guard_tool_call(qa_tool, qa_args)
             if cancelled or additional_denial or not qa.allowed:
                 reason = "Task cancelled." if cancelled else additional_denial or qa_block_message(qa)
-                auth = AuthorizationResult(A.DENY, "execution.cancelled" if cancelled else "preflight.denied",
-                                           reason, request.capability_id, request.arguments_digest)
+                auth = AuthorizationResult(
+                    A.DENY,
+                    "execution.cancelled" if cancelled else additional_denial_rule,
+                    reason,
+                    request.capability_id,
+                    request.arguments_digest,
+                )
             else:
                 auth = self.__kernel.authorize(request, ticket_id=ticket_id)
             if cancelled:
