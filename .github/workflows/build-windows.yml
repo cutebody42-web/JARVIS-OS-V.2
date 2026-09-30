@@ -1,0 +1,84 @@
+name: Build JARVIS Windows installer
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "desktop_app.py"
+      - "core/**"
+      - "agent/**"
+      - "actions/**"
+      - "memory/**"
+      - "ui.py"
+      - "models/**"
+      - "requirements.txt"
+      - "packaging/windows/**"
+      - ".github/workflows/build-windows.yml"
+  push:
+    branches: ["product/**"]
+    paths:
+      - "desktop_app.py"
+      - "core/**"
+      - "agent/**"
+      - "actions/**"
+      - "memory/**"
+      - "ui.py"
+      - "models/**"
+      - "requirements.txt"
+      - "packaging/windows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install desktop build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.10,<7"
+
+      - name: Build self-contained desktop application
+        shell: pwsh
+        run: |
+          pyinstaller --clean --noconfirm packaging/windows/JARVIS.spec
+          if (!(Test-Path "dist/JARVIS/JARVIS.exe")) { throw "JARVIS.exe was not produced" }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build one-click installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/windows | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging/windows/JARVIS.iss
+          if (!(Test-Path "artifacts/windows/JARVIS-Setup.exe")) { throw "JARVIS-Setup.exe was not produced" }
+
+      - name: Record build provenance
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash artifacts/windows/JARVIS-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "commit=${{ github.sha }}" | Out-File artifacts/windows/build-info.txt -Encoding utf8
+          "sha256=$hash" | Out-File artifacts/windows/build-info.txt -Encoding utf8 -Append
+          "python_required_by_user=false" | Out-File artifacts/windows/build-info.txt -Encoding utf8 -Append
+          "hardware_certified=false" | Out-File artifacts/windows/build-info.txt -Encoding utf8 -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Windows-Installer
+          path: |
+            artifacts/windows/JARVIS-Setup.exe
+            artifacts/windows/build-info.txt
+          if-no-files-found: error
