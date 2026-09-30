@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
+#[cfg(mobile)]
+use tauri_plugin_biometric::{AuthOptions, BiometricExt, BiometryType};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
@@ -569,15 +571,47 @@ pub fn mobile_sign_approval_decision(
     app: AppHandle,
     approval_id: String,
     approved: bool,
-    biometry_type: String,
 ) -> Result<MobileApprovalRequest, String> {
     let approval_id = approval_id.trim().to_string();
     if approval_id.is_empty() || approval_id.len() > 128 {
         return Err("Invalid JARVIS approval id.".into());
     }
-    if biometry_type != "fingerprint" {
-        return Err("Sensitive JARVIS approvals require Android fingerprint verification.".into());
+
+    #[cfg(mobile)]
+    {
+        let status = app
+            .biometric()
+            .status()
+            .map_err(|_| "JARVIS could not verify fingerprint availability.".to_string())?;
+        if !status.is_available || !matches!(status.biometry_type, BiometryType::TouchID) {
+            return Err(
+                "Sensitive JARVIS approvals require an enrolled fingerprint.".into()
+            );
+        }
+        app.biometric()
+            .authenticate(
+                if approved {
+                    "Confirm this JARVIS action with your fingerprint".to_string()
+                } else {
+                    "Confirm rejecting this JARVIS action with your fingerprint".to_string()
+                },
+                AuthOptions {
+                    allow_device_credential: false,
+                    cancel_title: Some("Cancel".into()),
+                    fallback_title: None,
+                    title: Some("JARVIS owner approval".into()),
+                    subtitle: Some("Use your fingerprint to continue".into()),
+                    confirmation_required: Some(true),
+                },
+            )
+            .map_err(|_| "JARVIS fingerprint verification failed or was cancelled.".to_string())?;
     }
+
+    #[cfg(not(mobile))]
+    {
+        return Err("JARVIS fingerprint approval is available on the mobile companion only.".into());
+    }
+
     let request_id = Uuid::new_v4().simple().to_string();
     let payload = json!({
         "version": 1,
