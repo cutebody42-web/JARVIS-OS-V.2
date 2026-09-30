@@ -19,6 +19,22 @@ pub fn platform_mode() -> &'static str {
 
 #[cfg(desktop)]
 #[tauri::command]
+pub fn choose_model_store() -> Result<Option<String>, String> {
+    let selected = rfd::FileDialog::new()
+        .set_title("Choose JARVIS local model folder")
+        .pick_folder();
+    Ok(selected.map(|path| path.to_string_lossy().into_owned()))
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+pub fn choose_model_store() -> Result<Option<String>, String> {
+    Err("Local model storage is configured on the desktop JARVIS device.".to_string())
+}
+
+
+#[cfg(desktop)]
+#[tauri::command]
 pub fn ensure_brain_sidecar(
     app: tauri::AppHandle,
     state: tauri::State<'_, BrainState>,
