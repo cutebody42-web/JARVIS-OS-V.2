@@ -197,7 +197,7 @@ class PairingManager:
             "candidate_endpoint": candidate_endpoint,
         }
         proof = hmac.new(
-            offer.secret.encode("utf-8"),
+            _secret_hash(offer.secret).encode("ascii"),
             _canonical(unsigned),
             hashlib.sha256,
         ).hexdigest()
@@ -232,9 +232,6 @@ class PairingManager:
                 db.commit()
                 raise PermissionError("pairing offer expired")
 
-            # We cannot reverse a stored hash to recover the secret, so the
-            # proof is validated against a derived server-side verifier token.
-            # Store HMAC(secret_hash, unsigned) semantics instead of plaintext.
             unsigned = {
                 "version": request.version,
                 "pairing_id": request.pairing_id,
@@ -242,30 +239,12 @@ class PairingManager:
                 "candidate_public_key": request.candidate_public_key,
                 "candidate_endpoint": candidate_endpoint,
             }
-            # Candidate proof is transformed once more using the stored secret
-            # hash. This prevents accepting arbitrary proof strings from DB data.
-            expected_binding = hmac.new(
+            expected_proof = hmac.new(
                 row["secret_hash"].encode("ascii"),
-                request.proof.encode("ascii") + _canonical(unsigned),
+                _canonical(unsigned),
                 hashlib.sha256,
             ).hexdigest()
-
-            # The corresponding binding is saved transiently by the offer
-            # issuer through request proof verification below.
-            # Because only the secret hash is durable, validate request proof by
-            # comparing a server-generated challenge digest stored at offer time.
-            # Legacy rows without that column are not admitted.
-            columns = {
-                item["name"]
-                for item in db.execute("PRAGMA table_info(nexus_pairing_sessions)")
-            }
-            if "proof_binding" not in columns:
-                db.execute(
-                    "ALTER TABLE nexus_pairing_sessions ADD COLUMN proof_binding TEXT"
-                )
-                columns.add("proof_binding")
-            binding = row["proof_binding"] if "proof_binding" in row.keys() else None
-            if binding is None or not hmac.compare_digest(binding, expected_binding):
+            if not hmac.compare_digest(expected_proof, request.proof):
                 db.rollback()
                 raise PermissionError("pairing proof is invalid")
 
@@ -297,51 +276,6 @@ class PairingManager:
             candidate_endpoint,
             updated,
         )
-
-    def register_request_proof(self, offer: PairingOffer, request: PairingRequest) -> None:
-        """Bind a candidate proof to a locally issued offer before network intake.
-
-        This helper is primarily for transports that receive the candidate
-        request as a complete payload. The binding contains no plaintext secret.
-        """
-        unsigned = {
-            "version": request.version,
-            "pairing_id": request.pairing_id,
-            "candidate_device": request.candidate_device,
-            "candidate_public_key": request.candidate_public_key,
-            "candidate_endpoint": normalize_peer_endpoint(request.candidate_endpoint),
-        }
-        if request.pairing_id != offer.pairing_id:
-            raise ValueError("pairing request does not match offer")
-        expected_proof = hmac.new(
-            offer.secret.encode("utf-8"),
-            _canonical(unsigned),
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(expected_proof, request.proof):
-            raise PermissionError("candidate pairing proof is invalid")
-        binding = hmac.new(
-            _secret_hash(offer.secret).encode("ascii"),
-            request.proof.encode("ascii") + _canonical(unsigned),
-            hashlib.sha256,
-        ).hexdigest()
-        with self.registry._store._connect() as db:
-            columns = {
-                item["name"]
-                for item in db.execute("PRAGMA table_info(nexus_pairing_sessions)")
-            }
-            if "proof_binding" not in columns:
-                db.execute(
-                    "ALTER TABLE nexus_pairing_sessions ADD COLUMN proof_binding TEXT"
-                )
-            db.execute(
-                """
-                UPDATE nexus_pairing_sessions
-                SET proof_binding=?
-                WHERE pairing_id=? AND state='offered'
-                """,
-                (binding, offer.pairing_id),
-            )
 
     def pending(self) -> tuple[PendingPairing, ...]:
         with self.registry._store._connect() as db:
