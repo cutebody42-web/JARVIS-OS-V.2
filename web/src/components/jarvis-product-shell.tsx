@@ -251,6 +251,7 @@ export function JarvisProductShell() {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
+  const [modelStore, setModelStore] = useState("");
   const [pairEndpoint, setPairEndpoint] = useState("");
   const [pairOffer, setPairOffer] = useState<Record<string, unknown> | null>(null);
   const [pendingPairings, setPendingPairings] = useState<Array<Record<string, unknown>>>([]);
@@ -269,7 +270,9 @@ export function JarvisProductShell() {
           const nextClient = await bootstrapDesktopBrain();
           if (cancelled) return;
           setClient(nextClient);
-          setStatus(await nextClient.status());
+          const nextStatus = await nextClient.status();
+          setStatus(nextStatus);
+          setModelStore(nextStatus.model_store ?? "");
         }
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "JARVIS failed to initialize.");
@@ -319,7 +322,7 @@ export function JarvisProductShell() {
     setError("");
     const poll = window.setInterval(() => client.status().then(setStatus).catch(() => undefined), 800);
     try {
-      setStatus(await client.setupLocalBrain());
+      setStatus(await client.setupLocalBrain(modelStore.trim() || undefined));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Local Brain setup failed.");
       setStatus(await client.status().catch(() => status));
@@ -436,11 +439,22 @@ export function JarvisProductShell() {
 
           {!status?.brain_ready ? (
             <div className="brain-setup-card">
+              <Input
+                value={modelStore}
+                onChange={(event) => setModelStore(event.target.value)}
+                placeholder="Local model folder (optional, e.g. D:\\JARVIS\\models)"
+                aria-label="Local JARVIS model folder"
+                disabled={busy}
+              />
               <Button onClick={initializeBrain} disabled={!client || busy}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <Zap size={16} />}
                 {busy ? "Preparing JARVIS Brain" : "Initialize Local Brain"}
               </Button>
-              <p>Downloads only the local models your current hardware can support. No separate Python installation is required.</p>
+              <p>
+                Choose the folder where your local AI models already live, or leave it blank
+                to use JARVIS defaults. JARVIS keeps its own loopback Ollama runtime and
+                never requires a separate Python installation.
+              </p>
             </div>
           ) : (
             <form className="command-composer" onSubmit={submit}>
@@ -467,6 +481,7 @@ export function JarvisProductShell() {
           <div className="panel-heading"><div><p className="section-index">SYSTEM / ADAPTIVE</p><h2>Operational state</h2></div><Activity size={17} /></div>
           <dl className="status-readout">
             <div><dt>JARVIS Brain</dt><dd data-on={status?.brain_ready}>{status?.brain_ready ? "LOCAL" : "SETUP"}</dd></div>
+            <div><dt>Model store</dt><dd title={status?.model_store || undefined}>{status?.model_store ? "OWNER PATH" : "DEFAULT"}</dd></div>
             <div><dt>Memory</dt><dd data-on="true"><ShieldCheck size={13} /> CONTINUOUS</dd></div>
             <div><dt>RAM available</dt><dd>{ram}</dd></div>
             <div><dt>System pressure</dt><dd>{pressure == null ? "—" : `${Math.round(pressure * 100)}%`}</dd></div>
