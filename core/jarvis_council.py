@@ -113,6 +113,9 @@ class JarvisCouncil:
                     "You are the hidden JARVIS Core coordinator. Produce a compact internal "
                     "routing brief for specialist models. Identify the owner's goal, key "
                     "constraints, uncertainty, and what the final answer must verify. "
+                    "Use only facts stated in the owner request; this council call has no "
+                    "independent access to the owner's calendar, habits, identity or history. "
+                    "Mark missing personal context as UNKNOWN and never fill gaps by assumption. "
                     "Do not answer the owner directly. Do not mention model names."
                 ),
                 tier=ModelTier.FAST,
@@ -136,8 +139,11 @@ class JarvisCouncil:
                 ),
                 system_instruction=(
                     "You are a hidden local JARVIS specialist. Give concise, factual internal "
-                    "analysis that another JARVIS layer will synthesize. Do not introduce "
-                    "yourself, do not address the owner, and do not claim actions occurred."
+                    "analysis that another JARVIS layer will synthesize. Treat the owner request "
+                    "as the only trusted personal context in this specialist call. Any unstated "
+                    "calendar, habit, identity, preference or energy pattern is UNKNOWN; never "
+                    "invent it. Do not introduce yourself, do not address the owner, and do not "
+                    "claim actions occurred."
                 ),
                 tier=ModelTier.STANDARD,
             )
