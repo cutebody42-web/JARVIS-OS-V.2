@@ -6,7 +6,11 @@ use mobile_identity::{
     mobile_accept_pairing_approval,
     mobile_identity,
     mobile_prepare_pairing,
+    mobile_sign_approval_decision,
+    mobile_sign_approval_list,
     mobile_sign_brain_request,
+    mobile_verify_approval_list_response,
+    mobile_verify_approval_receipt,
     mobile_verify_brain_response,
 };
 use tauri::Manager;
@@ -53,6 +57,10 @@ pub fn run() {
             mobile_identity,
             mobile_prepare_pairing,
             mobile_accept_pairing_approval,
+            mobile_sign_approval_list,
+            mobile_verify_approval_list_response,
+            mobile_sign_approval_decision,
+            mobile_verify_approval_receipt,
             mobile_sign_brain_request,
             mobile_verify_brain_response
         ])
