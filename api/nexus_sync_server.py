@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 
 from core.jarvis_brain import JarvisBrain
 from core.nexus.brain_rpc import SignedBrainEndpoint
-from core.nexus.pairing import PairingRequest
+from core.nexus.pairing import PAIRING_VERSION, PairingRequest
 from core.nexus.peer_auth import MAX_ENVELOPE_BYTES
 from core.nexus.signed_transport import MEDIA_TYPE, SignedSyncEndpoint
 from core.nexus.sync_node import NexusSyncNode
@@ -135,6 +135,44 @@ def create_sync_app(
             except Exception:
                 raise HTTPException(status_code=503, detail="JARVIS Brain could not complete the request") from None
             return Response(content=signed_response, media_type=MEDIA_TYPE)
+
+    @app.post("/nexus/pair/v1/status")
+    async def pairing_status(request: Request):
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise HTTPException(status_code=415, detail="Pairing status request must be JSON")
+        body = await _bounded_body(request, limit=16 * 1024)
+        try:
+            value = json.loads(body)
+            candidate = PairingRequest.from_dict(value)
+            state = await asyncio.to_thread(node.pairing.status_for_request, candidate)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Pairing status proof was rejected") from None
+        except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="Invalid pairing status request") from None
+
+        if state != "approved":
+            return {
+                "pairing_id": candidate.pairing_id,
+                "state": state,
+            }
+
+        try:
+            signed = node.authenticator.sign(
+                "pair.approved",
+                candidate.candidate_device,
+                {
+                    "version": PAIRING_VERSION,
+                    "pairing_id": candidate.pairing_id,
+                    "state": "approved",
+                    "desktop_device": node.identity.device_id,
+                    "desktop_public_key": node.identity.public_key,
+                },
+                message_id="pair-approved:" + candidate.pairing_id,
+            )
+        except Exception:
+            raise HTTPException(status_code=503, detail="Pairing approval could not be signed") from None
+        return Response(content=signed, media_type=MEDIA_TYPE)
 
     @app.post("/nexus/sync/v1/batch")
     async def receive_batch(request: Request) -> Response:
