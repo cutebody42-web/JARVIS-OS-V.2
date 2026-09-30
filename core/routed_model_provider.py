@@ -45,6 +45,7 @@ class RoutedModelProvider:
         ollama_factory: ProviderFactory | None = None,
         gemini_factory: ProviderFactory | None = None,
         ollama_base_url: str | None = None,
+        allow_cloud: bool = True,
     ):
         if not isinstance(persona, PersonaSpec):
             raise TypeError("persona must be PersonaSpec")
@@ -61,6 +62,7 @@ class RoutedModelProvider:
         self.router = router or ModelRouter()
         self._ollama_factory = ollama_factory or self._default_ollama_factory
         self._gemini_factory = gemini_factory or self._default_gemini_factory
+        self.allow_cloud = bool(allow_cloud)
         self._lock = threading.Lock()
         self._last_attempts: tuple[RouteAttempt, ...] = ()
 
@@ -105,6 +107,10 @@ class RoutedModelProvider:
         )
 
     def _cloud_only_plan(self, request: ModelRequest) -> RoutePlan:
+        if not self.allow_cloud:
+            raise RoutedProviderError(
+                "Local hardware state is unavailable and cloud routing is disabled."
+            )
         model = (
             self.persona.routing.cloud_fast_model
             if request.tier is ModelTier.FAST
@@ -149,6 +155,16 @@ class RoutedModelProvider:
         attempts: list[RouteAttempt] = []
 
         for choice in plan.choices:
+            if choice.provider is ProviderKind.GEMINI and not self.allow_cloud:
+                attempts.append(
+                    RouteAttempt(
+                        choice.provider,
+                        choice.model,
+                        choice.reason,
+                        "skipped:cloud_disabled",
+                    )
+                )
+                continue
             try:
                 if choice.provider is ProviderKind.OLLAMA:
                     if choice.requires_ensure:
@@ -180,4 +196,8 @@ class RoutedModelProvider:
                 )
 
         self._record_attempts(attempts)
+        if not self.allow_cloud:
+            raise RoutedProviderError(
+                "No local JARVIS Brain route completed the request; cloud routing is disabled."
+            )
         raise RoutedProviderError("No routed model provider completed the request.")
