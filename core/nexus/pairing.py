@@ -119,6 +119,7 @@ class PairingRequest:
             "candidate_public_key": self.candidate_public_key,
             "candidate_role": self.candidate_role.value,
             "candidate_endpoint": self.candidate_endpoint,
+            "candidate_role": self.candidate_role.value,
             "proof": self.proof,
         }
 
@@ -188,6 +189,15 @@ class PairingManager:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(nexus_pairing_sessions)")
+            }
+            if "candidate_role" not in columns:
+                db.execute(
+                    "ALTER TABLE nexus_pairing_sessions "
+                    "ADD COLUMN candidate_role TEXT NOT NULL DEFAULT 'node'"
+                )
             columns = {
                 row["name"]
                 for row in db.execute("PRAGMA table_info(nexus_pairing_sessions)")
@@ -275,7 +285,15 @@ class PairingManager:
             _canonical(unsigned),
             hashlib.sha256,
         ).hexdigest()
-        return PairingRequest(proof=proof, **unsigned)
+        return PairingRequest(
+            version=unsigned["version"],
+            pairing_id=unsigned["pairing_id"],
+            candidate_device=unsigned["candidate_device"],
+            candidate_public_key=unsigned["candidate_public_key"],
+            candidate_endpoint=unsigned["candidate_endpoint"],
+            candidate_role=candidate_role,
+            proof=proof,
+        )
 
     def receive_request(self, request: PairingRequest) -> PendingPairing:
         if not isinstance(request, PairingRequest):
@@ -318,6 +336,7 @@ class PairingManager:
                 "candidate_public_key": request.candidate_public_key,
                 "candidate_role": request.candidate_role.value,
                 "candidate_endpoint": candidate_endpoint,
+                "candidate_role": request.candidate_role.value,
             }
             expected_proof = hmac.new(
                 row["secret_hash"].encode("ascii"),
@@ -357,6 +376,7 @@ class PairingManager:
             request.candidate_public_key,
             request.candidate_role,
             candidate_endpoint,
+            request.candidate_role,
             updated,
         )
 
