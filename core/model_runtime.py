@@ -254,6 +254,8 @@ class ModelRuntime:
             raise TypeError("priority must be an integer")
 
         ttl = self._default_keep_alive if keep_alive is None else keep_alive
+        if ttl == 0 or (isinstance(ttl, str) and ttl.strip().lower() in {"0", "0s"}):
+            raise ValueError("ensure keep_alive cannot be zero because zero unloads the model")
         self._touch_model(model, keep_alive=ttl, operation="model load")
         now = self._now()
 
@@ -293,11 +295,7 @@ class ModelRuntime:
         self._known.add(model)
         now = self._now()
 
-        try:
-            loaded = self._list_loaded_raw()
-        except ModelRuntimeError:
-            loaded = {}
-            self._warnings.append(f"status_refresh_failed:{model}")
+        loaded = self._list_loaded_raw()
 
         if model not in loaded:
             return ModelHandle(
