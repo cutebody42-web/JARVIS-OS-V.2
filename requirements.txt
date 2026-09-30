@@ -46,3 +46,4 @@ email-validator>=2.2,<3
 elevenlabs
 openai
 soundfile
+segno==1.6.6
