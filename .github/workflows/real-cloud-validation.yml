@@ -468,7 +468,34 @@ jobs:
           script: |
             set -eu
             adb wait-for-device
-            adb install -r "$APK"
+            package_ready=false
+            for attempt in $(seq 1 30); do
+              if adb shell cmd package list packages >/dev/null 2>&1; then
+                package_ready=true
+                break
+              fi
+              sleep 2
+            done
+            if [ "$package_ready" != "true" ]; then
+              echo "Android package manager did not become responsive" >&2
+              exit 1
+            fi
+
+            installed=false
+            for attempt in 1 2 3; do
+              if adb install --no-streaming -r "$APK"; then
+                installed=true
+                break
+              fi
+              echo "APK install attempt $attempt failed; waiting for emulator package service" >&2
+              adb reconnect device || true
+              adb wait-for-device
+              sleep $((attempt * 10))
+            done
+            if [ "$installed" != "true" ]; then
+              echo "JARVIS APK could not be installed after 3 attempts" >&2
+              exit 1
+            fi
             adb shell pm path ai.jarvis.app > artifacts/real-cloud/android/package-path.txt
             adb shell dumpsys package ai.jarvis.app > artifacts/real-cloud/android/package.txt
             cat artifacts/real-cloud/android/package-path.txt
