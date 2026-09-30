@@ -9,14 +9,17 @@ from agent.planner import create_plan, replan
 from agent.reflex import reflex_plan
 from core.action_contracts import ActionReceipt, ActionStatus
 from core.model_provider import ModelProvider
+from core.personas.persona_spec import PersonaSpec
 
 
 class AgentExecutor:
     MAX_REPLAN_ATTEMPTS = 2
 
-    def __init__(self, awareness=None, *, provider: ModelProvider | None = None):
+    def __init__(self, awareness=None, *, provider: ModelProvider | None = None,
+                 persona: PersonaSpec | None = None):
         self.awareness = awareness
         self.provider = provider
+        self.persona = persona
         self.last_step_results: dict = {}
         self.last_action_receipts: list[ActionReceipt] = []
         self.last_status = ActionStatus.UNVERIFIED
@@ -65,8 +68,17 @@ class AgentExecutor:
             failed_step = None
             for step in plan["steps"]:
                 self._awareness("set_active_tool", step["tool"], step.get("description", ""))
-                receipt = run_action(step["tool"], step["parameters"], task_id=task_id,
-                                     step_id=str(step["step"]), route=route, cancel_flag=cancel_flag)
+                receipt = run_action(
+                    step["tool"],
+                    step["parameters"],
+                    task_id=task_id,
+                    step_id=str(step["step"]),
+                    route=route,
+                    cancel_flag=cancel_flag,
+                    allowed_tools=(
+                        self.persona.tool_allowlist if self.persona is not None else None
+                    ),
+                )
                 self.last_action_receipts.append(receipt)
                 self.last_status = receipt.result.status
                 self.last_step_results[len(self.last_action_receipts)] = receipt.result.message
