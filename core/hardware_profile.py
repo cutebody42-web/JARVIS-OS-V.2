@@ -22,7 +22,7 @@ import re
 import subprocess
 from types import MappingProxyType
 from typing import Callable, Mapping
-from urllib.parse import urlparse, urlunparse
+from core.ollama_endpoint import normalize_local_ollama_url
 
 
 _GIB = 1024 ** 3
@@ -107,23 +107,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _normalize_base_url(value: str) -> str:
-    raw = value.strip()
-    if not raw:
-        raise ValueError("Ollama base URL cannot be empty")
-    if "://" not in raw:
-        raw = f"http://{raw}"
-    parsed = urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("Ollama base URL must be an http(s) host")
-    host = parsed.hostname
-    if host in {"0.0.0.0", "::"}:
-        replacement = "127.0.0.1" if host == "0.0.0.0" else "::1"
-        port = f":{parsed.port}" if parsed.port else ""
-        netloc = f"[{replacement}]{port}" if ":" in replacement else f"{replacement}{port}"
-        parsed = parsed._replace(netloc=netloc)
-    return urlunparse(parsed).rstrip("/")
-
+_normalize_base_url = normalize_local_ollama_url
 
 def _configured_or_anonymous_device_id() -> str:
     configured = os.getenv("JARVIS_DEVICE_ID")
