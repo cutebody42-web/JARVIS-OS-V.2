@@ -10,6 +10,7 @@ from .conflict_resolver import (
     materialize_pn_counter,
 )
 from .event_store import ClockRelation, EventStore, SyncEvent, compare_vector_clocks
+from .merge_applier import ApplyResult, ApplyStatus, MergeApplier
 from .merge_policy import (
     MergePolicyKind,
     MergePolicyRegistry,
@@ -18,11 +19,14 @@ from .merge_policy import (
 )
 
 __all__ = [
+    "ApplyResult",
+    "ApplyStatus",
     "ClockRelation",
     "ConflictResolver",
     "EntitySnapshot",
     "EventStore",
     "MergeAction",
+    "MergeApplier",
     "MergeDecision",
     "MergeEvidence",
     "MergePolicyKind",
