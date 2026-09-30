@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from core.nexus.event_store import EventStore
+from core.nexus.owner_approval import OwnerApprovalManager
 from core.nexus.peer_auth import DeviceSigner, PeerRegistry
 from core.update_manager import (
     UpdateApprovalGate,
@@ -99,6 +100,27 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(installer.applied)
         with self.assertRaises(PermissionError):
             self.gate.verify_and_consume(update, approval)
+
+    def test_major_update_can_use_generic_phone_biometric_approval_queue(self):
+        approvals = OwnerApprovalManager(self.store, clock=lambda: NOW)
+        installer = Installer()
+        manager = UpdateManager(installer, owner_approvals=approvals)
+        update = plan()
+
+        waiting = manager.apply(update)
+        self.assertEqual(waiting.state, UpdateState.AWAITING_APPROVAL)
+        self.assertIsNotNone(waiting.approval_id)
+        self.assertFalse(installer.staged)
+
+        approvals.decide(
+            waiting.approval_id,
+            peer_id="phone",
+            approved=True,
+            user_verified=True,
+        )
+        applied = manager.apply(update, approval_id=waiting.approval_id)
+        self.assertEqual(applied.state, UpdateState.APPLIED)
+        self.assertTrue(installer.applied)
 
     def test_unverified_mobile_approval_is_rejected_before_signature(self):
         update = plan()
