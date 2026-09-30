@@ -530,15 +530,18 @@ export async function mobileDecideApproval(
   approvalId: string,
   approved: boolean,
 ): Promise<Record<string, unknown>> {
-  await requireMobileOwnerPresence(
+  const biometric = await requireMobileOwnerPresence(
     approved
       ? "Confirm this JARVIS action with your fingerprint"
       : "Confirm rejecting this JARVIS action with your fingerprint",
     { requireFingerprint: true },
   );
+  if (biometric.biometryType !== 1) {
+    throw new Error("JARVIS sensitive approvals require fingerprint verification.");
+  }
   const request = await core().invoke<MobileApprovalRequest>(
     "mobile_sign_approval_decision",
-    { approvalId, approved },
+    { approvalId, approved, biometryType: "fingerprint" },
   );
   const response = await fetch(request.endpoint, {
     method: "POST",
