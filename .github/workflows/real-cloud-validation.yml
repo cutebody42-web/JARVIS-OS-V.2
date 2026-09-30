@@ -119,6 +119,7 @@ jobs:
                   "model": model,
                   "prompt": prompt,
                   "stream": False,
+                  "think": False,
                   "options": {"temperature": 0, "num_predict": 96},
                   "keep_alive": "5m",
               }).encode("utf-8")
