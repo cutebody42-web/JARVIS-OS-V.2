@@ -1,10 +1,15 @@
+mod brain;
+
+use brain::{ensure_brain_sidecar, platform_mode, BrainState};
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .manage(BrainState::default())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_websocket::init())
         .setup(|app| {
-            use tauri::Manager;
             let salt_dir = app
                 .path()
                 .app_local_data_dir()
@@ -17,6 +22,9 @@ pub fn run() {
             Ok(())
         });
 
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_shell::init());
+
     #[cfg(mobile)]
     let builder = builder
         .plugin(tauri_plugin_biometric::init())
@@ -24,6 +32,10 @@ pub fn run() {
         .plugin(tauri_plugin_haptics::init());
 
     builder
+        .invoke_handler(tauri::generate_handler![
+            platform_mode,
+            ensure_brain_sidecar
+        ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");
 }
