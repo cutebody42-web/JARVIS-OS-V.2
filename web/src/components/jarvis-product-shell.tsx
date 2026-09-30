@@ -377,10 +377,11 @@ export function JarvisProductShell() {
 
   useEffect(() => {
     if (!client) return;
+    const activeClient = client;
     let cancelled = false;
     async function refreshPairings() {
       try {
-        const result = await client.pendingPairings();
+        const result = await activeClient.pendingPairings();
         if (!cancelled) setPendingPairings(result.pending);
       } catch {
         // Pairing status is auxiliary; Brain chat stays available.
