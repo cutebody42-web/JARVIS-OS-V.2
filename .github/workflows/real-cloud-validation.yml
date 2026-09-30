@@ -16,6 +16,10 @@ on:
       - "web/**"
       - ".github/workflows/real-cloud-validation.yml"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
