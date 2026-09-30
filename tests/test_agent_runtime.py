@@ -173,7 +173,7 @@ class PersonaExecutionTests(unittest.TestCase):
         self.assertIn("denied", message)
         self.assertEqual(
             executor.last_action_receipts[-1].result.error_code,
-            "persona_denied",
+            "persona.denied",
         )
 
     def test_persona_contexts_remain_separate_across_runtime_switches(self):
