@@ -42,6 +42,9 @@ jobs:
           tests.test_nexus_sync_daemon
           tests.test_nexus_tailscale_transport
           tests.test_nexus_sync_scheduler
+          tests.test_nexus_device_registry
+          tests.test_windows_broker
+          tests.test_improvement_pipeline
       - uses: actions/checkout@v4
         with:
           ref: fffb487cc79adb827d21918ade107bebcdc2c03c
