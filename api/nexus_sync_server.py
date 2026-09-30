@@ -231,10 +231,17 @@ def create_sync_app(
                 )
                 if peer.role is not PeerRole.COMPANION:
                     raise PermissionError("approval decisions require a trusted companion")
-                if set(payload) != {"version", "request_id", "approval_id", "approved", "user_verified"}:
+                if set(payload) != {
+                    "version", "request_id", "approval_id", "approved",
+                    "user_verified", "biometry_type",
+                }:
                     raise ValueError("invalid approval decision payload")
-                if payload["version"] != 1 or payload["user_verified"] is not True:
-                    raise PermissionError("biometric verification is required")
+                if (
+                    payload["version"] != 1
+                    or payload["user_verified"] is not True
+                    or payload["biometry_type"] != "fingerprint"
+                ):
+                    raise PermissionError("fingerprint verification is required")
                 request_id = payload["request_id"]
                 approval_id = payload["approval_id"]
                 approved = payload["approved"]
