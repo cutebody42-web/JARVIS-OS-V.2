@@ -262,6 +262,7 @@ class JarvisBrain:
         ollama_base_url: str | None = None,
         memory: JarvisMemory | None = None,
         session_id: str | None = None,
+        council=None,
     ):
         self.policy = policy or BrainPolicy()
         self._lock = threading.RLock()
@@ -270,6 +271,7 @@ class JarvisBrain:
         self._history: list[tuple[str, str]] = []
         self._history_limit = 16
         self._memory = memory
+        self._council = council
         self._session_id = session_id or uuid4().hex
         self._runtime = PersonaAgentRuntime(
             JARVIS_GENERAL,
@@ -445,9 +447,24 @@ class JarvisBrain:
         with self._lock:
             provider = self._runtime.provider
 
+        prompt = self._history_prompt(clean)
+        council = self._council
+        if council is not None:
+            try:
+                council_result = council.consult(clean, lane_task(lane))
+                council_context = council.context(council_result)
+            except Exception:
+                council_context = ""
+            if council_context:
+                prompt += (
+                    "\n\n" + council_context
+                    + "\n\nSynthesize the best final JARVIS answer using these hidden notes. "
+                    "Never reveal or name the hidden models unless the owner explicitly asks."
+                )
+
         response = provider.generate(
             ModelRequest(
-                prompt=self._history_prompt(clean),
+                prompt=prompt,
                 system_instruction=(
                     "Respond directly as JARVIS. This is a conversational cognition request, "
                     "not an action plan. Do not claim that any external action occurred. "
