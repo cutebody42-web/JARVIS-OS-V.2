@@ -13,6 +13,7 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import hashlib
 import re
 from typing import Any, Mapping
 from urllib.parse import urlparse, urlunparse
@@ -146,6 +147,12 @@ class DeviceSigner:
     def public_b64(self) -> str:
         raw = self._private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
         return _b64(raw)
+
+    @property
+    def fingerprint(self) -> str:
+        raw = self._private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        digest = hashlib.sha256(raw).hexdigest()[:24]
+        return "-".join(digest[i:i + 4] for i in range(0, len(digest), 4))
 
     def sign(self, data: bytes) -> str:
         if not isinstance(data, bytes):
