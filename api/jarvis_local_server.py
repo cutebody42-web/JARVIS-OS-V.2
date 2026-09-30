@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import base64
 import hmac
+import json
 import threading
 from typing import Any
 
@@ -46,6 +48,7 @@ from core.self_heal import (
 
 
 _REQUIRED_LOCAL_MODELS = frozenset({"jarvis-brain-fast", "jarvis-brain-lite"})
+_JARVIS_OLLAMA_URL = "http://127.0.0.1:11435"
 
 
 class MessageRequest(BaseModel):
@@ -55,6 +58,7 @@ class MessageRequest(BaseModel):
 
 class SetupRequest(BaseModel):
     approved: bool
+    model_store: str | None = Field(default=None, max_length=4096)
 
 
 class PairOfferRequest(BaseModel):
@@ -89,6 +93,9 @@ class LocalBrainHost:
         self.companion_endpoint = companion_endpoint
         self.state_dir = Path(state_dir) if state_dir else user_data_dir() / "brain"
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.settings_path = self.state_dir / "settings.json"
+        self.ollama_base_url = _JARVIS_OLLAMA_URL
+        self.model_store = self._load_model_store()
         self._guard = threading.RLock()
         self._setup_guard = threading.Lock()
         self.setup = SetupState()
@@ -123,6 +130,7 @@ class LocalBrainHost:
             profiler=self.profiler,
             model_runtime=self.model_runtime,
             memory=self.memory,
+            ollama_base_url=self.ollama_base_url,
         )
         self.setup.phase = "ready" if self.local_brain_ready() else "setup_required"
         self.setup.percent = 100.0 if self.setup.phase == "ready" else 0.0
@@ -131,6 +139,40 @@ class LocalBrainHost:
             if self.setup.phase == "ready"
             else "Local JARVIS Brain setup required"
         )
+
+    def _load_model_store(self) -> Path | None:
+        try:
+            payload = json.loads(self.settings_path.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        raw = payload.get("model_store") if isinstance(payload, dict) else None
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            return None
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return None
+        return resolved if resolved.is_dir() else None
+
+    def _set_model_store(self, raw: str | None) -> Path | None:
+        if raw is None or not raw.strip():
+            return self.model_store
+        path = Path(raw.strip()).expanduser()
+        if not path.is_absolute():
+            raise ValueError("Local model folder must be an absolute path.")
+        path.mkdir(parents=True, exist_ok=True)
+        resolved = path.resolve()
+        temp = self.settings_path.with_suffix(".tmp")
+        temp.write_text(
+            json.dumps({"model_store": str(resolved)}, ensure_ascii=False, indent=2),
+            "utf-8",
+        )
+        temp.replace(self.settings_path)
+        self.model_store = resolved
+        return resolved
 
     def _capture_snapshot(self) -> HardwareSnapshot | None:
         try:
@@ -148,7 +190,19 @@ class LocalBrainHost:
         executable = find_ollama_executable()
         if executable is None:
             return False
-        names = installed_model_names(executable)
+        try:
+            ensure_ollama_service(
+                executable,
+                base_url=self.ollama_base_url,
+                model_store=self.model_store,
+            )
+        except Exception:
+            return False
+        names = installed_model_names(
+            executable,
+            base_url=self.ollama_base_url,
+            model_store=self.model_store,
+        )
         return bool(names & _REQUIRED_LOCAL_MODELS)
 
     def status(self) -> dict[str, Any]:
@@ -164,6 +218,7 @@ class LocalBrainHost:
             "identity": "JARVIS",
             "mode": "desktop_local",
             "brain_ready": self.local_brain_ready(),
+            "model_store": str(self.model_store) if self.model_store is not None else None,
             "setup": {
                 "phase": setup.phase,
                 "percent": setup.percent,
@@ -207,7 +262,11 @@ class LocalBrainHost:
         if executable is None:
             return False
         try:
-            ensure_ollama_service(executable)
+            ensure_ollama_service(
+                executable,
+                base_url=self.ollama_base_url,
+                model_store=self.model_store,
+            )
             self.model_runtime.get_status()
         except Exception:
             return False
@@ -246,7 +305,12 @@ class LocalBrainHost:
                 return self.brain.handle(message, task=task)
             raise
 
-    def setup_local_brain(self, *, approved: bool) -> dict[str, Any]:
+    def setup_local_brain(
+        self,
+        *,
+        approved: bool,
+        model_store: str | None = None,
+    ) -> dict[str, Any]:
         if not approved:
             raise PermissionError("Local model installation requires explicit owner approval.")
         if not self._setup_guard.acquire(blocking=False):
@@ -255,6 +319,7 @@ class LocalBrainHost:
             with self._guard:
                 self.setup = SetupState("starting", 1.0, "Preparing local JARVIS Brain", None)
 
+            selected_store = self._set_model_store(model_store)
             snapshot = self.refresh_hardware()
 
             def progress(phase: str, percent: float, message: str) -> None:
@@ -266,6 +331,8 @@ class LocalBrainHost:
                     snapshot=snapshot,
                     allow_install=True,
                     progress=progress,
+                    base_url=self.ollama_base_url,
+                    model_store=selected_store,
                 )
             except OllamaBootstrapError as exc:
                 with self._guard:
@@ -325,9 +392,14 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
     @app.post("/v1/setup/local-brain", dependencies=[Depends(require_ui)])
     def setup_local_brain(request: SetupRequest) -> dict[str, Any]:
         try:
-            return host.setup_local_brain(approved=request.approved)
+            return host.setup_local_brain(
+                approved=request.approved,
+                model_store=request.model_store,
+            )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
         except OllamaBootstrapError:
             raise HTTPException(status_code=503, detail="Local Brain setup failed") from None
 
