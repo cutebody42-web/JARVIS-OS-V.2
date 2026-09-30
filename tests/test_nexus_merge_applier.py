@@ -43,6 +43,25 @@ class MergeApplierTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_local_event_is_pending_until_materialized_then_exported(self):
+        event = self.store.create_event(
+            "memory.upsert",
+            "memory:local",
+            {"value": "local"},
+            entity_type="memory.fact",
+        )
+        applier = MergeApplier(self.store)
+
+        self.assertEqual(self.store.pending_local_count(), 1)
+        self.assertEqual(list((self.root / "outbox").glob("*.jsonl")), [])
+
+        result = applier.apply_local_event(event)
+
+        self.assertEqual(result.status, ApplyStatus.APPLIED)
+        self.assertEqual(self.store.pending_local_count(), 0)
+        self.assertEqual(applier.get_snapshot("memory:local").value, "local")
+        self.assertEqual(len(list((self.root / "outbox").glob("*.jsonl"))), 1)
+
     def test_first_apply_mutates_state_and_marks_event_applied_atomically(self):
         event = remote_event(
             event_id="dell-1",
