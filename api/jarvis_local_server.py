@@ -31,6 +31,7 @@ from core.jarvis_council import JarvisCouncil
 from core.jarvis_memory import JarvisMemory
 from core.model_router import TaskKind
 from core.model_runtime import ModelRuntime, ModelRuntimeError
+from core.owner_face import FaceIdentityError, OwnerFaceRecognizer
 from core.nexus.sync_node import NexusSyncNode
 from core.ollama_bootstrap import (
     OllamaBootstrapError,
@@ -64,6 +65,10 @@ class SetupRequest(BaseModel):
 
 class ModelSelectionRequest(BaseModel):
     model: str | None = Field(default=None, max_length=128)
+
+
+class FaceCameraRequest(BaseModel):
+    camera_index: int = Field(default=0, ge=0, le=8)
 
 
 class PairOfferRequest(BaseModel):
@@ -113,6 +118,8 @@ class LocalBrainHost:
         self.node = NexusSyncNode(self.state_dir / "nexus", device_id)
         self.memory = JarvisMemory(self.node.store, self.node.applier)
         self.memory.recover()
+
+        self.owner_face = OwnerFaceRecognizer()
 
         self.owner_runtime = create_runtime(
             owner_id="local-owner",
@@ -270,6 +277,11 @@ class LocalBrainHost:
                 "enabled": True,
                 "core_model": "jarvis-core-1b",
                 "parallel_experts": self.council.max_parallel_experts,
+            },
+            "identity": {
+                "face_enrolled": self.owner_face.enrolled,
+                "face_recognized": self.owner_face.recognized,
+                "face_score": round(self.owner_face.last_score, 4),
             },
             "setup": {
                 "phase": setup.phase,
@@ -454,6 +466,39 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         except OllamaBootstrapError:
             raise HTTPException(status_code=503, detail="Local Brain setup failed") from None
+
+    @app.post("/v1/identity/face/enroll", dependencies=[Depends(require_ui)])
+    def enroll_owner_face(request: FaceCameraRequest) -> dict[str, Any]:
+        try:
+            samples = host.owner_face.enroll_from_camera(camera_index=request.camera_index)
+            verified = host.owner_face.verify_from_camera(camera_index=request.camera_index)
+        except FaceIdentityError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        return {
+            "enrolled": True,
+            "samples": samples,
+            "recognized": verified.recognized,
+            "score": round(verified.score, 4),
+        }
+
+    @app.post("/v1/identity/face/verify", dependencies=[Depends(require_ui)])
+    def verify_owner_face(request: FaceCameraRequest) -> dict[str, Any]:
+        try:
+            result = host.owner_face.verify_from_camera(camera_index=request.camera_index)
+        except FaceIdentityError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        return {
+            "enrolled": result.enrolled,
+            "recognized": result.recognized,
+            "score": round(result.score, 4),
+            "matched_frames": result.matched_frames,
+            "total_frames": result.total_frames,
+        }
+
+    @app.post("/v1/identity/face/forget", dependencies=[Depends(require_ui)])
+    def forget_owner_face() -> dict[str, Any]:
+        host.owner_face.forget()
+        return {"enrolled": False, "recognized": False}
 
     @app.post("/v1/models/manual", dependencies=[Depends(require_ui)])
     def select_manual_model(request: ModelSelectionRequest) -> dict[str, Any]:
