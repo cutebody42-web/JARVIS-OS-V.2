@@ -569,18 +569,11 @@ export async function mobileDecideApproval(
   approvalId: string,
   approved: boolean,
 ): Promise<Record<string, unknown>> {
-  const biometric = await requireMobileOwnerPresence(
-    approved
-      ? "Confirm this JARVIS action with your fingerprint"
-      : "Confirm rejecting this JARVIS action with your fingerprint",
-    { requireFingerprint: true },
-  );
-  if (biometric.biometryType !== 1) {
-    throw new Error("JARVIS sensitive approvals require fingerprint verification.");
-  }
+  // The Rust command performs the OS biometric prompt itself immediately
+  // before signing, so WebView code cannot assert user verification.
   const request = await core().invoke<MobileApprovalRequest>(
     "mobile_sign_approval_decision",
-    { approvalId, approved, biometryType: "fingerprint" },
+    { approvalId, approved },
   );
   const response = await fetch(request.endpoint, {
     method: "POST",
