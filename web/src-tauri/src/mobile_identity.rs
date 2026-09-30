@@ -100,6 +100,32 @@ fn restrict_permissions(_path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "android")]
+fn signing_key(_app: &AppHandle) -> Result<SigningKey, String> {
+    const SERVICE: &str = "ai.jarvis.app";
+    const USER: &str = "mobile-ed25519";
+    let entry = keyring_core::Entry::new(SERVICE, USER)
+        .map_err(|error| format!("Android Keystore entry could not be opened ({error})."))?;
+    match entry.get_secret() {
+        Ok(bytes) => {
+            let seed: [u8; 32] = bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "Android Keystore JARVIS identity has invalid length.".to_string())?;
+            Ok(SigningKey::from_bytes(&seed))
+        }
+        Err(keyring_core::Error::NoEntry) => {
+            let key = SigningKey::generate(&mut OsRng);
+            entry
+                .set_secret(&key.to_bytes())
+                .map_err(|error| format!("JARVIS identity could not be stored in Android Keystore ({error})."))?;
+            Ok(key)
+        }
+        Err(error) => Err(format!("Android Keystore JARVIS identity could not be read ({error}).")),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 fn signing_key(app: &AppHandle) -> Result<SigningKey, String> {
     ensure_private_dir(app)?;
     let path = seed_path(app)?;
@@ -117,6 +143,14 @@ fn signing_key(app: &AppHandle) -> Result<SigningKey, String> {
         .map_err(|error| format!("JARVIS mobile identity could not be stored ({error})."))?;
     restrict_permissions(&path)?;
     Ok(key)
+}
+
+fn key_protection() -> &'static str {
+    if cfg!(target_os = "android") {
+        "android_keystore"
+    } else {
+        "native_app_sandbox"
+    }
 }
 
 fn hex(data: impl AsRef<[u8]>) -> String {
@@ -142,7 +176,7 @@ fn identity_for(key: &SigningKey) -> MobileIdentity {
         device_id: format!("mobile-{short}"),
         public_key: URL_SAFE_NO_PAD.encode(public),
         fingerprint,
-        key_protection: "native_app_sandbox".to_string(),
+        key_protection: key_protection().to_string(),
     }
 }
 
