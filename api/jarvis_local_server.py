@@ -27,6 +27,7 @@ from core.action_gateway import create_runtime
 from core.app_paths import user_data_dir
 from core.hardware_profile import HardwareProfiler, HardwareSnapshot
 from core.jarvis_brain import BrainIntent, BrainPolicy, JarvisBrain, classify_intent
+from core.jarvis_council import JarvisCouncil
 from core.jarvis_memory import JarvisMemory
 from core.model_router import TaskKind
 from core.model_runtime import ModelRuntime, ModelRuntimeError
@@ -47,7 +48,7 @@ from core.self_heal import (
 )
 
 
-_REQUIRED_LOCAL_MODELS = frozenset({"jarvis-brain-fast", "jarvis-brain-lite"})
+_REQUIRED_LOCAL_MODELS = frozenset({"jarvis-core-1b"})
 _JARVIS_OLLAMA_URL = "http://127.0.0.1:11435"
 
 
@@ -59,6 +60,10 @@ class MessageRequest(BaseModel):
 class SetupRequest(BaseModel):
     approved: bool
     model_store: str | None = Field(default=None, max_length=4096)
+
+
+class ModelSelectionRequest(BaseModel):
+    model: str | None = Field(default=None, max_length=128)
 
 
 class PairOfferRequest(BaseModel):
@@ -96,6 +101,7 @@ class LocalBrainHost:
         self.settings_path = self.state_dir / "settings.json"
         self.ollama_base_url = _JARVIS_OLLAMA_URL
         self.model_store = self._load_model_store()
+        self.manual_model = self._load_manual_model()
         self._guard = threading.RLock()
         self._setup_guard = threading.Lock()
         self.setup = SetupState()
@@ -124,6 +130,12 @@ class LocalBrainHost:
             IncidentKind.SYNC_FAILURE,
             self._heal_sync_runtime,
         )
+        self.council = JarvisCouncil(
+            ollama_base_url=self.ollama_base_url,
+            profiler=self.profiler,
+            runtime=self.model_runtime,
+            manual_model=self.manual_model,
+        )
         self.brain = JarvisBrain(
             policy=BrainPolicy(allow_cloud=bool(allow_cloud)),
             owner_runtime=self.owner_runtime,
@@ -131,6 +143,7 @@ class LocalBrainHost:
             model_runtime=self.model_runtime,
             memory=self.memory,
             ollama_base_url=self.ollama_base_url,
+            council=self.council,
         )
         self.setup.phase = "ready" if self.local_brain_ready() else "setup_required"
         self.setup.percent = 100.0 if self.setup.phase == "ready" else 0.0
@@ -140,12 +153,16 @@ class LocalBrainHost:
             else "Local JARVIS Brain setup required"
         )
 
-    def _load_model_store(self) -> Path | None:
+    def _load_settings(self) -> dict[str, Any]:
         try:
             payload = json.loads(self.settings_path.read_text("utf-8"))
         except (OSError, json.JSONDecodeError):
-            return None
-        raw = payload.get("model_store") if isinstance(payload, dict) else None
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _load_model_store(self) -> Path | None:
+        payload = self._load_settings()
+        raw = payload.get("model_store")
         if not isinstance(raw, str) or not raw.strip():
             return None
         path = Path(raw).expanduser()
@@ -157,6 +174,21 @@ class LocalBrainHost:
             return None
         return resolved if resolved.is_dir() else None
 
+    def _load_manual_model(self) -> str | None:
+        raw = self._load_settings().get("manual_model")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        return raw.strip()[:128]
+
+    def _write_settings(self) -> None:
+        payload = {
+            "model_store": str(self.model_store) if self.model_store is not None else None,
+            "manual_model": self.manual_model,
+        }
+        temp = self.settings_path.with_suffix(".tmp")
+        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        temp.replace(self.settings_path)
+
     def _set_model_store(self, raw: str | None) -> Path | None:
         if raw is None or not raw.strip():
             return self.model_store
@@ -165,14 +197,27 @@ class LocalBrainHost:
             raise ValueError("Local model folder must be an absolute path.")
         path.mkdir(parents=True, exist_ok=True)
         resolved = path.resolve()
-        temp = self.settings_path.with_suffix(".tmp")
-        temp.write_text(
-            json.dumps({"model_store": str(resolved)}, ensure_ascii=False, indent=2),
-            "utf-8",
-        )
-        temp.replace(self.settings_path)
         self.model_store = resolved
+        self._write_settings()
         return resolved
+
+    def available_models(self) -> tuple[str, ...]:
+        executable = find_ollama_executable()
+        if executable is None:
+            return ()
+        return tuple(sorted(installed_model_names(
+            executable,
+            base_url=self.ollama_base_url,
+            model_store=self.model_store,
+        )))
+
+    def set_manual_model(self, raw: str | None) -> None:
+        model = raw.strip() if isinstance(raw, str) else ""
+        if model and model not in self.available_models():
+            raise ValueError("Selected local model is not available in the current JARVIS model store.")
+        self.manual_model = model or None
+        self.council.set_manual_model(self.manual_model)
+        self._write_settings()
 
     def _capture_snapshot(self) -> HardwareSnapshot | None:
         try:
@@ -219,6 +264,13 @@ class LocalBrainHost:
             "mode": "desktop_local",
             "brain_ready": self.local_brain_ready(),
             "model_store": str(self.model_store) if self.model_store is not None else None,
+            "manual_model": self.manual_model,
+            "available_models": list(self.available_models()),
+            "council": {
+                "enabled": True,
+                "core_model": "jarvis-core-1b",
+                "parallel_experts": self.council.max_parallel_experts,
+            },
             "setup": {
                 "phase": setup.phase,
                 "percent": setup.percent,
@@ -402,6 +454,14 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         except OllamaBootstrapError:
             raise HTTPException(status_code=503, detail="Local Brain setup failed") from None
+
+    @app.post("/v1/models/manual", dependencies=[Depends(require_ui)])
+    def select_manual_model(request: ModelSelectionRequest) -> dict[str, Any]:
+        try:
+            host.set_manual_model(request.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return host.status()
 
     @app.post("/v1/message", dependencies=[Depends(require_ui)])
     def message(request: MessageRequest) -> dict[str, Any]:
