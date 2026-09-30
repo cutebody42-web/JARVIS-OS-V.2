@@ -53,6 +53,13 @@ export type MobilePairingBundle = {
   status_url: string;
 };
 
+export type MobileCompanionStatus = {
+  identity: MobileIdentity;
+  paired: boolean;
+  desktop_device: string | null;
+  key_protection: string;
+};
+
 export type MobileBrainRequest = {
   request_id: string;
   endpoint: string;
@@ -117,6 +124,10 @@ export function isNativeJarvis() {
 
 export async function platformMode(): Promise<PlatformMode> {
   return core().invoke<PlatformMode>("platform_mode");
+}
+
+export async function mobileCompanionStatus(): Promise<MobileCompanionStatus> {
+  return core().invoke<MobileCompanionStatus>("mobile_companion_status");
 }
 
 export async function ensureDesktopBrain(): Promise<BrainConnection> {
