@@ -12,6 +12,8 @@ import psutil
 import uvicorn
 
 from api.jarvis_local_server import LocalBrainHost, create_local_brain_app
+from api.nexus_sync_server import create_sync_app
+from core.companion_gateway import resolve_companion_gateway
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -31,6 +33,17 @@ def _watch_parent(parent_pid: int) -> None:
         time.sleep(2.0)
 
 
+def _serve_companion(app, host: str, port: int) -> None:
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="warning",
+        access_log=False,
+    )
+    uvicorn.Server(config).run()
+
+
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
     if not 1024 <= args.port <= 65535:
@@ -45,11 +58,27 @@ def main(argv=None) -> int:
         daemon=True,
     ).start()
 
+    gateway = resolve_companion_gateway()
     host = LocalBrainHost(
         ui_token=args.ui_token,
         state_dir=Path(args.state_dir) if args.state_dir else None,
         allow_cloud=args.cloud_boost,
+        companion_endpoint=gateway.endpoint if gateway is not None else None,
     )
+
+    if gateway is not None:
+        companion_app = create_sync_app(
+            host.node,
+            brain=host.brain,
+            run_scheduler=True,
+        )
+        threading.Thread(
+            target=_serve_companion,
+            args=(companion_app, gateway.bind_host, gateway.port),
+            name="jarvis-companion-gateway",
+            daemon=True,
+        ).start()
+
     app = create_local_brain_app(host)
     uvicorn.run(
         app,
