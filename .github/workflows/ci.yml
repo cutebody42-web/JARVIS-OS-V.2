@@ -17,7 +17,7 @@ jobs:
           POSTGRES_PASSWORD: jarvis
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U jarvis"
+          --health-cmd "pg_isready -U jarvis -d jarvis_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
