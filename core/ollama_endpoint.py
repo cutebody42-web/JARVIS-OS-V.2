@@ -27,7 +27,7 @@ def normalize_local_ollama_url(value: str) -> str:
         parsed = parsed._replace(netloc=netloc)
         host = replacement
 
-    if host not in {"127.0.0.1", "::1", "localhost"}:
+    if host not in {"127.0.0.1", "::1"}:
         raise ValueError("Local Ollama endpoint must resolve to explicit loopback")
 
     return urlunparse(parsed).rstrip("/")
