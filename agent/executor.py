@@ -9,14 +9,23 @@ from agent.planner import create_plan, replan
 from agent.reflex import reflex_plan
 from core.action_contracts import ActionReceipt, ActionStatus
 from core.model_provider import ModelProvider
+from core.personas import PersonaSpec
 
 
 class AgentExecutor:
     MAX_REPLAN_ATTEMPTS = 2
 
-    def __init__(self, awareness=None, *, provider: ModelProvider | None = None, owner_runtime=None):
+    def __init__(
+        self,
+        awareness=None,
+        *,
+        provider: ModelProvider | None = None,
+        owner_runtime=None,
+        persona: PersonaSpec | None = None,
+    ):
         self.awareness = awareness
         self.provider = provider
+        self.persona = persona
         from core.action_gateway import current_runtime
         self.owner_runtime = owner_runtime or current_runtime()
         self.last_step_results: dict = {}
@@ -32,8 +41,13 @@ class AgentExecutor:
             except Exception:
                 pass  # UI/awareness failure must not alter action authorization.
 
-    def execute(self, goal: str, speak: Callable | None = None,
-                cancel_flag: threading.Event | None = None) -> str:
+    def execute(
+        self,
+        goal: str,
+        speak: Callable | None = None,
+        cancel_flag: threading.Event | None = None,
+        context: str = "",
+    ) -> str:
         # Queue uses one executor per task; direct reuse is serialized as well.
         with self._execution_lock:
             self.last_step_results = {}
@@ -41,21 +55,23 @@ class AgentExecutor:
             self.last_status = ActionStatus.UNVERIFIED
             self._awareness("set_goal", goal)
             try:
-                message = self._execute(goal, cancel_flag)
+                message = self._execute(goal, cancel_flag, context)
             finally:
                 self._awareness("clear_active_tool")
             if speak:
                 speak(message)
             return message
 
-    def _execute(self, goal, cancel_flag):
+    def _execute(self, goal, cancel_flag, context):
         task_id = str(uuid4())
         if cancel_flag is not None and cancel_flag.is_set():
             self.last_status = ActionStatus.CANCELLED
             return "Task cancelled before planning."
         local = reflex_plan(goal)
         route = "reflex" if local is not None else "model"
-        plan = local if local is not None else create_plan(goal, provider=self.provider)
+        plan = local if local is not None else create_plan(
+            goal, context=context, provider=self.provider
+        )
         completed = []
         for recovery_attempt in range(self.MAX_REPLAN_ATTEMPTS + 1):
             if cancel_flag is not None and cancel_flag.is_set():
@@ -67,9 +83,18 @@ class AgentExecutor:
             failed_step = None
             for step in plan["steps"]:
                 self._awareness("set_active_tool", step["tool"], step.get("description", ""))
-                receipt = run_action(step["tool"], step["parameters"], task_id=task_id,
-                                     step_id=str(step["step"]), route=route, cancel_flag=cancel_flag,
-                                     owner_runtime=self.owner_runtime)
+                receipt = run_action(
+                    step["tool"],
+                    step["parameters"],
+                    task_id=task_id,
+                    step_id=str(step["step"]),
+                    route=route,
+                    cancel_flag=cancel_flag,
+                    owner_runtime=self.owner_runtime,
+                    allowed_tools=(
+                        self.persona.tool_allowlist if self.persona is not None else None
+                    ),
+                )
                 self.last_action_receipts.append(receipt)
                 self.last_status = receipt.result.status
                 self.last_step_results[len(self.last_action_receipts)] = receipt.result.message
