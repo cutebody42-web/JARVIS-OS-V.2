@@ -271,7 +271,15 @@ export function JarvisProductShell() {
           const nextClient = await bootstrapDesktopBrain();
           if (cancelled) return;
           setClient(nextClient);
-          const nextStatus = await nextClient.status();
+          let nextStatus = await nextClient.status();
+          if (nextStatus.identity.face_enrolled) {
+            try {
+              await nextClient.verifyOwnerFace();
+              nextStatus = await nextClient.status();
+            } catch {
+              // Camera may be unavailable at boot; manual retry remains visible.
+            }
+          }
           setStatus(nextStatus);
           setModelStore(nextStatus.model_store ?? "");
           setManualModel(nextStatus.manual_model ?? "");
@@ -351,6 +359,34 @@ export function JarvisProductShell() {
       }]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "JARVIS could not complete the request.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enrollFace() {
+    if (!client || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await client.enrollOwnerFace();
+      setStatus(await client.status());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Owner face enrollment failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyFace() {
+    if (!client || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await client.verifyOwnerFace();
+      setStatus(await client.status());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Owner face recognition failed.");
     } finally {
       setBusy(false);
     }
@@ -500,12 +536,28 @@ export function JarvisProductShell() {
             <div><dt>Model store</dt><dd title={status?.model_store || undefined}>{status?.model_store ? "OWNER PATH" : "DEFAULT"}</dd></div>
             <div><dt>Core</dt><dd data-on="true">{status?.council.core_model ?? "jarvis-core-1b"}</dd></div>
             <div><dt>Hidden experts</dt><dd>{status?.council.parallel_experts ?? 2} parallel</dd></div>
+            <div><dt>Owner face</dt><dd data-on={status?.identity.face_recognized}>{status?.identity.face_recognized ? "RECOGNIZED" : status?.identity.face_enrolled ? "ENROLLED" : "NOT ENROLLED"}</dd></div>
             <div><dt>Memory</dt><dd data-on="true"><ShieldCheck size={13} /> CONTINUOUS</dd></div>
             <div><dt>RAM available</dt><dd>{ram}</dd></div>
             <div><dt>System pressure</dt><dd>{pressure == null ? "—" : `${Math.round(pressure * 100)}%`}</dd></div>
             <div><dt>Power</dt><dd>{status?.device.power_source?.toUpperCase() || "—"}</dd></div>
             <div><dt>Visual profile</dt><dd data-on="true"><Cpu size={13} /> {visual.tier.toUpperCase()}</dd></div>
           </dl>
+
+          <section className="device-link-card">
+            <div className="capability-heading"><span>Owner identity</span><b>{status?.identity.face_recognized ? "LIVE" : "FACE"}</b></div>
+            <p>
+              {status?.identity.face_enrolled
+                ? "JARVIS can recognize your enrolled face from the laptop camera. Face identity never replaces phone biometric approval for major changes."
+                : "Enroll your face once. JARVIS stores numeric templates only; camera frames are discarded."}
+            </p>
+            <div className="pair-actions">
+              <Button variant="secondary" onClick={() => void (status?.identity.face_enrolled ? verifyFace() : enrollFace())} disabled={!client || busy}>
+                <ShieldCheck size={15} />
+                {status?.identity.face_enrolled ? "Recognize me" : "Enroll owner face"}
+              </Button>
+            </div>
+          </section>
 
           <section className="device-link-card">
             <div className="capability-heading"><span>Local models</span><b>{status?.available_models.length ?? 0}</b></div>
