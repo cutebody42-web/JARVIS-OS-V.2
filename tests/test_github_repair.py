@@ -89,6 +89,7 @@ class GitHubRepairGateTests(unittest.TestCase):
                 "JARVIS product shell",
                 "Build JARVIS Android companion",
                 "Build JARVIS Windows installer",
+                "Real JARVIS cloud validation",
             },
         )
         self.assertFalse(client.created_pr["draft"])
