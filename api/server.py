@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -105,11 +106,21 @@ async def lifespan(_: FastAPI):
     if settings.auto_create_tables:
         await asyncio.to_thread(init_db)
     await limiter.connect()
+    app.state.missions = None
     try:
+        mission_directory = os.environ.get("NEXUS_STATE_DIR")
+        if mission_directory:
+            from agent.missions import MissionService
+            app.state.missions = await asyncio.to_thread(MissionService, mission_directory)
         yield
     finally:
-        await live_sessions.close_all()
-        await limiter.close()
+        try:
+            await live_sessions.close_all()
+            if app.state.missions is not None:
+                await asyncio.to_thread(app.state.missions.close)
+                app.state.missions = None
+        finally:
+            await limiter.close()
 
 
 app = FastAPI(
@@ -124,6 +135,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+from .mission_api import router as mission_router
+app.include_router(mission_router)
 
 
 def _user_view(user: User, db: Session) -> UserView:

@@ -13,7 +13,8 @@ import time
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
-from core.action_contracts import ActionReceipt, ActionStatus, Evidence, ToolResult
+from core.action_contracts import (ActionReceipt, ActionStatus, Evidence, ToolResult,
+                                   VerifierResult, VerificationStatus)
 from core.authority_contracts import (
     ActionRequest, AuthorizationDecision as A, AuthorizationResult, PolicyContext,
     canonical_arguments,
@@ -90,6 +91,13 @@ class ActionGateway:
             # even an owner-approved resumption remains blocked in QA mode.
             qa_tool = "email_control" if request.capability_id == "email.send" else (tool or request.capability_id)
             qa_args = {**request.arguments, "action": "approve"} if request.capability_id == "email.send" else request.arguments
+            if request.capability_id in {"workspace.read", "workspace.create_text"}:
+                # NEXUS paths are relative to the owner workspace, not cwd.
+                # Translate only the QA inspection copy; consent and execution
+                # retain the exact original normalized arguments and digest.
+                qa_tool = "file_controller"
+                path = request.arguments.get("path")
+                qa_args = {"path": str(self.context.workspace_root / path) if type(path) is str else ""}
             qa = guard_tool_call(qa_tool, qa_args)
             if cancelled or additional_denial or not qa.allowed:
                 reason = "Task cancelled." if cancelled else additional_denial or qa_block_message(qa)
@@ -123,6 +131,11 @@ class ActionGateway:
             policy_rule=auth.policy_rule, normalized_argument_digest=request.arguments_digest,
             confirmation_ticket_id=auth.confirmation_ticket_id,
             authorization_evidence=(Evidence("nexus.owner_kernel", f"{POLICY_VERSION}: {auth.policy_rule}: {auth.decision.value}", start),),
+            # Envelope for the static adapter's existing postcondition evidence.
+            # This does not invent an independent external-service verifier.
+            verifier_result=VerifierResult(
+                VerificationStatus.PASS if result.status is ActionStatus.SUCCEEDED else VerificationStatus.UNKNOWN,
+                "nexus.trusted_adapter", result.evidence),
         )
         with self.__receipt_lock:
             self.__receipts.append(receipt)

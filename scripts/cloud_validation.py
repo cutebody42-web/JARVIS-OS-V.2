@@ -15,6 +15,7 @@ import tempfile
 import unittest
 
 CORE_MODULES = (
+    "test_local_provider", "test_missions", "test_mission_api",
     "test_nexus_contracts", "test_nexus_text_route", "test_owner_kernel",
     "test_action_gateway_security", "test_owner_api", "test_phase1_decoupling",
     "test_hosted_api", "test_core_resilience", "test_qa_system",

@@ -76,6 +76,7 @@ def _workspace_create(args, context):
             observed = stream.read()
             if observed != data:
                 raise OSError("Post-write verification failed.")
+        os.fsync(parent)  # persist the new directory entry before journaling success
     return _verified(f"Created workspace file: {args['path']}", "native.workspace.readback",
                      f"{args['path']}: sha256={hashlib.sha256(observed).hexdigest()}; bytes={len(observed)}")
 

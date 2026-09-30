@@ -381,10 +381,20 @@ class AutomatedChecklistTests(unittest.TestCase):
 
     def test_automated_file_probe_stays_inside_workspace(self):
         probe = _load_script("qa_checklist_probe")
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"JARVIS_QA_WORKSPACE": directory}):
             passed, evidence, _notes = probe._file_probe(Path(directory))
         self.assertTrue(passed)
-        self.assertIn("Access denied", evidence["outside_write"])
+        self.assertEqual(evidence["outside_write"]["authorization_decision"], "DENY")
+        self.assertEqual(evidence["created"]["result"]["status"], "succeeded")
+        self.assertTrue(evidence["created"]["confirmation_ticket_id"])
+        self.assertEqual(evidence["unsupported_rename"]["authorization_decision"], "DENY")
+
+    def test_non_mac_display_probe_cannot_certify_hardware(self):
+        probe = _load_script("qa_checklist_probe")
+        with patch.object(probe.platform, "system", return_value="Linux"):
+            success, _evidence, notes = probe._display_probe()
+        self.assertIsNone(success)
+        self.assertIn("DEFERRED", notes)
 
 
 if __name__ == "__main__":

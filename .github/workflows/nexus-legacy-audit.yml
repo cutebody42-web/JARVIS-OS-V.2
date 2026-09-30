@@ -14,12 +14,15 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       JARVIS_ENV: test
+      NEXUS_REQUIRE_BROWSER_QA: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
       - run: pip install -r requirements.txt
       - run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
+      - name: Install cloud browser test runtime
+        run: python -m playwright install --with-deps chromium
       - name: Full discovery (retain real failures)
         id: full
         continue-on-error: true
@@ -28,6 +31,10 @@ jobs:
         id: qa
         continue-on-error: true
         run: python scripts/qa.py automated
+      - name: Cloud checklist (hardware remains deferred)
+        id: checklist
+        continue-on-error: true
+        run: python scripts/qa.py checklist-auto
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -37,7 +44,7 @@ jobs:
             artifacts/full-tests.json
             .qa-artifacts/
       - name: Keep unresolved release failures visible
-        if: steps.full.outcome != 'success' || steps.qa.outcome != 'success'
+        if: steps.full.outcome != 'success' || steps.qa.outcome != 'success' || steps.checklist.outcome != 'success'
         run: |
           echo 'Full legacy QA is not green. Consult artifacts for source failures versus environment limitations. Do not merge/release as certified.'
           exit 1
