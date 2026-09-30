@@ -7,6 +7,7 @@ hardware-aware routing without importing provider SDK details.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import threading
 from typing import Callable
 
@@ -49,8 +50,14 @@ class RoutedModelProvider:
             raise TypeError("persona must be PersonaSpec")
         self.persona = persona
         self.task = persona.validate_task(task)
-        self.profiler = profiler or HardwareProfiler(ollama_base_url=ollama_base_url)
-        self.runtime = runtime or ModelRuntime(ollama_base_url=ollama_base_url)
+        self._ollama_base_url = (
+            ollama_base_url
+            or os.environ.get("NEXUS_OLLAMA_URL")
+            or os.environ.get("OLLAMA_HOST")
+            or "http://127.0.0.1:11434"
+        )
+        self.profiler = profiler or HardwareProfiler(ollama_base_url=self._ollama_base_url)
+        self.runtime = runtime or ModelRuntime(ollama_base_url=self._ollama_base_url)
         self.router = router or ModelRouter()
         self._ollama_factory = ollama_factory or self._default_ollama_factory
         self._gemini_factory = gemini_factory or self._default_gemini_factory
@@ -66,12 +73,11 @@ class RoutedModelProvider:
         with self._lock:
             self._last_attempts = tuple(attempts)
 
-    @staticmethod
-    def _default_ollama_factory(choice: ProviderChoice) -> ModelProvider:
+    def _default_ollama_factory(self, choice: ProviderChoice) -> ModelProvider:
         from core.providers.ollama import OllamaProvider
         return OllamaProvider(
-            fast_model=choice.model,
-            standard_model=choice.model,
+            choice.model,
+            base_url=self._ollama_base_url,
             keep_alive=choice.keep_alive,
         )
 
