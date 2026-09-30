@@ -77,6 +77,14 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Prepare deterministic libsodium dependency
+        shell: pwsh
+        run: |
+          $env:VCPKG_DEFAULT_TRIPLET = "x64-windows"
+          vcpkg install libsodium:x64-windows
+          "SODIUM_USE_PKG_CONFIG=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DEFAULT_TRIPLET=x64-windows" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Generate branded platform icons
         working-directory: web
         shell: pwsh
