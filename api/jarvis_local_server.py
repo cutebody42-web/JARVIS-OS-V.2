@@ -48,6 +48,7 @@ from core.self_heal import (
     RepairState,
     SelfHealController,
 )
+from core.voice_runtime import VoiceRuntimeError, WindowsVoiceRuntime
 
 
 _REQUIRED_LOCAL_MODELS = frozenset({"jarvis-core-1b"})
@@ -70,6 +71,15 @@ class ModelSelectionRequest(BaseModel):
 
 class FaceCameraRequest(BaseModel):
     camera_index: int = Field(default=0, ge=0, le=8)
+
+
+class VoiceListenRequest(BaseModel):
+    language: str = Field(default="en-US", min_length=2, max_length=24)
+    timeout_seconds: float = Field(default=8.0, ge=1.0, le=30.0)
+
+
+class VoiceSpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=12000)
 
 
 class ApprovalCreateRequest(BaseModel):
@@ -128,6 +138,7 @@ class LocalBrainHost:
         self.memory.recover()
 
         self.owner_face = OwnerFaceRecognizer()
+        self.voice = WindowsVoiceRuntime()
 
         self.owner_runtime = create_runtime(
             owner_id="local-owner",
@@ -291,6 +302,7 @@ class LocalBrainHost:
                 "face_recognized": self.owner_face.recognized,
                 "face_score": round(self.owner_face.last_score, 4),
             },
+            "voice": self.voice.status(),
             "approvals": {
                 "pending": len(self.approvals.pending()),
             },
@@ -543,6 +555,42 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
     def forget_owner_face() -> dict[str, Any]:
         host.owner_face.forget()
         return {"enrolled": False, "recognized": False}
+
+    @app.get("/v1/voice/status", dependencies=[Depends(require_ui)])
+    def voice_status() -> dict[str, Any]:
+        return host.voice.status()
+
+    @app.post("/v1/voice/listen", dependencies=[Depends(require_ui)])
+    def voice_listen(request: VoiceListenRequest) -> dict[str, Any]:
+        try:
+            result = host.voice.listen_once(
+                language=request.language,
+                timeout_seconds=request.timeout_seconds,
+            )
+        except VoiceRuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {
+            "text": result.text,
+            "confidence": result.confidence,
+            "engine": result.engine,
+            "state": host.voice.state.value,
+        }
+
+    @app.post("/v1/voice/speak", dependencies=[Depends(require_ui)])
+    def voice_speak(request: VoiceSpeakRequest) -> dict[str, Any]:
+        try:
+            host.voice.speak(request.text)
+        except VoiceRuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {"spoken": True, "state": host.voice.state.value}
+
+    @app.post("/v1/voice/stop", dependencies=[Depends(require_ui)])
+    def voice_stop() -> dict[str, Any]:
+        return {"stopped": host.voice.stop(), "state": host.voice.state.value}
 
     @app.post("/v1/models/manual", dependencies=[Depends(require_ui)])
     def select_manual_model(request: ModelSelectionRequest) -> dict[str, Any]:
