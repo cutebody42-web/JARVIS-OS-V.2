@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -259,6 +260,44 @@ def _run_ollama(
         raise OllamaBootstrapError("Ollama model provisioning failed.")
 
 
+_PARAMETER_SIZE_RE = re.compile(r"^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*([BM])\\s*$", re.IGNORECASE)
+
+
+def parameter_size_b(value: str) -> float:
+    if not isinstance(value, str):
+        raise ValueError("parameter size must be text")
+    match = _PARAMETER_SIZE_RE.fullmatch(value)
+    if match is None:
+        raise ValueError("unsupported Ollama parameter size")
+    amount = float(match.group(1))
+    return amount if match.group(2).upper() == "B" else amount / 1000.0
+
+
+def model_matches_manifest(
+    model: str,
+    expected_parameters_b: float,
+    *,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    request_post=requests.post,
+) -> bool:
+    try:
+        response = request_post(
+            base_url + "/api/show",
+            json={"model": model},
+            timeout=10,
+        )
+        response.raise_for_status()
+        body = response.json()
+        details = body.get("details") if isinstance(body, dict) else None
+        label = details.get("parameter_size") if isinstance(details, dict) else None
+        actual = parameter_size_b(label)
+    except Exception:
+        return False
+
+    tolerance = max(0.15, expected_parameters_b * 0.20)
+    return abs(actual - expected_parameters_b) <= tolerance
+
+
 def installed_model_names(
     executable: str,
     *,
@@ -349,7 +388,11 @@ def provision_brain_models(
 
     for index, spec in enumerate(selected):
         base_percent = index / total * 100
-        if spec.alias in existing:
+        if spec.alias in existing and model_matches_manifest(
+            spec.alias,
+            spec.parameters_b,
+            base_url=base_url,
+        ):
             _emit(progress, "models", base_percent, f"{spec.alias} already ready")
             completed_aliases.append(spec.alias)
             continue
