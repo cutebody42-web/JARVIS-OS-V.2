@@ -10,6 +10,13 @@ export type BrainStatus = {
   mode: string;
   brain_ready: boolean;
   model_store: string | null;
+  manual_model: string | null;
+  available_models: string[];
+  council: {
+    enabled: boolean;
+    core_model: string;
+    parallel_experts: number;
+  };
   setup: {
     phase: string;
     percent: number;
@@ -145,6 +152,13 @@ export class LocalBrainClient {
         approved: true,
         model_store: modelStore?.trim() || null,
       }),
+    });
+  }
+
+  selectManualModel(model?: string) {
+    return this.request<BrainStatus>("/v1/models/manual", {
+      method: "POST",
+      body: JSON.stringify({ model: model?.trim() || null }),
     });
   }
 
