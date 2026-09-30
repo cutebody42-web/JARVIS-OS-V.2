@@ -207,7 +207,13 @@ class PeerRegistry:
                 """
             )
 
-    def trust_peer(self, peer_id: str, public_key: str, endpoint: str) -> TrustedPeer:
+    def _trust_peer_in_db(
+        self,
+        db,
+        peer_id: str,
+        public_key: str,
+        endpoint: str,
+    ) -> TrustedPeer:
         peer_id = _device(peer_id)
         if peer_id == self._store.device_id:
             raise ValueError("cannot trust the local device as a remote peer")
@@ -216,21 +222,24 @@ class PeerRegistry:
             raise ValueError("peer Ed25519 public key must be 32 bytes")
         normalized = normalize_peer_endpoint(endpoint)
         now = _utc_now().isoformat().replace("+00:00", "Z")
-        with self._store._connect() as db:
-            db.execute(
-                """
-                INSERT INTO nexus_trusted_peers(
-                    peer_id, public_key, endpoint, revoked, created_at, updated_at
-                ) VALUES (?, ?, ?, 0, ?, ?)
-                ON CONFLICT(peer_id) DO UPDATE SET
-                    public_key=excluded.public_key,
-                    endpoint=excluded.endpoint,
-                    revoked=0,
-                    updated_at=excluded.updated_at
-                """,
-                (peer_id, public_key, normalized, now, now),
-            )
+        db.execute(
+            """
+            INSERT INTO nexus_trusted_peers(
+                peer_id, public_key, endpoint, revoked, created_at, updated_at
+            ) VALUES (?, ?, ?, 0, ?, ?)
+            ON CONFLICT(peer_id) DO UPDATE SET
+                public_key=excluded.public_key,
+                endpoint=excluded.endpoint,
+                revoked=0,
+                updated_at=excluded.updated_at
+            """,
+            (peer_id, public_key, normalized, now, now),
+        )
         return TrustedPeer(peer_id, public_key, normalized, False)
+
+    def trust_peer(self, peer_id: str, public_key: str, endpoint: str) -> TrustedPeer:
+        with self._store._connect() as db:
+            return self._trust_peer_in_db(db, peer_id, public_key, endpoint)
 
     def revoke_peer(self, peer_id: str) -> bool:
         peer_id = _device(peer_id)
