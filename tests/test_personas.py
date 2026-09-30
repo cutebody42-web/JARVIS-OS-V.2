@@ -245,6 +245,22 @@ class PersonaRuntimeTests(unittest.TestCase):
         self.assertIs(first_provider.profiler, profiler)
         self.assertIs(second_provider.profiler, profiler)
 
+    def test_configured_ollama_endpoint_survives_persona_rebuilds(self):
+        endpoint = "http://127.0.0.1:11435"
+        profiler = FakeProfiler(hardware())
+        runtime = FakeRuntime()
+        agent = PersonaAgentRuntime(
+            FRIDAY,
+            profiler=profiler,
+            model_runtime=runtime,
+            ollama_base_url=endpoint,
+            ollama_factory=lambda choice: RecordingProvider("ollama", choice.model),
+            gemini_factory=lambda choice: RecordingProvider("gemini", choice.model),
+        )
+        self.assertEqual(agent.provider._ollama_base_url, endpoint)
+        agent.switch_persona("jarvis")
+        self.assertEqual(agent.provider._ollama_base_url, endpoint)
+
 
 if __name__ == "__main__":
     unittest.main()
