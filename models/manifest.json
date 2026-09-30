@@ -4,6 +4,13 @@
   "namespace": "jarvis",
   "models": [
     {
+      "alias": "jarvis-core-1b",
+      "base": "llama3.2:1b",
+      "role": "coordinator",
+      "min_ram_gb": 1.5,
+      "parameters_b": 1
+    },
+    {
       "alias": "jarvis-brain-fast",
       "base": "qwen3.5:4b",
       "role": "general_realtime",
