@@ -30,6 +30,10 @@ on:
       - "web/**"
       - ".github/workflows/build-windows.yml"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
