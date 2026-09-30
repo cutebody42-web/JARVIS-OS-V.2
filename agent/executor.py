@@ -14,9 +14,11 @@ from core.model_provider import ModelProvider
 class AgentExecutor:
     MAX_REPLAN_ATTEMPTS = 2
 
-    def __init__(self, awareness=None, *, provider: ModelProvider | None = None, owner_runtime=None):
+    def __init__(self, awareness=None, *, provider: ModelProvider | None = None,
+                 owner_runtime=None, tool_allowlist=None):
         self.awareness = awareness
         self.provider = provider
+        self.tool_allowlist = None if tool_allowlist is None else frozenset(tool_allowlist)
         from core.action_gateway import current_runtime
         self.owner_runtime = owner_runtime or current_runtime()
         self.last_step_results: dict = {}
@@ -67,9 +69,11 @@ class AgentExecutor:
             failed_step = None
             for step in plan["steps"]:
                 self._awareness("set_active_tool", step["tool"], step.get("description", ""))
-                receipt = run_action(step["tool"], step["parameters"], task_id=task_id,
-                                     step_id=str(step["step"]), route=route, cancel_flag=cancel_flag,
-                                     owner_runtime=self.owner_runtime)
+                receipt = run_action(
+                    step["tool"], step["parameters"], task_id=task_id,
+                    step_id=str(step["step"]), route=route, cancel_flag=cancel_flag,
+                    owner_runtime=self.owner_runtime, allowed_tools=self.tool_allowlist,
+                )
                 self.last_action_receipts.append(receipt)
                 self.last_status = receipt.result.status
                 self.last_step_results[len(self.last_action_receipts)] = receipt.result.message
