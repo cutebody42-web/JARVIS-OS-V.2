@@ -9167,6 +9167,14 @@ class JarvisUI:
     def on_tts_provider_change(self, cb):
         self._win.on_tts_provider_change = cb
 
+    @property
+    def on_quit_requested(self):
+        return self._win.on_quit_requested
+
+    @on_quit_requested.setter
+    def on_quit_requested(self, cb):
+        self._win.on_quit_requested = cb
+
     def set_state(self, state: str):
         self._win._state_sig.emit(state)
 
