@@ -241,6 +241,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install "pyinstaller>=6.10,<7"
+          python scripts/fetch_face_models.py models/vision
           pyinstaller --clean --noconfirm packaging/windows/JARVIS-Brain.spec
           if (!(Test-Path "dist/jarvis-brain.exe")) { throw "Packaged JARVIS Brain executable was not produced" }
           New-Item -ItemType Directory -Force "web/src-tauri/binaries" | Out-Null
