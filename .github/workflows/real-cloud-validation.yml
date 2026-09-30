@@ -175,6 +175,43 @@ jobs:
           print(json.dumps(evidence, ensure_ascii=False))
           PY
 
+      - name: Validate production face-recognition engine and pinned models
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet "opencv-python-headless>=4.10,<5" requests numpy
+          python - <<'PY'
+          import hashlib
+          import json
+          import tempfile
+          from pathlib import Path
+          import numpy as np
+          from core.owner_face import OwnerFaceRecognizer
+
+          with tempfile.TemporaryDirectory() as tmp:
+              recognizer = OwnerFaceRecognizer(model_dir=tmp)
+              detector, face_model = recognizer._vision_models()
+              blank = np.zeros((480, 640, 3), dtype=np.uint8)
+              embedding = recognizer._extract_embedding(blank)
+              assert embedding is None
+              files = {}
+              for path in sorted(Path(tmp).glob("*.onnx")):
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  files[path.name] = {"bytes": path.stat().st_size, "sha256": digest}
+              assert len(files) == 2, files
+              evidence = {
+                  "engine": recognizer.engine,
+                  "models": files,
+                  "initialized": detector is not None and face_model is not None,
+                  "blank_frame_rejected": True,
+                  "physical_camera_certified": False,
+              }
+              Path("artifacts/real-cloud/local-ai/face-engine.json").write_text(
+                  json.dumps(evidence, indent=2), "utf-8"
+              )
+              print(json.dumps(evidence))
+          PY
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
