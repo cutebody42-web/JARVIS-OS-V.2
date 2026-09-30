@@ -151,10 +151,13 @@ export class LocalBrainClient {
     });
   }
 
-  createPairingOffer(endpoint: string, ttlSeconds = 300) {
+  createPairingOffer(endpoint?: string, ttlSeconds = 300) {
     return this.request<Record<string, unknown>>("/v1/pair/offer", {
       method: "POST",
-      body: JSON.stringify({ endpoint, ttl_seconds: ttlSeconds }),
+      body: JSON.stringify({
+        endpoint: endpoint?.trim() || null,
+        ttl_seconds: ttlSeconds,
+      }),
     });
   }
 
