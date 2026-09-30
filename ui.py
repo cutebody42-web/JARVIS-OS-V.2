@@ -6872,30 +6872,45 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Every key source uses the same Gemini verification gate. Environment
-        # variables and remembered keys are never trusted merely because they
-        # were present on an earlier run.
-        self._ready = False
-        candidate_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        candidate_is_saved = False
-        try:
-            if not candidate_key:
-                store = get_secret_store()
-                saved = store.get("gemini_api_key")
-                if saved:
-                    candidate_key = saved.strip()
-                    candidate_is_saved = True
-        except Exception:
-            candidate_key = ""
+        # Product local-brain mode is fully usable without a cloud API key.
+        # The historical Gemini setup remains available for legacy/cloud mode.
+        self._local_brain_mode = (
+            os.environ.get("JARVIS_LOCAL_BRAIN", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if self._local_brain_mode:
+            self._ready = True
+            self._overlay = None
+            self._apply_state("LISTENING")
+            self._log.append_log("SYS: JARVIS BRAIN LOCAL CORE ONLINE")
+            self._log.append_log("SYS: CLOUD BOOST OFF — LOCAL-FIRST MODE")
+            self._log.append_log("JARVIS: Online. How may I assist you?")
+            QTimer.singleShot(450, self._check_and_show_name_signin)
+        else:
+            # Every cloud key source uses the same verification gate.
+            # Environment variables and remembered keys are never trusted merely
+            # because they were present on an earlier run.
+            self._ready = False
+            candidate_key = os.environ.get("GEMINI_API_KEY", "").strip()
             candidate_is_saved = False
+            try:
+                if not candidate_key:
+                    store = get_secret_store()
+                    saved = store.get("gemini_api_key")
+                    if saved:
+                        candidate_key = saved.strip()
+                        candidate_is_saved = True
+            except Exception:
+                candidate_key = ""
+                candidate_is_saved = False
 
-        self._show_setup()
-        if candidate_key and self._overlay:
-            self._overlay.validate_candidate(
-                candidate_key,
-                remember_key=candidate_is_saved,
-                purge_saved_on_failure=candidate_is_saved,
-            )
+            self._show_setup()
+            if candidate_key and self._overlay:
+                self._overlay.validate_candidate(
+                    candidate_key,
+                    remember_key=candidate_is_saved,
+                    purge_saved_on_failure=candidate_is_saved,
+                )
 
 
         sc_mute = QShortcut(QKeySequence("F4"), self)
