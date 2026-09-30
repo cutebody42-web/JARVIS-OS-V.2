@@ -339,6 +339,7 @@ export function JarvisProductShell() {
   const [pairOffer, setPairOffer] = useState<Record<string, unknown> | null>(null);
   const [pendingPairings, setPendingPairings] = useState<Array<Record<string, unknown>>>([]);
   const logEnd = useRef<HTMLDivElement>(null);
+  const voiceStopRequested = useRef(false);
   const visual = useVisualProfile(status?.device.system_pressure);
 
   useEffect(() => {
@@ -425,6 +426,13 @@ export function JarvisProductShell() {
     }
   }
 
+  function setVoiceState(next: BrainStatus["voice"]["state"], lastError: string | null = null) {
+    setStatus((current) => current ? {
+      ...current,
+      voice: { ...current.voice, state: next, last_error: lastError },
+    } : current);
+  }
+
   async function sendContent(content: string) {
     const clean = content.trim();
     if (!client || !clean || !status?.brain_ready || busy) return;
@@ -434,19 +442,30 @@ export function JarvisProductShell() {
       id: crypto.randomUUID(), role: "user", content: clean, at: new Date().toISOString(),
     }]);
     setBusy(true);
+    if (status.voice.available) setVoiceState("processing");
     try {
       const reply = await client.message(clean);
       setMessages((items) => [...items, {
         id: crypto.randomUUID(), role: "assistant", content: reply.text, at: new Date().toISOString(),
       }]);
+      setBusy(false);
       if (status.voice.available) {
-        void client.voiceSpeak(reply.text)
-          .then(() => client.status())
-          .then(setStatus)
-          .catch(() => undefined);
+        voiceStopRequested.current = false;
+        setVoiceState("speaking");
+        try {
+          await client.voiceSpeak(reply.text);
+        } catch (reason) {
+          if (!voiceStopRequested.current) {
+            const message = reason instanceof Error ? reason.message : "JARVIS speech output failed.";
+            setError(message);
+            setVoiceState("error", message);
+          }
+        }
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "JARVIS could not complete the request.");
+      const message = reason instanceof Error ? reason.message : "JARVIS could not complete the request.";
+      setError(message);
+      if (status.voice.available) setVoiceState("error", message);
     } finally {
       setBusy(false);
       void client.status().then(setStatus).catch(() => undefined);
@@ -459,33 +478,40 @@ export function JarvisProductShell() {
   }
 
   async function toggleVoice() {
-    if (!client || busy) return;
+    const currentVoiceState = status?.voice.state;
+    const canStopVoice = currentVoiceState === "listening" || currentVoiceState === "speaking";
+    if (!client || (busy && !canStopVoice)) return;
     if (!status?.voice.available) {
       setError("Local microphone recognition is unavailable on this device.");
       return;
     }
     setError("");
-    if (status.voice.state === "listening" || status.voice.state === "speaking") {
+    if (canStopVoice) {
+      voiceStopRequested.current = true;
       await client.voiceStop().catch(() => undefined);
       setStatus(await client.status().catch(() => status));
       return;
     }
+    voiceStopRequested.current = false;
     setBusy(true);
     try {
       const listening = client.voiceListen("en-US", 8);
-      setStatus({
-        ...status,
-        voice: { ...status.voice, state: "listening" },
-      });
+      setVoiceState("listening");
       const result = await listening;
       if (result.text) {
         setBusy(false);
+        setVoiceState("processing");
         await sendContent(result.text);
       } else {
         setError("I didn't catch that. Try again or type your request.");
+        setVoiceState("idle");
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "JARVIS voice recognition failed.");
+      if (!voiceStopRequested.current) {
+        const message = reason instanceof Error ? reason.message : "JARVIS voice recognition failed.";
+        setError(message);
+        setVoiceState("error", message);
+      }
     } finally {
       setBusy(false);
       void client.status().then(setStatus).catch(() => undefined);
@@ -581,8 +607,25 @@ export function JarvisProductShell() {
   }
 
   const pressure = status?.device.system_pressure;
-  const voiceActive = status?.voice.state === "listening" || status?.voice.state === "speaking";
-  const state = busy ? "THINKING" : voiceActive || status?.brain_ready ? "LISTENING" : "MUTED";
+  const voiceState = status?.voice.state ?? "idle";
+  const voiceActive = voiceState === "listening" || voiceState === "speaking";
+  const state =
+    voiceState === "speaking" ? "SPEAKING"
+      : voiceState === "listening" ? "LISTENING"
+        : busy || voiceState === "processing" ? "THINKING"
+          : status?.brain_ready ? "LISTENING" : "MUTED";
+  const voiceHeadline =
+    voiceState === "listening" ? "Listening"
+      : voiceState === "processing" ? "Thinking"
+        : voiceState === "speaking" ? "Speaking"
+          : voiceState === "error" ? "Voice recovery"
+            : busy ? "Reasoning" : "At your service.";
+  const voiceDetail =
+    voiceState === "listening" ? "Listening locally. Tap the microphone again to stop."
+      : voiceState === "processing" ? "Your words are being routed through the local JARVIS Brain."
+        : voiceState === "speaking" ? "Speaking locally. Tap the microphone to interrupt."
+          : voiceState === "error" ? (status?.voice.last_error || "Voice hit a recoverable error. Type normally or retry the microphone.")
+            : status?.setup.message || "Local Brain link is ready.";
   const ram = useMemo(() => {
     if (!status?.device.ram_total_gb) return "—";
     return `${status.device.ram_available_gb?.toFixed(1) ?? "?"} / ${status.device.ram_total_gb.toFixed(1)} GB`;
@@ -624,9 +667,9 @@ export function JarvisProductShell() {
         <section className="command-stage">
           <div className="state-caption"><span className="state-dot" /> JARVIS BRAIN / {status?.setup.phase?.toUpperCase() || "BOOT"}</div>
           <Reactor state={state} />
-          <div className="voice-caption">
-            <h1>{status?.brain_ready ? (busy ? "Reasoning" : "At your service.") : "Initialize local intelligence."}</h1>
-            <p>{status?.setup.message || "Establishing local Brain link."}</p>
+          <div className="voice-caption" aria-live="polite">
+            <h1>{status?.brain_ready ? voiceHeadline : "Initialize local intelligence."}</h1>
+            <p>{status?.brain_ready ? voiceDetail : (status?.setup.message || "Establishing local Brain link.")}</p>
           </div>
 
           {!status?.brain_ready ? (
@@ -671,18 +714,22 @@ export function JarvisProductShell() {
                 type="button"
                 variant="secondary"
                 size="icon"
-                aria-label={status?.voice.state === "listening" ? "Stop listening" : "Speak to JARVIS"}
+                aria-label={voiceActive ? "Stop JARVIS voice" : "Speak to JARVIS"}
                 title={
                   status?.voice.available
-                    ? status.voice.state === "listening"
+                    ? voiceState === "listening"
                       ? "Stop listening"
-                      : "Push to talk — processed locally on this device"
+                      : voiceState === "speaking"
+                        ? "Interrupt JARVIS speech"
+                        : voiceState === "error"
+                          ? "Retry local voice"
+                          : "Push to talk — processed locally on this device"
                     : "Local voice is unavailable on this device"
                 }
                 onClick={() => void toggleVoice()}
                 disabled={!client || (!voiceActive && busy) || !status?.voice.available}
               >
-                {status?.voice.state === "listening" ? <LoaderCircle className="spin" size={18} /> : <Mic2 size={18} />}
+                {voiceState === "listening" ? <LoaderCircle className="spin" size={18} /> : <Mic2 size={18} />}
               </Button>
               <Button type="submit" size="icon" disabled={!draft.trim() || busy}><ArrowUp size={18} /></Button>
             </form>
