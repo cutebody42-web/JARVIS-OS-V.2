@@ -2,6 +2,18 @@ name: Real JARVIS cloud validation
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "brain_sidecar.py"
+      - "api/jarvis_local_server.py"
+      - "core/**"
+      - "agent/**"
+      - "actions/**"
+      - "memory/**"
+      - "models/**"
+      - "packaging/**"
+      - "web/**"
+      - ".github/workflows/real-cloud-validation.yml"
   push:
     branches: ["product/**"]
     paths:
@@ -24,6 +36,113 @@ permissions:
   contents: read
 
 jobs:
+  local-ai-real-inference:
+    name: Local AI — real 1B+ Ollama inference
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OLLAMA_HOST: "127.0.0.1:11435"
+      OLLAMA_MODELS: ${{ runner.temp }}/jarvis-ollama-models
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ollama runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama --version
+          mkdir -p "$OLLAMA_MODELS" artifacts/real-cloud/local-ai
+
+      - name: Start isolated JARVIS Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup env OLLAMA_HOST="$OLLAMA_HOST" OLLAMA_MODELS="$OLLAMA_MODELS" ollama serve             > artifacts/real-cloud/local-ai/ollama.log 2>&1 &
+          echo $! > artifacts/real-cloud/local-ai/ollama.pid
+          for i in $(seq 1 60); do
+            if curl -fsS "http://$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          cat artifacts/real-cloud/local-ai/ollama.log
+          exit 1
+
+      - name: Pull 1B+ base and create JARVIS alias
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama pull qwen3:1.7b
+          ollama create jarvis-brain-lite -f models/jarvis-brain-lite.Modelfile
+          ollama list | tee artifacts/real-cloud/local-ai/ollama-list.txt
+          ollama show jarvis-brain-lite | tee artifacts/real-cloud/local-ai/ollama-show.txt
+
+      - name: Verify parameter floor and execute real generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, re, subprocess, sys, urllib.request
+          from pathlib import Path
+
+          manifest = json.loads(Path("models/manifest.json").read_text("utf-8"))
+          lite = next(item for item in manifest["models"] if item["alias"] == "jarvis-brain-lite")
+          assert float(lite["parameters_b"]) >= 1.0, lite
+
+          shown = subprocess.check_output(
+              ["ollama", "show", "jarvis-brain-lite"],
+              text=True,
+              encoding="utf-8",
+              errors="replace",
+          )
+          match = re.search(r"parameters\s+([0-9]+(?:\.[0-9]+)?)\s*([BM])", shown, re.I)
+          if not match:
+              raise SystemExit("Could not verify model parameter count from ollama show")
+          value = float(match.group(1))
+          params_b = value if match.group(2).upper() == "B" else value / 1000.0
+          if params_b < 1.0:
+              raise SystemExit(f"Loaded model is below 1B parameters: {params_b:.3f}B")
+
+          payload = json.dumps({
+              "model": "jarvis-brain-lite",
+              "prompt": "In one short sentence, say you are online and ready to help.",
+              "stream": False,
+              "options": {"temperature": 0},
+          }).encode("utf-8")
+          request = urllib.request.Request(
+              "http://127.0.0.1:11435/api/generate",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=180) as response:
+              result = json.load(response)
+          text = str(result.get("response", "")).strip()
+          if not result.get("done") or not text:
+              raise SystemExit("Real local inference did not return a completed non-empty response")
+          evidence = {
+              "model": result.get("model"),
+              "manifest_parameters_b": lite["parameters_b"],
+              "verified_parameters_b": params_b,
+              "done": result.get("done"),
+              "response": text,
+              "eval_count": result.get("eval_count"),
+              "eval_duration": result.get("eval_duration"),
+          }
+          Path("artifacts/real-cloud/local-ai/inference.json").write_text(
+              json.dumps(evidence, indent=2, ensure_ascii=False),
+              "utf-8",
+          )
+          print(json.dumps(evidence, ensure_ascii=False))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: JARVIS-Real-Local-AI-Evidence
+          path: artifacts/real-cloud/local-ai
+          if-no-files-found: warn
+
   windows-real-runtime:
     name: Windows VM — install and run JARVIS
     runs-on: windows-latest
