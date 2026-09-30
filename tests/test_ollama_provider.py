@@ -119,9 +119,17 @@ class OllamaProviderTests(unittest.TestCase):
                 with self.assertRaises(OllamaProviderError):
                     provider.generate(ModelRequest("hello"))
 
+    def test_scheme_less_ollama_host_is_accepted(self):
+        provider = OllamaProvider(base_url="127.0.0.1:1234")
+        self.assertEqual(provider._endpoint.chat_url, "http://127.0.0.1:1234/api/chat")
+
+    def test_unspecified_bind_host_becomes_connectable_loopback(self):
+        provider = OllamaProvider(base_url="0.0.0.0:11434")
+        self.assertEqual(provider._endpoint.chat_url, "http://127.0.0.1:11434/api/chat")
+
     def test_constructor_validation(self):
         with self.assertRaises(ValueError):
-            OllamaProvider(base_url="not-a-url")
+            OllamaProvider(base_url="ftp://example.com")
         with self.assertRaises(ValueError):
             OllamaProvider(timeout_seconds=0)
         with self.assertRaises(ValueError):
