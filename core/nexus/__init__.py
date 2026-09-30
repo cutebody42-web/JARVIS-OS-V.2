@@ -11,6 +11,14 @@ from .conflict_resolver import (
 )
 from .event_store import ClockRelation, EventStore, SyncEvent, compare_vector_clocks
 from .merge_applier import ApplyResult, ApplyStatus, MergeApplier
+from .sync_daemon import (
+    PROTOCOL_VERSION,
+    SyncAck,
+    SyncBatch,
+    SyncDaemon,
+    SyncReport,
+    SyncTransport,
+)
 from .merge_policy import (
     MergePolicyKind,
     MergePolicyRegistry,
@@ -32,7 +40,13 @@ __all__ = [
     "MergePolicyKind",
     "MergePolicyRegistry",
     "MergePolicySpec",
+    "SyncAck",
+    "SyncBatch",
+    "SyncDaemon",
     "SyncEvent",
+    "SyncReport",
+    "SyncTransport",
+    "PROTOCOL_VERSION",
     "UnknownMergePolicyError",
     "compare_vector_clocks",
     "materialize_orset",
