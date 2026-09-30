@@ -341,11 +341,15 @@ jobs:
           if ($install.ExitCode -ne 0) { throw "JARVIS installer exited with code $($install.ExitCode)" }
           $roots = @($env:LOCALAPPDATA, $env:ProgramFiles, [Environment]::GetFolderPath("ProgramFilesX86")) | Where-Object { $_ -and (Test-Path $_) }
           $exe = $null
+          $candidateNames = @("JARVIS.exe", "jarvis-shell.exe")
           foreach ($root in $roots) {
-            $exe = Get-ChildItem $root -Filter "JARVIS.exe" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            foreach ($candidateName in $candidateNames) {
+              $exe = Get-ChildItem $root -Filter $candidateName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($exe) { break }
+            }
             if ($exe) { break }
           }
-          if ($null -eq $exe) { throw "Installed JARVIS.exe could not be located" }
+          if ($null -eq $exe) { throw "Installed JARVIS desktop executable could not be located" }
           "installed_exe=$($exe.FullName)" | Out-File "artifacts/real-cloud/windows/install-result.txt"
           $desktop = Start-Process -FilePath $exe.FullName -PassThru
           Start-Sleep -Seconds 15
