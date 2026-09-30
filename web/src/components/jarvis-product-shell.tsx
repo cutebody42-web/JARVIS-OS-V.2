@@ -9,6 +9,7 @@ import {
   BrainStatus,
   LocalBrainClient,
   bootstrapDesktopBrain,
+  chooseModelStore,
   currentPairingDeepLink,
   listenForPairingDeepLinks,
   mobileBrainMessage,
@@ -424,25 +425,81 @@ export function JarvisProductShell() {
     }
   }
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const content = draft.trim();
-    if (!client || !content || !status?.brain_ready || busy) return;
+  async function sendContent(content: string) {
+    const clean = content.trim();
+    if (!client || !clean || !status?.brain_ready || busy) return;
     setDraft("");
     setError("");
     setMessages((items) => [...items, {
-      id: crypto.randomUUID(), role: "user", content, at: new Date().toISOString(),
+      id: crypto.randomUUID(), role: "user", content: clean, at: new Date().toISOString(),
     }]);
     setBusy(true);
     try {
-      const reply = await client.message(content);
+      const reply = await client.message(clean);
       setMessages((items) => [...items, {
         id: crypto.randomUUID(), role: "assistant", content: reply.text, at: new Date().toISOString(),
       }]);
+      if (status.voice.available) {
+        void client.voiceSpeak(reply.text)
+          .then(() => client.status())
+          .then(setStatus)
+          .catch(() => undefined);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "JARVIS could not complete the request.");
     } finally {
       setBusy(false);
+      void client.status().then(setStatus).catch(() => undefined);
+    }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    await sendContent(draft);
+  }
+
+  async function toggleVoice() {
+    if (!client || busy) return;
+    if (!status?.voice.available) {
+      setError("Local microphone recognition is unavailable on this device.");
+      return;
+    }
+    setError("");
+    if (status.voice.state === "listening" || status.voice.state === "speaking") {
+      await client.voiceStop().catch(() => undefined);
+      setStatus(await client.status().catch(() => status));
+      return;
+    }
+    setBusy(true);
+    try {
+      const listening = client.voiceListen("en-US", 8);
+      setStatus({
+        ...status,
+        voice: { ...status.voice, state: "listening" },
+      });
+      const result = await listening;
+      if (result.text) {
+        setBusy(false);
+        await sendContent(result.text);
+      } else {
+        setError("I didn't catch that. Try again or type your request.");
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "JARVIS voice recognition failed.");
+    } finally {
+      setBusy(false);
+      void client.status().then(setStatus).catch(() => undefined);
+    }
+  }
+
+  async function pickModelStore() {
+    if (busy) return;
+    setError("");
+    try {
+      const selected = await chooseModelStore();
+      if (selected) setModelStore(selected);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not open the model folder picker.");
     }
   }
 
@@ -524,7 +581,8 @@ export function JarvisProductShell() {
   }
 
   const pressure = status?.device.system_pressure;
-  const state = busy ? "THINKING" : status?.brain_ready ? "LISTENING" : "MUTED";
+  const voiceActive = status?.voice.state === "listening" || status?.voice.state === "speaking";
+  const state = busy ? "THINKING" : voiceActive || status?.brain_ready ? "LISTENING" : "MUTED";
   const ram = useMemo(() => {
     if (!status?.device.ram_total_gb) return "—";
     return `${status.device.ram_available_gb?.toFixed(1) ?? "?"} / ${status.device.ram_total_gb.toFixed(1)} GB`;
@@ -573,13 +631,18 @@ export function JarvisProductShell() {
 
           {!status?.brain_ready ? (
             <div className="brain-setup-card">
-              <Input
-                value={modelStore}
-                onChange={(event) => setModelStore(event.target.value)}
-                placeholder="Local model folder (optional, e.g. D:\\JARVIS\\models)"
-                aria-label="Local JARVIS model folder"
-                disabled={busy}
-              />
+              <div className="pair-actions">
+                <Input
+                  value={modelStore}
+                  onChange={(event) => setModelStore(event.target.value)}
+                  placeholder="Local model folder (optional)"
+                  aria-label="Local JARVIS model folder"
+                  disabled={busy}
+                />
+                <Button type="button" variant="secondary" onClick={() => void pickModelStore()} disabled={busy}>
+                  Choose folder
+                </Button>
+              </div>
               <Button onClick={initializeBrain} disabled={!client || busy}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <Zap size={16} />}
                 {busy ? "Preparing JARVIS Brain" : "Initialize Local Brain"}
@@ -604,7 +667,23 @@ export function JarvisProductShell() {
                 placeholder="Speak to JARVIS"
                 rows={2}
               />
-              <Button type="button" variant="secondary" size="icon" aria-label="Voice channel"><Mic2 size={18} /></Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                aria-label={status?.voice.state === "listening" ? "Stop listening" : "Speak to JARVIS"}
+                title={
+                  status?.voice.available
+                    ? status.voice.state === "listening"
+                      ? "Stop listening"
+                      : "Push to talk — processed locally by Windows speech"
+                    : "Local voice is unavailable on this device"
+                }
+                onClick={() => void toggleVoice()}
+                disabled={!client || busy || !status?.voice.available}
+              >
+                {status?.voice.state === "listening" ? <LoaderCircle className="spin" size={18} /> : <Mic2 size={18} />}
+              </Button>
               <Button type="submit" size="icon" disabled={!draft.trim() || busy}><ArrowUp size={18} /></Button>
             </form>
           )}
@@ -616,8 +695,9 @@ export function JarvisProductShell() {
           <dl className="status-readout">
             <div><dt>JARVIS Brain</dt><dd data-on={status?.brain_ready}>{status?.brain_ready ? "LOCAL" : "SETUP"}</dd></div>
             <div><dt>Model store</dt><dd title={status?.model_store || undefined}>{status?.model_store ? "OWNER PATH" : "DEFAULT"}</dd></div>
-            <div><dt>Core</dt><dd data-on="true">{status?.council.core_model ?? "jarvis-core-1b"}</dd></div>
-            <div><dt>Hidden experts</dt><dd>{status?.council.parallel_experts ?? 2} parallel</dd></div>
+            <div><dt>JARVIS Core</dt><dd data-on="true">ONLINE</dd></div>
+            <div><dt>Cognition</dt><dd data-on="true">ADAPTIVE</dd></div>
+            <div><dt>Voice</dt><dd data-on={status?.voice.available}>{status?.voice.available ? status.voice.state.toUpperCase() : "UNAVAILABLE"}</dd></div>
             <div><dt>Owner face</dt><dd data-on={status?.owner_identity.face_recognized}>{status?.owner_identity.face_recognized ? "RECOGNIZED" : status?.owner_identity.face_enrolled ? "ENROLLED" : "NOT ENROLLED"}</dd></div>
             <div><dt>Memory</dt><dd data-on="true"><ShieldCheck size={13} /> CONTINUOUS</dd></div>
             <div><dt>RAM available</dt><dd>{ram}</dd></div>
