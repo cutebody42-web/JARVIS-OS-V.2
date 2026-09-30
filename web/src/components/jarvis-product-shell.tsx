@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowUp, Cpu, Link2, LoaderCircle, Mic2, RadioTower, ShieldCheck, Smartphone, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,10 @@ import {
   bootstrapDesktopBrain,
   currentPairingDeepLink,
   listenForPairingDeepLinks,
+  mobileBrainMessage,
+  pairMobileCompanion,
   platformMode,
+  type MobileIdentity,
   type PlatformMode,
 } from "@/lib/jarvis-runtime";
 
@@ -69,6 +72,35 @@ function useVisualProfile(systemPressure: number | null | undefined): VisualProf
 function MobileShell() {
   const [error, setError] = useState("");
   const [scanned, setScanned] = useState<Record<string, unknown> | null>(null);
+  const [pairState, setPairState] = useState("unpaired");
+  const [identity, setIdentity] = useState<MobileIdentity | null>(null);
+  const [messages, setMessages] = useState<LocalMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const mounted = useRef(true);
+
+  useEffect(() => () => { mounted.current = false; }, []);
+
+  const connectOffer = useCallback(async (offer: Record<string, unknown>) => {
+    setScanned(offer);
+    setError("");
+    setBusy(true);
+    try {
+      const nextIdentity = await pairMobileCompanion(offer, (state) => {
+        if (mounted.current) setPairState(state);
+      });
+      if (!mounted.current) return;
+      setIdentity(nextIdentity);
+      setPairState("paired");
+      await window.__TAURI__?.haptics?.vibrate({ duration: 80 }).catch(() => undefined);
+    } catch (reason) {
+      if (!mounted.current) return;
+      setPairState("unpaired");
+      setError(reason instanceof Error ? reason.message : "JARVIS pairing failed.");
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -76,12 +108,12 @@ function MobileShell() {
 
     currentPairingDeepLink()
       .then((offer) => {
-        if (!cancelled && offer) setScanned(offer);
+        if (!cancelled && offer) void connectOffer(offer);
       })
       .catch(() => undefined);
 
     listenForPairingDeepLinks((offer) => {
-      if (!cancelled) setScanned(offer);
+      if (!cancelled) void connectOffer(offer);
     })
       .then((stop) => { unlisten = stop; })
       .catch(() => undefined);
@@ -90,7 +122,7 @@ function MobileShell() {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [connectOffer]);
 
   async function scanPairingCode() {
     setError("");
@@ -102,11 +134,53 @@ function MobileShell() {
         throw new Error("Camera permission is required to pair JARVIS.");
       }
       const result = await scanner.scan({ cameraDirection: "back", windowed: false });
-      const value = JSON.parse(result.content);
-      if (!value || typeof value !== "object") throw new Error("Invalid JARVIS pairing code.");
-      setScanned(value as Record<string, unknown>);
+      let offer: Record<string, unknown> | null = null;
+      try {
+        const parsed = JSON.parse(result.content);
+        if (parsed && typeof parsed === "object") offer = parsed as Record<string, unknown>;
+      } catch {
+        const url = result.content;
+        const parsed = new URL(url);
+        const encoded = parsed.searchParams.get("offer");
+        if (parsed.protocol === "jarvis:" && parsed.hostname === "pair" && encoded) {
+          const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+          const padded = normalized + "=".repeat((4 - (normalized.length % 4 || 4)) % 4);
+          const bytes = Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+          offer = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+        }
+      }
+      if (!offer) throw new Error("Invalid JARVIS pairing code.");
+      await connectOffer(offer);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Pairing scan failed.");
+    }
+  }
+
+  async function submitMobile(event: FormEvent) {
+    event.preventDefault();
+    const content = draft.trim();
+    if (!identity || !content || busy) return;
+    setDraft("");
+    setError("");
+    setMessages((items) => [...items, {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+      at: new Date().toISOString(),
+    }]);
+    setBusy(true);
+    try {
+      const reply = await mobileBrainMessage(content);
+      setMessages((items) => [...items, {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: reply.text,
+        at: new Date().toISOString(),
+      }]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "JARVIS could not reach the desktop Brain.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -114,20 +188,54 @@ function MobileShell() {
     <main className="product-shell mobile-product-shell">
       <section className="mobile-pair-stage">
         <div className="wordmark"><span className="wordmark-mark">J</span> JARVIS</div>
-        <Reactor state={scanned ? "THINKING" : "LISTENING"} />
-        <p className="section-index">COMPANION / SECURE PAIRING</p>
-        <h1>{scanned ? "Desktop found." : "Connect to your JARVIS Brain."}</h1>
-        <p>
-          {scanned
-            ? "The pairing invitation was scanned. Device identity and biometric approval are required before this phone can access JARVIS."
-            : "On your desktop, open Device Link and scan the QR code. Your phone becomes another face of the same JARVIS — not a second assistant."}
-        </p>
-        <Button onClick={scanPairingCode}><Smartphone size={16} /> Scan desktop QR</Button>
-        {scanned && (
-          <pre className="pair-preview">{JSON.stringify({
-            inviter_device: scanned.inviter_device,
-            expires_at: scanned.expires_at,
-          }, null, 2)}</pre>
+        <Reactor state={busy ? "THINKING" : identity ? "LISTENING" : "MUTED"} />
+        <p className="section-index">{identity ? "COMPANION / SECURE LINK" : "COMPANION / SECURE PAIRING"}</p>
+        <h1>{identity ? "At your service." : scanned ? "Confirm this device." : "Connect to your JARVIS Brain."}</h1>
+
+        {!identity ? (
+          <>
+            <p>
+              {pairState === "awaiting-owner"
+                ? "Pairing proof accepted. Approve this phone on the desktop JARVIS app."
+                : "Scan the desktop QR. Your phone becomes another authenticated face of the same JARVIS — with the same memory and Brain."}
+            </p>
+            <Button onClick={scanPairingCode} disabled={busy}>
+              {busy ? <LoaderCircle className="spin" size={16} /> : <Smartphone size={16} />}
+              {busy ? "Securing device link" : "Scan desktop QR"}
+            </Button>
+            {scanned && (
+              <pre className="pair-preview">{JSON.stringify({
+                desktop: scanned.inviter_device,
+                expires_at: scanned.expires_at,
+                state: pairState,
+              }, null, 2)}</pre>
+            )}
+          </>
+        ) : (
+          <>
+            <p>Authenticated as {identity.device_id}. Messages are signed locally and answered by your desktop JARVIS Brain.</p>
+            <div className="message-stream mobile-message-stream">
+              {messages.length === 0 ? (
+                <div className="empty-log"><span>Secure link established.</span><p>Your continuous JARVIS memory is available through the desktop Brain.</p></div>
+              ) : messages.map((message) => (
+                <article key={message.id} className={`message message-${message.role}`}>
+                  <div><span>{message.role === "assistant" ? "JARVIS" : "YOU"}</span></div>
+                  <p>{message.content}</p>
+                </article>
+              ))}
+            </div>
+            <form className="command-composer mobile-composer" onSubmit={submitMobile}>
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="Speak to JARVIS"
+                rows={2}
+              />
+              <Button type="submit" size="icon" disabled={!draft.trim() || busy}>
+                {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
+              </Button>
+            </form>
+          </>
         )}
         {error && <p className="console-error">{error}</p>}
       </section>
