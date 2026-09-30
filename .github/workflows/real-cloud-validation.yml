@@ -361,13 +361,13 @@ jobs:
           CI: "true"
         run: npx --yes @tauri-apps/cli@2.12.0 android init
 
-      - name: Pin generated SDK to API 35
+      - name: Pin generated SDK to API 36
         working-directory: web
         shell: bash
         run: |
           find src-tauri/gen/android -type f \( -name "*.gradle.kts" -o -name "*.gradle" \) -print0 | while IFS= read -r -d "" file; do
-            sed -i -E "s/compileSdk([[:space:]]*=[[:space:]]*)[0-9]+/compileSdk\\1 35/g" "$file"
-            sed -i -E "s/targetSdk([[:space:]]*=[[:space:]]*)[0-9]+/targetSdk\\1 35/g" "$file"
+            sed -i -E "s/compileSdk([[:space:]]*=[[:space:]]*)[0-9]+/compileSdk\\1 36/g" "$file"
+            sed -i -E "s/targetSdk([[:space:]]*=[[:space:]]*)[0-9]+/targetSdk\\1 36/g" "$file"
           done
 
       - name: Build x86_64 emulator APK
@@ -388,7 +388,7 @@ jobs:
       - name: Boot emulator and exercise real mobile app
         uses: ReactiveCircus/android-emulator-runner@ed009f5318f15b1cf93a191b856c4f1748a2d4c1
         with:
-          api-level: 35
+          api-level: 36
           arch: x86_64
           profile: pixel_6
           target: google_apis
