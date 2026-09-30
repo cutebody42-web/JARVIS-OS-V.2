@@ -61,4 +61,4 @@ jobs:
           rustc --version
           cargo --version
       - name: Check JARVIS Tauri shell
-        run: cargo check --manifest-path web/src-tauri/Cargo.toml --locked
+        run: cargo check --manifest-path web/src-tauri/Cargo.toml
