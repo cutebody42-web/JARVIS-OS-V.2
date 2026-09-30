@@ -9,6 +9,7 @@ export type BrainStatus = {
   identity: "JARVIS";
   mode: string;
   brain_ready: boolean;
+  model_store: string | null;
   setup: {
     phase: string;
     percent: number;
@@ -137,10 +138,13 @@ export class LocalBrainClient {
     return this.request<BrainStatus>("/v1/status");
   }
 
-  setupLocalBrain() {
+  setupLocalBrain(modelStore?: string) {
     return this.request<BrainStatus>("/v1/setup/local-brain", {
       method: "POST",
-      body: JSON.stringify({ approved: true }),
+      body: JSON.stringify({
+        approved: true,
+        model_store: modelStore?.trim() || null,
+      }),
     });
   }
 
