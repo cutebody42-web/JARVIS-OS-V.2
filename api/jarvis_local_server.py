@@ -286,7 +286,7 @@ class LocalBrainHost:
                 "core_model": "jarvis-core-1b",
                 "parallel_experts": self.council.max_parallel_experts,
             },
-            "identity": {
+            "owner_identity": {
                 "face_enrolled": self.owner_face.enrolled,
                 "face_recognized": self.owner_face.recognized,
                 "face_score": round(self.owner_face.last_score, 4),
