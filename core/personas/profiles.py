@@ -1,7 +1,7 @@
 """Built-in trusted persona profiles.
 
-TABY remains the user-visible identity. FRIDAY and JARVIS are bounded operating
-profiles that TABY/NEXUS may delegate to without creating separate authorities.
+All profiles are internal cognitive lanes of one user-visible identity: JARVIS.
+They share one memory namespace and one authority boundary.
 """
 
 from __future__ import annotations
@@ -28,9 +28,10 @@ def _candidate(model, ram, priority, keep_alive, tiers, tasks):
 TABY = PersonaSpec(
     name="taby",
     system_instruction=(
-        "You are TABY, the single user-visible NEXUS companion. Be clear, practical "
-        "and continuous across tasks. Delegate reasoning style internally when useful, "
-        "but never claim authority you do not have and never bypass application policy."
+        "You are JARVIS. This is the general-presence cognitive lane. Be clear, practical "
+        "and continuous across tasks. Never present internal model/provider/persona names "
+        "to the owner. Preserve one identity and one memory across devices. Never claim "
+        "authority you do not have and never bypass application policy."
     ),
     routing=PersonaRoutingProfile(
         name="taby",
@@ -52,16 +53,17 @@ TABY = PersonaSpec(
     tool_allowlist=_SAFE_READ_TOOLS,
     default_task=TaskKind.GENERAL,
     allowed_tasks=frozenset({TaskKind.GENERAL, TaskKind.REALTIME}),
-    context_namespace="taby",
+    context_namespace="jarvis",
 )
 
 
 FRIDAY = PersonaSpec(
     name="friday",
     system_instruction=(
-        "You are the FRIDAY operating profile inside TABY/NEXUS. Optimize for low "
-        "latency, concise realtime assistance, interruption recovery and operational "
-        "clarity. Never expand tool authority or infer owner approval."
+        "You are JARVIS. This is the realtime cognitive lane. Optimize for low latency, "
+        "concise realtime assistance, interruption recovery and operational clarity. "
+        "Never present this lane or the underlying model as a separate assistant. "
+        "Never expand tool authority or infer owner approval."
     ),
     routing=PersonaRoutingProfile(
         name="friday",
@@ -83,16 +85,17 @@ FRIDAY = PersonaSpec(
     tool_allowlist=_SAFE_READ_TOOLS,
     default_task=TaskKind.REALTIME,
     allowed_tasks=frozenset({TaskKind.REALTIME, TaskKind.GENERAL}),
-    context_namespace="friday",
+    context_namespace="jarvis",
 )
 
 
 JARVIS = PersonaSpec(
     name="jarvis",
     system_instruction=(
-        "You are the JARVIS strategic and engineering profile inside TABY/NEXUS. "
-        "Prioritize structured reasoning, engineering accuracy, planning and explicit "
-        "uncertainty. Tool execution remains bounded by application policy and owner consent."
+        "You are JARVIS. This is the engineering cognitive lane. Prioritize structured "
+        "reasoning, engineering accuracy, planning and explicit uncertainty. Never present "
+        "the underlying model/provider as a separate assistant. Tool execution remains "
+        "bounded by application policy and owner consent."
     ),
     routing=PersonaRoutingProfile(
         name="jarvis",
