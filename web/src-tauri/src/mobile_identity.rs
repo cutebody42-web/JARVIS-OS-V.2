@@ -323,10 +323,10 @@ pub fn mobile_accept_pairing_approval(
         &format!("pair-approved:{}", offer.pairing_id),
     )?;
     if payload.get("version").and_then(Value::as_u64) != Some(PAIRING_VERSION as u64)
-        || payload.get("pairing_id").and_then(Value::as_str) != Some(&offer.pairing_id)
+        || payload.get("pairing_id").and_then(Value::as_str) != Some(offer.pairing_id.as_str())
         || payload.get("state").and_then(Value::as_str) != Some("approved")
-        || payload.get("desktop_device").and_then(Value::as_str) != Some(&offer.inviter_device)
-        || payload.get("desktop_public_key").and_then(Value::as_str) != Some(&offer.inviter_public_key)
+        || payload.get("desktop_device").and_then(Value::as_str) != Some(offer.inviter_device.as_str())
+        || payload.get("desktop_public_key").and_then(Value::as_str) != Some(offer.inviter_public_key.as_str())
     {
         return Err("JARVIS pairing approval payload mismatch.".into());
     }
@@ -414,7 +414,7 @@ pub fn mobile_verify_brain_response(
         &format!("brain-response:{request_id}"),
     )?;
     if payload.get("version").and_then(Value::as_u64) != Some(BRAIN_RPC_VERSION as u64)
-        || payload.get("request_id").and_then(Value::as_str) != Some(&request_id)
+        || payload.get("request_id").and_then(Value::as_str) != Some(request_id.as_str())
         || payload.get("identity").and_then(Value::as_str) != Some("JARVIS")
     {
         return Err("JARVIS Brain response payload mismatch.".into());
