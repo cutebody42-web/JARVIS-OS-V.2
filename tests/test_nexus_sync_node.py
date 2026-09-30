@@ -7,6 +7,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from api.nexus_sync_server import create_sync_app
+from core.nexus.pairing import PairingManager
 from core.nexus.peer_auth import DeviceSigner
 from core.nexus.signed_transport import MEDIA_TYPE, batch_to_payload
 from core.nexus.sync_daemon import SyncBatch, SyncReport
@@ -176,6 +177,77 @@ class SyncNodeTests(unittest.TestCase):
                 headers={"content-type": "application/json"},
             )
             self.assertEqual(rejected.status_code, 415)
+
+    def test_pairing_http_intake_requires_local_owner_approval(self):
+        desktop = NexusSyncNode(
+            self.root / "pair-desktop",
+            "desktop",
+            secret_store=NoopSecretStore(),
+        )
+        phone = NexusSyncNode(
+            self.root / "pair-phone",
+            "phone",
+            secret_store=NoopSecretStore(),
+        )
+        offer = desktop.pairing.create_offer(
+            "http://desktop.tailnet.ts.net:8765"
+        )
+        request = PairingManager.build_request(
+            offer,
+            "phone",
+            phone.signer,
+            "http://phone.tailnet.ts.net:8765",
+        )
+
+        app = create_sync_app(desktop, run_scheduler=False)
+        with TestClient(app) as client:
+            response = client.post(
+                "/nexus/pair/v1/request",
+                json=request.to_dict(),
+            )
+            self.assertEqual(response.status_code, 202)
+            self.assertTrue(response.json()["owner_approval_required"])
+
+        self.assertIsNone(desktop.registry.get_peer("phone"))
+        self.assertEqual(len(desktop.pairing.pending()), 1)
+
+        peer = desktop.pairing.approve(offer.pairing_id)
+        self.assertEqual(peer.peer_id, "phone")
+        self.assertIsNotNone(desktop.registry.get_peer("phone"))
+
+    def test_pairing_http_rejects_bad_proof(self):
+        desktop = NexusSyncNode(
+            self.root / "pair-bad-desktop",
+            "desktop-bad",
+            secret_store=NoopSecretStore(),
+        )
+        phone = NexusSyncNode(
+            self.root / "pair-bad-phone",
+            "phone-bad",
+            secret_store=NoopSecretStore(),
+        )
+        offer = desktop.pairing.create_offer(
+            "http://desktop-bad.tailnet.ts.net:8765"
+        )
+        request = PairingManager.build_request(
+            offer,
+            "phone-bad",
+            phone.signer,
+            "http://phone-bad.tailnet.ts.net:8765",
+        )
+        value = request.to_dict()
+        value["proof"] = "0" * 64
+
+        app = create_sync_app(desktop, run_scheduler=False)
+        with TestClient(app) as client:
+            response = client.post(
+                "/nexus/pair/v1/request",
+                json=value,
+            )
+            self.assertEqual(response.status_code, 403)
+
+        self.assertEqual(desktop.pairing.pending(), ())
+        self.assertIsNone(desktop.registry.get_peer("phone-bad"))
 
     def test_standalone_api_accepts_valid_signed_batch(self):
         hp = NexusSyncNode(self.root / "hp2", "hp2", secret_store=NoopSecretStore())
