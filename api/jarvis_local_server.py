@@ -369,7 +369,35 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
             endpoint,
             ttl_seconds=request.ttl_seconds,
         )
-        return offer.public_payload()
+        payload = offer.public_payload()
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).rstrip(b"=").decode("ascii")
+        deep_link = f"jarvis://pair?offer={encoded}"
+        try:
+            import segno
+            qr = segno.make(deep_link, error="m", micro=False)
+            qr_svg_data_url = qr.svg_data_uri(
+                scale=5,
+                border=4,
+                dark="#0bdcff",
+                light="#08131a",
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Pairing QR generation failed ({type(exc).__name__})",
+            ) from None
+        return {
+            **payload,
+            "deep_link": deep_link,
+            "qr_svg_data_url": qr_svg_data_url,
+        }
 
     @app.get("/v1/pair/pending", dependencies=[Depends(require_ui)])
     def pair_pending() -> dict[str, Any]:
