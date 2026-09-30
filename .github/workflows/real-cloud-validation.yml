@@ -47,8 +47,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install Ollama runtime
         shell: bash
@@ -235,8 +233,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -395,8 +391,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
