@@ -26,6 +26,26 @@ export type BrainStatus = {
   paired_devices: Array<{ peer_id: string; endpoint: string }>;
 };
 
+export type MobileIdentity = {
+  device_id: string;
+  public_key: string;
+  fingerprint: string;
+  key_protection: string;
+};
+
+export type MobilePairingBundle = {
+  identity: MobileIdentity;
+  request: Record<string, unknown>;
+  submit_url: string;
+  status_url: string;
+};
+
+export type MobileBrainRequest = {
+  request_id: string;
+  endpoint: string;
+  body: string;
+};
+
 export type BrainReply = {
   identity: "JARVIS";
   text: string;
@@ -206,4 +226,125 @@ export async function listenForPairingDeepLinks(
       }
     }
   });
+}
+
+
+const NEXUS_MEDIA_TYPE = "application/vnd.nexus-sync+json";
+
+async function requireMobileOwnerPresence(reason: string) {
+  const biometric = window.__TAURI__?.biometric;
+  if (!biometric) throw new Error("Mobile owner authentication is unavailable.");
+  const status = await biometric.checkStatus();
+  await biometric.authenticate(reason, {
+    allowDeviceCredential: true,
+    confirmationRequired: true,
+    cancelTitle: "Cancel",
+  });
+  return status;
+}
+
+export function encodePairingDeepLink(offer: Record<string, unknown>) {
+  const json = JSON.stringify(offer);
+  const bytes = new TextEncoder().encode(json);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+  return `jarvis://pair?offer=${encoded}`;
+}
+
+export async function pairMobileCompanion(
+  offer: Record<string, unknown>,
+  onState?: (state: string) => void,
+) {
+  await requireMobileOwnerPresence("Confirm pairing this phone with your JARVIS Brain");
+  const bundle = await core().invoke<MobilePairingBundle>("mobile_prepare_pairing", { offer });
+
+  onState?.("requesting");
+  const submitted = await fetch(bundle.submit_url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(bundle.request),
+  });
+  if (!submitted.ok && submitted.status !== 409) {
+    const body = await submitted.json().catch(() => ({}));
+    throw new Error(body.detail || `JARVIS pairing request failed (${submitted.status})`);
+  }
+
+  const expiresAt = Date.parse(String(offer.expires_at || ""));
+  const deadline = Number.isFinite(expiresAt)
+    ? expiresAt
+    : Date.now() + 10 * 60_000;
+
+  onState?.("awaiting-owner");
+  while (Date.now() < deadline) {
+    const response = await fetch(bundle.status_url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bundle.request),
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || `Pairing status failed (${response.status})`);
+    }
+
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType === NEXUS_MEDIA_TYPE) {
+      const signedApproval = await response.text();
+      const identity = await core().invoke<MobileIdentity>(
+        "mobile_accept_pairing_approval",
+        { offer, signedApproval },
+      );
+      onState?.("paired");
+      return identity;
+    }
+
+    const state = await response.json() as { state?: string };
+    if (state.state === "cancelled" || state.state === "expired") {
+      throw new Error(`JARVIS pairing ${state.state}.`);
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+  }
+  throw new Error("JARVIS pairing invitation expired before approval.");
+}
+
+export async function mobileBrainMessage(
+  message: string,
+  task?: "general" | "realtime" | "coding",
+): Promise<BrainReply> {
+  const request = await core().invoke<MobileBrainRequest>(
+    "mobile_sign_brain_request",
+    { message, task: task || null },
+  );
+  const response = await fetch(request.endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": NEXUS_MEDIA_TYPE,
+      Accept: NEXUS_MEDIA_TYPE,
+    },
+    body: request.body,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `JARVIS Brain request failed (${response.status})`);
+  }
+  const signedResponse = await response.text();
+  const payload = await core().invoke<{
+    version: number;
+    request_id: string;
+    identity: "JARVIS";
+    text: string;
+    lane: string;
+  }>("mobile_verify_brain_response", {
+    requestId: request.request_id,
+    signedResponse,
+  });
+  return {
+    identity: "JARVIS",
+    text: payload.text,
+    lane: payload.lane,
+  };
 }
