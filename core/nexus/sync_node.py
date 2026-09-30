@@ -7,6 +7,7 @@ from pathlib import Path
 
 from core.nexus.event_store import EventStore
 from core.nexus.merge_applier import MergeApplier
+from core.nexus.pairing import PairingManager
 from core.nexus.peer_auth import (
     DeviceSigner,
     PeerAuthenticator,
@@ -50,6 +51,11 @@ class NexusSyncNode:
             device_id,
             self.signer,
             self.registry,
+        )
+        self.pairing = PairingManager(
+            self.registry,
+            device_id,
+            self.signer,
         )
         self.endpoint = SignedSyncEndpoint(self.daemon, self.authenticator)
         self.transport = SignedHTTPSyncTransport(
