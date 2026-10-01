@@ -465,53 +465,7 @@ jobs:
           target: google_apis
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: |
-            set -eu
-            adb wait-for-device
-            package_ready=false
-            for attempt in $(seq 1 30); do
-              if adb shell cmd package list packages >/dev/null 2>&1; then
-                package_ready=true
-                break
-              fi
-              sleep 2
-            done
-            if [ "$package_ready" != "true" ]; then
-              echo "Android package manager did not become responsive" >&2
-              exit 1
-            fi
-
-            installed=false
-            for attempt in 1 2 3; do
-              if adb install --no-streaming -r "$APK"; then
-                installed=true
-                break
-              fi
-              echo "APK install attempt $attempt failed; waiting for emulator package service" >&2
-              adb reconnect device || true
-              adb wait-for-device
-              sleep $((attempt * 10))
-            done
-            if [ "$installed" != "true" ]; then
-              echo "JARVIS APK could not be installed after 3 attempts" >&2
-              exit 1
-            fi
-            adb shell pm path ai.jarvis.app > artifacts/real-cloud/android/package-path.txt
-            adb shell dumpsys package ai.jarvis.app > artifacts/real-cloud/android/package.txt
-            cat artifacts/real-cloud/android/package-path.txt
-            if ! grep -q "android.permission.USE_BIOMETRIC" artifacts/real-cloud/android/package.txt; then
-              echo "Installed JARVIS APK is missing Android biometric permission" >&2
-              exit 1
-            fi
-            adb shell monkey -p ai.jarvis.app -c android.intent.category.LAUNCHER 1
-            sleep 12
-            adb shell dumpsys activity activities > artifacts/real-cloud/android/activity.txt
-            if ! grep -q "ai.jarvis.app" artifacts/real-cloud/android/activity.txt; then echo "JARVIS Android app is not present in activity state" >&2; exit 1; fi
-            adb shell am start -W -a android.intent.action.VIEW -d "jarvis://pair?smoke=cloud-validation" ai.jarvis.app > artifacts/real-cloud/android/deep-link.txt || true
-            sleep 4
-            adb exec-out screencap -p > artifacts/real-cloud/android/android-screen.png
-            adb logcat -d > artifacts/real-cloud/android/logcat.txt
-            if grep -E "FATAL EXCEPTION: main|Process: ai\.jarvis\.app.*has died" artifacts/real-cloud/android/logcat.txt; then echo "JARVIS Android app crashed in the emulator" >&2; exit 1; fi
+          script: bash .github/scripts/android-emulator-smoke.sh "$APK"
 
       - uses: actions/upload-artifact@v4
         if: always()
