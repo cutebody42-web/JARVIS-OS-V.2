@@ -13,6 +13,7 @@ from core.ollama_bootstrap import (
     _ollama_environment,
     bootstrap_local_brain,
     ensure_ollama_service,
+    import_gguf_model,
     load_brain_manifest,
     model_matches_manifest,
     parameter_size_b,
@@ -199,6 +200,141 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaises(OllamaBootstrapError):
             ensure_ollama_service("ollama", base_url="http://example.com:11434")
         wait.assert_not_called()
+
+
+class GGUFImportTests(unittest.TestCase):
+    @staticmethod
+    def write_gguf(directory, name="Owner model Q4.gguf"):
+        path = Path(directory) / name
+        # A bounded header fixture: the mocked Ollama process validates weights.
+        path.write_bytes(b"GGUF" + (3).to_bytes(4, "little") + bytes(16))
+        return path
+
+    @staticmethod
+    def response(metadata=None):
+        response = Mock()
+        response.json.return_value = metadata if metadata is not None else {
+            "details": {"parameter_size": "135M"}, "capabilities": ["completion"],
+        }
+        return response
+
+    def test_selected_file_import_uses_quoted_path_safe_argv_and_active_store(self):
+        commands, modelfiles = [], []
+
+        def runner(command, **kwargs):
+            commands.append((command, kwargs))
+            modelfiles.append((Path(command[4]), Path(command[4]).read_text("utf-8")))
+            return Mock(returncode=0)
+
+        with TemporaryDirectory() as directory:
+            source = self.write_gguf(directory)
+            store = Path(directory) / "ollama-store"
+            post = Mock(return_value=self.response())
+            alias = import_gguf_model(
+                "ollama", source, base_url="http://127.0.0.1:11435", model_store=store,
+                runner=runner, request_post=post,
+            )
+            self.assertRegex(alias, r"^jarvis-import-owner-model-q4-[a-f0-9]{12}$")
+            self.assertEqual(commands[0][0][:4], ["ollama", "create", alias, "-f"])
+            self.assertEqual(commands[0][1]["env"]["OLLAMA_HOST"], "127.0.0.1:11435")
+            self.assertEqual(Path(commands[0][1]["env"]["OLLAMA_MODELS"]), store.resolve())
+            self.assertNotIn("shell", commands[0][1])
+            self.assertIn(f'FROM "{source.as_posix()}"\n', modelfiles[0][1])
+            self.assertFalse(modelfiles[0][0].exists())
+            post.assert_called_once_with(
+                "http://127.0.0.1:11435/api/show", json={"model": alias}, timeout=10,
+            )
+
+    def test_sub_billion_text_expert_is_allowed_and_inference_is_not_called(self):
+        runner = Mock(return_value=Mock(returncode=0))
+        post = Mock(return_value=self.response())
+        with TemporaryDirectory() as directory, patch("core.ollama_bootstrap.verify_model_inference") as inference:
+            alias = import_gguf_model("ollama", self.write_gguf(directory), alias="jarvis-import-my-expert", runner=runner, request_post=post)
+        self.assertEqual(alias, "jarvis-import-my-expert")
+        self.assertEqual(runner.call_args.args[0][1], "create")
+        runner.assert_called_once()
+        inference.assert_not_called()
+
+    def test_numeric_parameter_metadata_is_supported(self):
+        post = Mock(return_value=self.response({"model_info": {"general.parameter_count": 135_000_000}}))
+        with TemporaryDirectory() as directory:
+            alias = import_gguf_model("ollama", self.write_gguf(directory), runner=Mock(return_value=Mock(returncode=0)), request_post=post)
+        self.assertTrue(alias.startswith("jarvis-import-"))
+
+    def test_relative_missing_directory_and_non_gguf_inputs_never_start_ollama(self):
+        runner = Mock()
+        with TemporaryDirectory() as directory:
+            wrong_suffix = Path(directory) / "model.bin"
+            wrong_suffix.write_bytes(b"GGUF" + bytes(20))
+            inputs = ("model.gguf", Path(directory) / "missing.gguf", Path(directory), wrong_suffix, 123)
+            for path in inputs:
+                with self.subTest(path=path), self.assertRaises(OllamaBootstrapError):
+                    import_gguf_model("ollama", path, runner=runner)
+        runner.assert_not_called()
+
+    def test_fake_header_and_truncated_gguf_are_rejected(self):
+        runner = Mock()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "model.gguf"
+            for content in (b"not GGUF" + bytes(24), b"GGUF"):
+                path.write_bytes(content)
+                with self.subTest(content=content), self.assertRaisesRegex(OllamaBootstrapError, "GGUF header"):
+                    import_gguf_model("ollama", path, runner=runner)
+        runner.assert_not_called()
+
+    def test_symbolic_link_is_rejected(self):
+        runner = Mock()
+        with TemporaryDirectory() as directory:
+            source = self.write_gguf(directory)
+            link = Path(directory) / "linked.gguf"
+            try:
+                link.symlink_to(source)
+            except OSError:
+                self.skipTest("Symbolic links are unavailable on this platform")
+            with self.assertRaisesRegex(OllamaBootstrapError, "symbolic link"):
+                import_gguf_model("ollama", link, runner=runner)
+        runner.assert_not_called()
+
+    def test_import_cannot_overwrite_core_or_inject_a_modelfile_command(self):
+        runner = Mock()
+        with TemporaryDirectory() as directory:
+            source = self.write_gguf(directory)
+            for alias in ("jarvis-core-1b", "jarvis-brain-fast", "jarvis-import-x\nSYSTEM no", "../jarvis-import-x", "jarvis-import-X", 123):
+                with self.subTest(alias=alias), self.assertRaises(OllamaBootstrapError):
+                    import_gguf_model("ollama", source, alias=alias, runner=runner)
+        runner.assert_not_called()
+
+    def test_glob_path_is_rejected_before_ollama_can_expand_it(self):
+        runner = Mock()
+        with TemporaryDirectory() as directory:
+            source = self.write_gguf(directory, "model[1].gguf")
+            with self.assertRaisesRegex(OllamaBootstrapError, "unsupported characters"):
+                import_gguf_model("ollama", source, runner=runner)
+        runner.assert_not_called()
+
+    def test_embedding_only_or_missing_parameter_metadata_does_not_report_import_success(self):
+        with TemporaryDirectory() as directory:
+            source = self.write_gguf(directory)
+            for metadata in (
+                {"details": {"parameter_size": "135M"}, "capabilities": ["embedding"]},
+                {"details": {"parameter_size": "0B"}},
+                {"model_info": {"general.parameter_count": True}},
+                {},
+            ):
+                with self.subTest(metadata=metadata), self.assertRaisesRegex(OllamaBootstrapError, "could not be verified"):
+                    import_gguf_model("ollama", source, runner=Mock(return_value=Mock(returncode=0)), request_post=Mock(return_value=self.response(metadata)))
+
+    def test_failed_import_cleans_up_temporary_modelfile(self):
+        modelfiles = []
+
+        def runner(command, **kwargs):
+            modelfiles.append(Path(command[4]))
+            return Mock(returncode=1)
+
+        with TemporaryDirectory() as directory:
+            with self.assertRaises(OllamaBootstrapError):
+                import_gguf_model("ollama", self.write_gguf(directory), runner=runner)
+        self.assertFalse(modelfiles[0].exists())
 
 
 if __name__ == "__main__":

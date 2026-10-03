@@ -60,6 +60,27 @@ class LocalBrainLifecycleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn('expired', response.json()['detail'])
 
+    def test_gguf_import_requires_owner_token_and_reports_import_errors(self):
+        host = self.host()
+        host.import_local_model = Mock(side_effect=ValueError('Choose an absolute GGUF file'))
+        client = TestClient(create_local_brain_app(host))
+        request = {'path': 'relative.gguf'}
+        self.assertEqual(client.post('/v1/models/import', json=request).status_code, 401)
+        host.import_local_model.assert_not_called()
+        response = client.post('/v1/models/import',
+            headers={'Authorization': 'Bearer ' + host.ui_token}, json=request)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('absolute GGUF', response.json()['detail'])
+
+    def test_gguf_import_cannot_race_model_setup(self):
+        host = self.host()
+        host._setup_guard = threading.Lock()
+        host._setup_guard.acquire()
+        with self.assertRaisesRegex(RuntimeError, 'already running'):
+            host.import_local_model('/models/expert.gguf')
+        self.assertTrue(host._setup_guard.locked())
+        host._setup_guard.release()
+
     def test_shutdown_stops_voice_approval_loop_and_only_owned_ollama(self):
         host = self.host()
         host._approval_stop = threading.Event()

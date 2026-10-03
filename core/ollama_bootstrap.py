@@ -11,15 +11,19 @@ accepted.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
+from tempfile import TemporaryDirectory
 from typing import Callable, Iterable
 from urllib.parse import urlparse
 
@@ -347,6 +351,95 @@ def model_matches_manifest(
         return False
     tolerance = max(0.15, expected_parameters_b * 0.20)
     return abs(actual - expected_parameters_b) <= tolerance
+
+
+_IMPORT_ALIAS_RE = re.compile(r"jarvis-import-[a-z0-9][a-z0-9-]{0,63}")
+
+
+def import_gguf_model(
+    executable: str,
+    source_path: str | Path,
+    *,
+    alias: str | None = None,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    model_store: str | Path | None = None,
+    runner=subprocess.run,
+    request_post=requests.post,
+) -> str:
+    """Import an owner-selected GGUF file into an already ensured runtime.
+
+    This creates an optional local text expert. It neither replaces JARVIS Core
+    nor downloads or executes model weights. Ollama validates the full model;
+    the initial file check is only a bounded header/regular-file check.
+    """
+    _ollama_environment(base_url, model_store)
+    if not isinstance(source_path, (str, Path)):
+        raise OllamaBootstrapError("Local model file must be an absolute GGUF path.")
+    source = Path(source_path).expanduser()
+    if not source.is_absolute() or source.suffix.lower() != ".gguf":
+        raise OllamaBootstrapError("Local model file must be an absolute GGUF path.")
+    try:
+        info = source.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise OllamaBootstrapError("Choose a regular GGUF file, not a folder or symbolic link.")
+        source = source.resolve(strict=True)
+        # Ollama expands glob patterns even inside quoted FROM paths. Reject
+        # those characters so it cannot import a different file by expansion.
+        if any(not char.isprintable() or char in '"*?[]' for char in source.as_posix()):
+            raise OllamaBootstrapError("The model path contains unsupported characters; rename the file or folder.")
+        with source.open("rb") as handle:
+            if info.st_size < 24 or handle.read(4) != b"GGUF":
+                raise OllamaBootstrapError("The selected file does not contain a valid GGUF header.")
+    except (OSError, ValueError) as exc:
+        raise OllamaBootstrapError("The selected GGUF file could not be read.") from exc
+
+    if alias is None:
+        stem = re.sub(r"[^a-z0-9]+", "-", source.stem.lower()).strip("-")[:32] or "model"
+        identity = f"{source}:{info.st_size}:{info.st_mtime_ns}"
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+        alias = f"jarvis-import-{stem}-{digest}"
+    if not isinstance(alias, str) or not _IMPORT_ALIAS_RE.fullmatch(alias):
+        raise OllamaBootstrapError("Imported model alias must use the jarvis-import- prefix and lowercase letters, digits or hyphens.")
+
+    with TemporaryDirectory(prefix="jarvis-gguf-") as directory:
+        modelfile = Path(directory) / "Modelfile"
+        modelfile.write_text(
+            f'FROM "{source.as_posix()}"\n'
+            'SYSTEM "You are a hidden local JARVIS specialist. Provide factual text analysis; do not claim external actions occurred."\n',
+            encoding="utf-8",
+        )
+        _run_ollama(
+            executable, ["create", alias, "-f", str(modelfile)],
+            base_url=base_url, model_store=model_store, runner=runner,
+        )
+
+    try:
+        response = request_post(base_url + "/api/show", json={"model": alias}, timeout=10)
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("invalid metadata")
+        details = body.get("details")
+        try:
+            count = parameter_size_b(details.get("parameter_size") if isinstance(details, dict) else None)
+        except ValueError:
+            model_info = body.get("model_info")
+            raw_count = model_info.get("general.parameter_count") if isinstance(model_info, dict) else None
+            if isinstance(raw_count, bool) or not isinstance(raw_count, (int, float)):
+                raise ValueError("parameter count unavailable")
+            count = raw_count / 1_000_000_000
+        if not math.isfinite(count) or count <= 0:
+            raise ValueError("invalid parameter count")
+        capabilities = body.get("capabilities")
+        if capabilities is not None and (
+            not isinstance(capabilities, list) or "completion" not in capabilities
+        ):
+            raise ValueError("text completion unsupported")
+    except Exception as exc:
+        raise OllamaBootstrapError(
+            "Ollama created the imported alias, but a text-capable model with a positive parameter count could not be verified."
+        ) from exc
+    return alias
 
 
 def verify_model_inference(

@@ -2,10 +2,11 @@ mod brain;
 mod mobile_identity;
 mod mobile_transport;
 
-use brain::{choose_model_store, ensure_brain_sidecar, platform_mode, BrainState};
+use brain::{choose_model_file, choose_model_store, ensure_brain_sidecar, platform_mode, BrainState};
 use mobile_identity::{
     mobile_accept_pairing_approval,
     mobile_companion_status,
+    mobile_fingerprint_status,
     mobile_identity,
     mobile_prepare_pairing,
     mobile_sign_approval_decision,
@@ -14,6 +15,7 @@ use mobile_identity::{
     mobile_verify_approval_list_response,
     mobile_verify_approval_receipt,
     mobile_verify_brain_response,
+    mobile_verify_owner_presence,
 };
 use tauri::Manager;
 use mobile_transport::mobile_companion_post;
@@ -47,6 +49,9 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_shell::init());
 
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_jarvis_fingerprint::init());
+
     #[cfg(mobile)]
     let builder = builder
         .plugin(tauri_plugin_biometric::init())
@@ -57,9 +62,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             platform_mode,
             choose_model_store,
+            choose_model_file,
             ensure_brain_sidecar,
             mobile_identity,
             mobile_companion_status,
+            mobile_fingerprint_status,
+            mobile_verify_owner_presence,
             mobile_prepare_pairing,
             mobile_accept_pairing_approval,
             mobile_sign_approval_list,

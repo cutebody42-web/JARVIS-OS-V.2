@@ -110,7 +110,7 @@ class OwnerFaceRecognizer:
         self._vision_guard = threading.RLock()
         self._recognized_until = 0.0
         self._last_score = 0.0
-        self._identity_generation = 0
+        self._presence_generation = 0
         self._model_dir = (
             Path(model_dir).expanduser()
             if model_dir is not None
@@ -186,7 +186,7 @@ class OwnerFaceRecognizer:
     def forget(self) -> None:
         with self._guard:
             self.store.delete(_FACE_KEY)
-            self._identity_generation += 1
+            self._presence_generation += 1
             self._recognized_until = 0.0
             self._last_score = 0.0
 
@@ -229,7 +229,7 @@ class OwnerFaceRecognizer:
         }
         with self._guard:
             self.store.set(_FACE_KEY, json.dumps(payload, separators=(",", ":")))
-            self._identity_generation += 1
+            self._presence_generation += 1
             self._recognized_until = 0.0
             self._last_score = 0.0
         return len(templates)
@@ -476,7 +476,8 @@ class OwnerFaceRecognizer:
         with self._guard:
             self._recognized_until = 0.0
             self._last_score = 0.0
-            identity_generation = self._identity_generation
+            self._presence_generation += 1
+            presence_generation = self._presence_generation
         if not self.enrolled:
             return FaceVerification(False, False, 0.0, 0, 0)
         embeddings = self._camera_embeddings(
@@ -493,7 +494,7 @@ class OwnerFaceRecognizer:
         required = max(2, math.ceil(len(decisions) * 0.6))
         recognized = matched >= required
         with self._guard:
-            if identity_generation != self._identity_generation:
+            if presence_generation != self._presence_generation:
                 return FaceVerification(self.enrolled, False, 0.0, 0, len(decisions))
             self._last_score = score
             self._recognized_until = self._clock() + self._ttl if recognized else 0.0

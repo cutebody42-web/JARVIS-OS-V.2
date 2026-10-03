@@ -10,6 +10,7 @@ import {
   LocalBrainClient,
   bootstrapDesktopBrain,
   chooseModelStore,
+  chooseModelFile,
   currentPairingDeepLink,
   listenForPairingDeepLinks,
   mobileBiometricStatus,
@@ -570,6 +571,23 @@ export function JarvisProductShell() {
     }
   }
 
+  async function importLocalModel() {
+    if (!client || busy || !status?.brain_ready) return;
+    setError("");
+    try {
+      const sourcePath = await chooseModelFile();
+      if (!sourcePath) return;
+      setBusy(true);
+      const result = await client.importLocalModel(sourcePath);
+      setStatus(result.status);
+      setManualModel(result.model);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Local model import failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function enrollFace() {
     if (!client || busy) return;
     setBusy(true);
@@ -816,6 +834,9 @@ export function JarvisProductShell() {
           <section className="device-link-card">
             <div className="capability-heading"><span>Local models</span><b>{status?.available_models.length ?? 0}</b></div>
             <p>JARVIS chooses hidden experts automatically. Override only when you want a specific installed local model to join the council.</p>
+            <Button variant="secondary" onClick={() => void importLocalModel()} disabled={!client || busy || !status?.brain_ready}>
+              {busy ? "Working" : "Import GGUF expert"}
+            </Button>
             {status?.brain_ready && (
               <details>
                 <summary>Change local model folder</summary>

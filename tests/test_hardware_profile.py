@@ -80,6 +80,30 @@ class HardwareProfilerTests(unittest.TestCase):
         fake.sensors_battery.return_value = battery
         return fake
 
+    def test_unavailable_battery_interface_preserves_real_ram_and_cpu_snapshot(self):
+        for error in (
+            FileNotFoundError("/sys/class/power_supply is absent"),
+            PermissionError("power telemetry denied"),
+            NotImplementedError("battery telemetry unsupported"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                psutil = self._psutil(available=6 * GIB, cpu=20.0)
+                psutil.sensors_battery.side_effect = error
+                response = Mock()
+                response.json.return_value = {"models": []}
+                snapshot = HardwareProfiler(
+                    device_id="headless-node",
+                    psutil_module=psutil,
+                    http_get=Mock(return_value=response),
+                    gpu_probe=lambda: (None, GPUMemoryKind.UNKNOWN),
+                ).capture()
+                self.assertEqual(snapshot.total_ram_gb, 16.0)
+                self.assertEqual(snapshot.available_ram_gb, 6.0)
+                self.assertEqual(snapshot.cpu_percent, 20.0)
+                self.assertIs(snapshot.power_source, PowerSource.UNKNOWN)
+                self.assertIsNone(snapshot.battery_pct)
+                self.assertIn("battery_probe_failed", snapshot.warnings)
+
     def test_capture_uses_current_ram_cpu_power_and_loaded_models(self):
         psutil = self._psutil(
             available=4 * GIB,

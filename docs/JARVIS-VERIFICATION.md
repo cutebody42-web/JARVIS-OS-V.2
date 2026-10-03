@@ -8,19 +8,19 @@ integrity, expired/replayed phone approvals, concurrent approval processing,
 secure signing-key persistence, and mobile requests blocked by WebView CSP.
 The mobile transport stays native and is restricted to the invitation or saved
 desktop origin and fixed companion routes. Redirects and oversized responses
-are rejected. The UI reports Core readiness and permits changing model storage
-after initial setup. An unnecessary lint dependency chain with a high-severity
+are rejected. The UI reports Core readiness, permits changing model storage after initial
+setup, and imports a selected GGUF expert while retaining its own coordinator. An unnecessary lint dependency chain with a high-severity
 advisory was removed while retaining React, hooks, TypeScript and accessibility
 checks.
 
 ## Local verification
 
-- Full Python discovery: **598 passed**, zero failures/errors/skips.
+- Full Python discovery: **629 passed**, zero failures/errors/skips.
 - Actual running Brain HTTP service: **20/20 checks passed**, including
   authentication, malformed input, unavailable hardware, missing model setup,
   stale pairing approval, and setup error recovery.
 - TypeScript checking, ESLint, static web production build: passed.
-- Native-bridge JavaScript tests: **4 passed**; mobile pairing, chat, pending
+- Native-bridge JavaScript tests: **6 passed**; mobile pairing, chat, pending
   approvals and decisions use the Rust transport and retain signed-response
   verification.
 - `npm audit --audit-level=high`: **zero vulnerabilities**.
@@ -61,9 +61,10 @@ execution or reasoning quality.
 3. Install the fresh Android build on the real phone, pair over Tailscale, verify
    chat and approve/reject/cancel a supported exact pending action with its
    enrolled fingerprint.
-   The existing biometric library may accept other Android biometric modalities;
-   a dedicated fingerprint-sensor path is being implemented and must be rebuilt
-   and tested before claiming fingerprint-only approval.
+   A dedicated Android fingerprint-sensor path is implemented, with worker-thread
+   native verification, bounded retries, timeout and lifecycle cancellation.
+   Android-target Rust and real sensor API Kotlin compilation passed; physical
+   fingerprint operation still requires the owner device.
 4. Independently trained JARVIS model weights are **not supplied**. Core currently
    uses pretrained Llama 3.2 through an Ollama Modelfile. Application routing and
    authority logic have no neural parameter count. A new trained 1B JARVIS

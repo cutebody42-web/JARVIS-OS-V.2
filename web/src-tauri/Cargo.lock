@@ -2445,6 +2445,7 @@ dependencies = [
  "tauri-plugin-biometric",
  "tauri-plugin-deep-link",
  "tauri-plugin-haptics",
+ "tauri-plugin-jarvis-fingerprint",
  "tauri-plugin-notification",
  "tauri-plugin-shell",
  "tauri-plugin-stronghold",
@@ -5034,6 +5035,15 @@ dependencies = [
  "tauri",
  "tauri-plugin",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "tauri-plugin-jarvis-fingerprint"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

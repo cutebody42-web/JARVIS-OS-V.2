@@ -32,6 +32,22 @@ pub fn choose_model_store() -> Result<Option<String>, String> {
     Err("Local model storage is configured on the desktop JARVIS device.".to_string())
 }
 
+#[cfg(desktop)]
+#[tauri::command]
+pub fn choose_model_file() -> Result<Option<String>, String> {
+    let selected = rfd::FileDialog::new()
+        .set_title("Choose a local GGUF expert model")
+        .add_filter("GGUF models", &["gguf"])
+        .pick_file();
+    Ok(selected.map(|path| path.to_string_lossy().into_owned()))
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+pub fn choose_model_file() -> Result<Option<String>, String> {
+    Err("Import local models on your laptop JARVIS device.".to_string())
+}
+
 
 #[cfg(desktop)]
 #[tauri::command]

@@ -268,7 +268,15 @@ class HardwareProfiler:
         cpu_percent = float(psutil.cpu_percent(interval=None))
         cpu_count = int(psutil.cpu_count(logical=True) or 1)
 
-        battery = psutil.sensors_battery()
+        warnings: list[str] = []
+        try:
+            battery = psutil.sensors_battery()
+        except Exception:
+            # Battery telemetry may be missing on desktops, containers, or an
+            # OS without a supported power-supply interface. RAM/CPU routing
+            # must still work; never invent a battery or an AC power reading.
+            battery = None
+            warnings.append("battery_probe_failed")
         if battery is None:
             power_source = PowerSource.UNKNOWN
             battery_pct = None
@@ -287,7 +295,6 @@ class HardwareProfiler:
             if battery_pct is not None:
                 battery_pct = min(100, max(0, battery_pct))
 
-        warnings: list[str] = []
         try:
             gpu_vram_gb, gpu_memory_kind = self._gpu_probe()
         except Exception:

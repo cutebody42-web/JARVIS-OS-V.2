@@ -162,23 +162,8 @@ export async function mobileCompanionStatus(): Promise<MobileCompanionStatus> {
 }
 
 export async function mobileBiometricStatus(): Promise<MobileBiometricStatus> {
-  const biometric = window.__TAURI__?.biometric;
-  if (!biometric) {
-    return {
-      available: false,
-      fingerprint: false,
-      biometryType: 0,
-      error: "Mobile biometric authentication is unavailable in this build.",
-    };
-  }
   try {
-    const status = await biometric.checkStatus();
-    return {
-      available: Boolean(status.isAvailable),
-      fingerprint: Boolean(status.isAvailable && status.biometryType === 1),
-      biometryType: Number(status.biometryType || 0),
-      error: status.error || null,
-    };
+    return await core().invoke<MobileBiometricStatus>("mobile_fingerprint_status");
   } catch (error) {
     return {
       available: false,
@@ -195,6 +180,10 @@ export async function ensureDesktopBrain(): Promise<BrainConnection> {
 
 export async function chooseModelStore(): Promise<string | null> {
   return core().invoke<string | null>("choose_model_store");
+}
+
+export async function chooseModelFile(): Promise<string | null> {
+  return core().invoke<string | null>("choose_model_file");
 }
 
 export class LocalBrainClient {
@@ -314,6 +303,13 @@ export class LocalBrainClient {
     });
   }
 
+  importLocalModel(path: string) {
+    return this.request<{ model: string; status: BrainStatus }>("/v1/models/import", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+  }
+
   message(message: string, task?: string) {
     return this.request<BrainReply>("/v1/message", {
       method: "POST",
@@ -425,27 +421,14 @@ async function mobileCompanionPost(
 
 async function requireMobileOwnerPresence(
   reason: string,
-  { requireFingerprint = false }: { requireFingerprint?: boolean } = {},
 ) {
-  const biometric = window.__TAURI__?.biometric;
-  if (!biometric) throw new Error("Mobile owner authentication is unavailable.");
-  const status = await biometric.checkStatus();
-  if (!status.isAvailable) {
-    throw new Error(status.error || "Fingerprint/biometric approval is unavailable on this phone.");
+  const status = await mobileBiometricStatus();
+  if (!status.fingerprint) {
+    throw new Error(status.error || "Enroll and enable a fingerprint on this phone to approve JARVIS actions.");
   }
-  // Tauri BiometryType.TouchID (1) maps to Android fingerprint. Sensitive
-  // approvals can explicitly require it instead of silently falling back to
-  // a lock-screen PIN/password.
-  if (requireFingerprint && status.biometryType !== 1) {
-    throw new Error("Enroll and enable a fingerprint on this phone to approve sensitive JARVIS actions.");
-  }
-  await biometric.authenticate(reason, {
-    allowDeviceCredential: false,
-    confirmationRequired: true,
-    cancelTitle: "Cancel",
-    title: "JARVIS owner approval",
-    subtitle: requireFingerprint ? "Use your fingerprint to continue" : "Verify owner presence",
-  });
+  // Android uses a dedicated fingerprint sensor API: generic biometric prompts
+  // may accept face/iris when the device supports multiple modalities.
+  await core().invoke<void>("mobile_verify_owner_presence", { reason });
   return status;
 }
 
@@ -467,7 +450,6 @@ export async function pairMobileCompanion(
 ) {
   await requireMobileOwnerPresence(
     "Confirm pairing this phone with your JARVIS Brain",
-    { requireFingerprint: true },
   );
   const bundle = await core().invoke<MobilePairingBundle>("mobile_prepare_pairing", { offer });
 

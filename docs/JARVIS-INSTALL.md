@@ -13,6 +13,12 @@ They are a candidate build, not certification of your own laptop or phone.
 Subsequent source fixes need fresh installer/APK builds before they are present
 in your installed copy.
 
+The first repair patch is published as `fd28c8f`; its replacement builds are
+being prepared. The GGUF import controls and dedicated Android fingerprint
+sensor implementation described below are further source changes and require
+their own successful replacement builds. The `1506249` downloads below do not
+include those later changes.
+
 | Device | GitHub Actions download page | Artifact to download | File inside the ZIP |
 | --- | --- | --- | --- |
 | Windows x64 laptop | [Windows installer build](https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36863469039) | `JARVIS-Windows-Installer` | `JARVIS-Setup.exe` |
@@ -59,10 +65,28 @@ individual model file, or Ollama's application installation folder.
 JARVIS runs its local Ollama endpoint at `127.0.0.1:11435` and remembers the
 chosen storage path. Existing models in a compatible store appear in **Local
 models**. Initial setup still prepares any missing JARVIS aliases and their base
-weights. A folder containing arbitrary `.gguf` or Hugging Face weight files is
-not an Ollama store: this build does not import those files through the folder
-picker. Import them into Ollama first using the appropriate Ollama Modelfile,
-then use that store. See [Ollama's import instructions](https://docs.ollama.com/import).
+weights. Once the Brain is ready, open **Change local model folder** in **Local
+models**, choose another Ollama store, and click **Use this folder** to provision
+the required aliases there. This folder picker does not import individual model
+files or directories of Hugging Face weights.
+
+### Import a local GGUF expert
+
+In a replacement build containing this feature, first finish local Brain setup.
+Then click **Import GGUF expert** in **Local models** and select your existing
+`.gguf` file in the native file picker. JARVIS imports that selected file into
+the active Ollama store, creates a `jarvis-import-…` alias, and selects it as
+the optional council expert. **JARVIS Core remains the coordinator.** To return
+to automatic specialist routing, choose **Automatic expert selection**.
+
+The selected file must exist as a regular file with a GGUF header. Ollama must
+support its model architecture and report a text-capable model with a positive
+parameter count. A file extension or header alone does not establish model
+compatibility or useful inference; an import error is shown if validation fails.
+Use a model that fits your laptop's available memory and verify a real answer
+after importing it. This path accepts a selected GGUF file, not arbitrary Hugging
+Face weight folders. Actual inference from the owner's imported GGUF weights
+remains a real-device acceptance check.
 
 Leave **Automatic expert selection** selected for normal use. JARVIS chooses
 hidden specialists and can consult multiple experts concurrently when memory
@@ -122,6 +146,9 @@ perform these checks.
 The phone sends signed requests to the running laptop Brain; Tailscale supplies
 the private network connection. Sensitive approval uses the enrolled phone
 fingerprint. A phone PIN or facial recognition does not substitute for it.
+The replacement companion uses a dedicated Android fingerprint-sensor path
+rather than a generic biometric prompt; this behavior must still be checked on
+your physical phone.
 For an action that requests approval, read the exact pending action on the
 phone, then choose **Approve with fingerprint** or **Reject**. Cancelling the
 biometric prompt must leave the action unapproved.
@@ -144,6 +171,7 @@ passed.
 | --- | --- |
 | Install/start/restart | Installed app opens, local Brain initializes, and reopening preserves setup. |
 | Three text requests | Useful replies to a factual question, a planning request, and a coding request; no invented claim that an external action happened. |
+| Optional imported model | Import a compatible GGUF through the file picker, see its alias selected in Local models, and verify a real response; switching back to automatic selection retains JARVIS Core. |
 | Actual laptop voice | Select the default microphone in Windows, allow desktop microphone access, press JARVIS's microphone button, speak, and verify the recognized text and audible reply. Tap again to stop listening or interrupt speech. |
 | Camera identity | Owner enrolls and is recognized; an empty or covered camera is rejected. |
 | Phone connection | Pairing requires desktop approval; phone text reaches the same laptop Brain and still works after reopening the companion. |

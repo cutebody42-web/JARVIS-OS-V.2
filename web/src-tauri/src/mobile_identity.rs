@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
-#[cfg(mobile)]
+#[cfg(target_os = "ios")]
 use tauri_plugin_biometric::{AuthOptions, BiometricExt, BiometryType};
+#[cfg(target_os = "android")]
+use tauri_plugin_jarvis_fingerprint::FingerprintExt;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
@@ -71,6 +73,15 @@ pub struct MobileCompanionStatus {
     pub paired: bool,
     pub desktop_device: Option<String>,
     pub key_protection: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileFingerprintStatus {
+    available: bool,
+    fingerprint: bool,
+    biometry_type: u8,
+    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -352,6 +363,86 @@ pub fn mobile_companion_status(app: AppHandle) -> Result<MobileCompanionStatus, 
 }
 
 #[tauri::command]
+pub async fn mobile_fingerprint_status(app: AppHandle) -> Result<MobileFingerprintStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || read_fingerprint_status(app))
+        .await
+        .map_err(|_| "JARVIS fingerprint availability check could not complete.".to_string())?
+}
+
+fn read_fingerprint_status(app: AppHandle) -> Result<MobileFingerprintStatus, String> {
+    #[cfg(target_os = "android")]
+    {
+        let status = app.fingerprint().status()?;
+        let available = status.is_available && status.biometry_type == 1;
+        return Ok(MobileFingerprintStatus {
+            available,
+            fingerprint: available,
+            biometry_type: status.biometry_type,
+            error: status.error,
+        });
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let status = app.biometric().status().map_err(|_| "JARVIS could not read Touch ID availability.".to_string())?;
+        let available = status.is_available && matches!(status.biometry_type, BiometryType::TouchID);
+        return Ok(MobileFingerprintStatus {
+            available,
+            fingerprint: available,
+            biometry_type: if available { 1 } else { 0 },
+            error: if available { None } else { Some("JARVIS owner approvals require enrolled Touch ID.".into()) },
+        });
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = app;
+        Ok(MobileFingerprintStatus {
+            available: false, fingerprint: false, biometry_type: 0,
+            error: Some("Fingerprint approval is available on the mobile companion only.".into()),
+        })
+    }
+}
+
+fn authenticate_owner_fingerprint(app: &AppHandle, reason: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        return app.fingerprint().authenticate(reason.to_string());
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let status = app.biometric().status().map_err(|_| "JARVIS could not verify Touch ID availability.".to_string())?;
+        if !status.is_available || !matches!(status.biometry_type, BiometryType::TouchID) {
+            return Err("Sensitive JARVIS approvals require an enrolled fingerprint.".into());
+        }
+        return app.biometric().authenticate(reason.to_string(), AuthOptions {
+            allow_device_credential: false,
+            cancel_title: Some("Cancel".into()),
+            fallback_title: None,
+            title: Some("JARVIS owner approval".into()),
+            subtitle: Some("Use your fingerprint to continue".into()),
+            confirmation_required: Some(true),
+        }).map_err(|_| "JARVIS fingerprint verification failed or was cancelled.".to_string());
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (app, reason);
+        Err("JARVIS fingerprint approval is available on the mobile companion only.".into())
+    }
+}
+
+#[tauri::command]
+pub async fn mobile_verify_owner_presence(app: AppHandle, reason: String) -> Result<(), String> {
+    let reason = reason.trim().to_string();
+    if reason.is_empty() || reason.chars().count() > 500 {
+        return Err("Invalid JARVIS owner authentication reason.".into());
+    }
+    // run_mobile_plugin waits for Android's callback. Keep that wait off the
+    // WebView/UI thread so the fingerprint dialog and sensor can resolve it.
+    tauri::async_runtime::spawn_blocking(move || authenticate_owner_fingerprint(&app, &reason))
+        .await
+        .map_err(|_| "JARVIS owner authentication could not complete.".to_string())?
+}
+
+#[tauri::command]
 pub fn mobile_prepare_pairing(
     app: AppHandle,
     offer: PairingOffer,
@@ -565,7 +656,17 @@ pub fn mobile_verify_approval_list_response(
 }
 
 #[tauri::command]
-pub fn mobile_sign_approval_decision(
+pub async fn mobile_sign_approval_decision(
+    app: AppHandle,
+    approval_id: String,
+    approved: bool,
+) -> Result<MobileApprovalRequest, String> {
+    tauri::async_runtime::spawn_blocking(move || sign_fingerprint_approval(app, approval_id, approved))
+        .await
+        .map_err(|_| "JARVIS fingerprint approval could not complete.".to_string())?
+}
+
+fn sign_fingerprint_approval(
     app: AppHandle,
     approval_id: String,
     approved: bool,
@@ -575,40 +676,11 @@ pub fn mobile_sign_approval_decision(
         return Err("Invalid JARVIS approval id.".into());
     }
 
-    #[cfg(mobile)]
-    {
-        let status = app
-            .biometric()
-            .status()
-            .map_err(|_| "JARVIS could not verify fingerprint availability.".to_string())?;
-        if !status.is_available || !matches!(status.biometry_type, BiometryType::TouchID) {
-            return Err(
-                "Sensitive JARVIS approvals require an enrolled fingerprint.".into()
-            );
-        }
-        app.biometric()
-            .authenticate(
-                if approved {
-                    "Confirm this JARVIS action with your fingerprint".to_string()
-                } else {
-                    "Confirm rejecting this JARVIS action with your fingerprint".to_string()
-                },
-                AuthOptions {
-                    allow_device_credential: false,
-                    cancel_title: Some("Cancel".into()),
-                    fallback_title: None,
-                    title: Some("JARVIS owner approval".into()),
-                    subtitle: Some("Use your fingerprint to continue".into()),
-                    confirmation_required: Some(true),
-                },
-            )
-            .map_err(|_| "JARVIS fingerprint verification failed or was cancelled.".to_string())?;
-    }
-
-    #[cfg(not(mobile))]
-    {
-        return Err("JARVIS fingerprint approval is available on the mobile companion only.".into());
-    }
+    authenticate_owner_fingerprint(&app, if approved {
+        "Confirm this JARVIS action with your fingerprint"
+    } else {
+        "Confirm rejecting this JARVIS action with your fingerprint"
+    })?;
 
     let request_id = Uuid::new_v4().simple().to_string();
     let payload = json!({

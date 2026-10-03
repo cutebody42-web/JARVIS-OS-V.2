@@ -42,6 +42,7 @@ from core.ollama_bootstrap import (
     ensure_ollama_service,
     find_ollama_executable,
     installed_model_names,
+    import_gguf_model,
     model_matches_manifest,
     stop_owned_ollama_service,
 )
@@ -71,6 +72,10 @@ class SetupRequest(BaseModel):
 
 class ModelSelectionRequest(BaseModel):
     model: str | None = Field(default=None, max_length=128)
+
+
+class ModelImportRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
 
 
 class FaceCameraRequest(BaseModel):
@@ -259,6 +264,23 @@ class LocalBrainHost:
         self.manual_model = model or None
         self.council.set_manual_model(self.manual_model)
         self._write_settings()
+
+    def import_local_model(self, source_path: str) -> str:
+        if not self._setup_guard.acquire(blocking=False):
+            raise OllamaBootstrapError("Local model setup is already running. Wait and retry.")
+        try:
+            if not self.local_brain_ready():
+                raise OllamaBootstrapError("Initialize JARVIS Core before importing an expert model.")
+            executable = find_ollama_executable()
+            if executable is None:
+                raise OllamaBootstrapError("Ollama is unavailable. Initialize the local Brain first.")
+            ensure_ollama_service(executable, base_url=self.ollama_base_url, model_store=self.model_store)
+            alias = import_gguf_model(executable, source_path,
+                base_url=self.ollama_base_url, model_store=self.model_store)
+            self.set_manual_model(alias)
+            return alias
+        finally:
+            self._setup_guard.release()
 
     def _capture_snapshot(self) -> HardwareSnapshot | None:
         try:
@@ -666,6 +688,16 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return host.status()
+
+    @app.post("/v1/models/import", dependencies=[Depends(require_ui)])
+    def import_local_model(request: ModelImportRequest) -> dict[str, Any]:
+        try:
+            alias = host.import_local_model(request.path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except OllamaBootstrapError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        return {"model": alias, "status": host.status()}
 
     @app.post("/v1/message", dependencies=[Depends(require_ui)])
     def message(request: MessageRequest) -> dict[str, Any]:

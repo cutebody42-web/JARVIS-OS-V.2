@@ -80,14 +80,15 @@ test("mobile pairing sends only invitation-scoped requests and accepts signed de
   const offer = { inviter_endpoint: "http://100.90.10.3:8765", expires_at: new Date(Date.now() + 60000).toISOString() };
   let posts = 0;
   let authentications = 0;
-  const biometric = {
-    checkStatus: async () => ({ isAvailable: true, biometryType: 1 }),
-    authenticate: async (_reason, options) => {
-      assert.equal(options.allowDeviceCredential, false);
-      authentications += 1;
-    },
-  };
   const api = runtime(async (command, args) => {
+    if (command === "mobile_fingerprint_status") {
+      return { available: true, fingerprint: true, biometryType: 1, error: null };
+    }
+    if (command === "mobile_verify_owner_presence") {
+      assert.match(args.reason, /pairing/);
+      authentications += 1;
+      return;
+    }
     if (command === "mobile_prepare_pairing") {
       return { request: { pairing_id: "pair-1" }, submit_url: `${offer.inviter_endpoint}/nexus/pair/v1/request`, status_url: `${offer.inviter_endpoint}/nexus/pair/v1/status` };
     }
@@ -103,7 +104,7 @@ test("mobile pairing sends only invitation-scoped requests and accepts signed de
       return { device_id: "mobile-1" };
     }
     throw new Error(command);
-  }, biometric);
+  });
   assert.equal((await api.pairMobileCompanion(offer)).device_id, "mobile-1");
   assert.equal(posts, 2);
   assert.equal(authentications, 1);
@@ -117,4 +118,39 @@ test("desktop error detail survives native mobile transport", async () => {
     return { status: 403, content_type: "application/json", body: '{"detail":"Companion is not approved"}' };
   });
   await assert.rejects(api.mobilePendingApprovals(), /Companion is not approved/);
+});
+
+test("pairing cannot use face-only availability or proceed after native fingerprint cancellation", async () => {
+  let preparations = 0;
+  const faceOnly = runtime(async (command) => {
+    if (command === "mobile_fingerprint_status") {
+      return { available: false, fingerprint: false, biometryType: 0, error: "Enroll a fingerprint first" };
+    }
+    preparations += 1;
+    throw new Error(command);
+  });
+  await assert.rejects(faceOnly.pairMobileCompanion({}), /Enroll a fingerprint/);
+  assert.equal(preparations, 0);
+
+  const cancelled = runtime(async (command) => {
+    if (command === "mobile_fingerprint_status") return { available: true, fingerprint: true, biometryType: 1, error: null };
+    if (command === "mobile_verify_owner_presence") throw new Error("Fingerprint was cancelled");
+    preparations += 1;
+    throw new Error(command);
+  });
+  await assert.rejects(cancelled.pairMobileCompanion({}), /Fingerprint was cancelled/);
+  assert.equal(preparations, 0);
+});
+
+test("a cancelled native fingerprint approval sends no decision to the desktop", async () => {
+  const commands = [];
+  const api = runtime(async (command) => {
+    commands.push(command);
+    if (command === "mobile_sign_approval_decision") {
+      throw new Error("Fingerprint verification failed or was cancelled");
+    }
+    throw new Error("No decision may leave this phone without fingerprint proof");
+  });
+  await assert.rejects(api.mobileDecideApproval("approval-1", true), /Fingerprint verification failed/);
+  assert.deepEqual(commands, ["mobile_sign_approval_decision"]);
 });

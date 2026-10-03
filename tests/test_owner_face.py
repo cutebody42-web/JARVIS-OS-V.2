@@ -145,6 +145,22 @@ class OwnerFaceTests(unittest.TestCase):
         self.assertFalse(result.recognized)
         self.assertFalse(recognizer.recognized)
 
+    def test_older_camera_check_cannot_overwrite_a_newer_no_face_check(self):
+        recognizer = StubRecognizer([], secret_store=NoopSecretStore())
+        recognizer.enroll_embeddings([vec(0)] * 6)
+
+        def earlier_capture(**kwargs):
+            # Simulate a second thread completing a newer camera check before
+            # the first thread finishes extracting its successful frames.
+            with patch.object(recognizer, "_camera_embeddings", return_value=[]):
+                self.assertFalse(recognizer.verify_from_camera().recognized)
+            return [vec(0)] * 5
+
+        with patch.object(recognizer, "_camera_embeddings", side_effect=earlier_capture):
+            result = recognizer.verify_from_camera()
+        self.assertFalse(result.recognized)
+        self.assertFalse(recognizer.recognized)
+
     def test_linux_and_macos_use_the_default_camera_backend(self):
         for platform in ("linux", "darwin"):
             with self.subTest(platform=platform):

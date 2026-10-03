@@ -48,6 +48,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production local AI dependencies
+        run: python -m pip install --quiet google-genai requests psutil "cryptography>=44,<51"
+
       - name: Install Ollama runtime
         shell: bash
         run: |
@@ -75,13 +82,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ollama pull llama3.2:1b
-          ollama pull qwen3.5:4b
-          ollama create jarvis-core-1b -f models/jarvis-core-1b.Modelfile
-          ollama create jarvis-brain-fast -f models/jarvis-brain-fast.Modelfile
-          ollama list | tee artifacts/real-cloud/local-ai/ollama-list.txt
-          ollama show jarvis-core-1b | tee artifacts/real-cloud/local-ai/ollama-show-core.txt
-          ollama show jarvis-brain-fast | tee artifacts/real-cloud/local-ai/ollama-show-expert.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+          from core.jarvis_council import CORE_MODEL
+
+          manifest = json.loads(Path("models/manifest.json").read_text("utf-8"))
+          required = {CORE_MODEL, "jarvis-brain-fast"}
+          specs = [item for item in manifest["models"] if item["alias"] in required]
+          if {item["alias"] for item in specs} != required:
+              raise SystemExit("Core and fast expert are missing from the manifest")
+          for base in dict.fromkeys(item["base"] for item in specs):
+              subprocess.run(["ollama", "pull", base], check=True)
+          for spec in specs:
+              subprocess.run([
+                  "ollama", "create", spec["alias"], "-f",
+                  str(Path("models") / (spec["alias"] + ".Modelfile")),
+              ], check=True)
+          listed = subprocess.check_output(["ollama", "list"], text=True)
+          Path("artifacts/real-cloud/local-ai/ollama-list.txt").write_text(listed, "utf-8")
+          print(listed)
+          for alias, label in ((CORE_MODEL, "core"), ("jarvis-brain-fast", "expert")):
+              shown = subprocess.check_output(["ollama", "show", alias], text=True)
+              Path(f"artifacts/real-cloud/local-ai/ollama-show-{label}.txt").write_text(shown, "utf-8")
+              print(shown)
+          PY
 
       - name: Run real Core plus expert inference concurrently
         shell: bash
@@ -95,15 +121,15 @@ jobs:
           import time
           import urllib.request
           from pathlib import Path
+          from core.jarvis_council import CORE_MODEL
 
           manifest = json.loads(Path("models/manifest.json").read_text("utf-8"))
-          core = next(item for item in manifest["models"] if item["alias"] == "jarvis-core-1b")
+          core = next(item for item in manifest["models"] if item["alias"] == CORE_MODEL)
           expert = next(item for item in manifest["models"] if item["alias"] == "jarvis-brain-fast")
-          assert float(core["parameters_b"]) == 1.0, core
-          assert core["base"] == "llama3.2:1b", core
+          assert float(core["parameters_b"]) >= 1.0, core
 
           shown = subprocess.check_output(
-              ["ollama", "show", "jarvis-core-1b"],
+              ["ollama", "show", CORE_MODEL],
               text=True,
               encoding="utf-8",
               errors="replace",
@@ -149,7 +175,7 @@ jobs:
           with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
               core_future = pool.submit(
                   generate,
-                  "jarvis-core-1b",
+                  CORE_MODEL,
                   "Produce a short internal routing brief for: plan tomorrow efficiently.",
               )
               expert_future = pool.submit(
@@ -162,6 +188,7 @@ jobs:
           wall = round(time.monotonic() - started, 3)
 
           evidence = {
+              "core_manifest_base": core["base"],
               "core_manifest_parameters_b": core["parameters_b"],
               "core_verified_parameters_b": params_b,
               "expert_manifest_parameters_b": expert["parameters_b"],
@@ -176,6 +203,15 @@ jobs:
           )
           print(json.dumps(evidence, ensure_ascii=False))
           PY
+
+      - name: Verify real production JARVIS Brain and council chat
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          python packaging/smoke/brain_inference.py \
+            --ollama-url "http://$OLLAMA_HOST" \
+            --output artifacts/real-cloud/local-ai/application-inference.json
 
       - name: Validate production face-recognition engine and pinned models
         shell: bash
