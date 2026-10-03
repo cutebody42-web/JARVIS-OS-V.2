@@ -1,5 +1,6 @@
 mod brain;
 mod mobile_identity;
+mod mobile_transport;
 
 use brain::{choose_model_store, ensure_brain_sidecar, platform_mode, BrainState};
 use mobile_identity::{
@@ -15,6 +16,7 @@ use mobile_identity::{
     mobile_verify_brain_response,
 };
 use tauri::Manager;
+use mobile_transport::mobile_companion_post;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -64,6 +66,7 @@ pub fn run() {
             mobile_verify_approval_list_response,
             mobile_sign_approval_decision,
             mobile_verify_approval_receipt,
+            mobile_companion_post,
             mobile_sign_brain_request,
             mobile_verify_brain_response
         ])

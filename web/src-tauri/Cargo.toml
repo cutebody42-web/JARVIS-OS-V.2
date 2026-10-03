@@ -28,6 +28,7 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
 hmac = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]

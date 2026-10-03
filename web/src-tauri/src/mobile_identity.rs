@@ -201,15 +201,8 @@ fn canonical(value: &Value) -> Result<Vec<u8>, String> {
     serde_json::to_vec(value).map_err(|error| format!("JARVIS canonical JSON failed ({error})."))
 }
 
-fn offer_endpoint(offer: &PairingOffer) -> Result<String, String> {
-    let endpoint = offer.inviter_endpoint.trim().trim_end_matches('/');
-    if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
-        return Err("JARVIS pairing endpoint must use HTTP(S).".into());
-    }
-    if endpoint.contains('@') || endpoint.contains('?') || endpoint.contains('#') {
-        return Err("JARVIS pairing endpoint is invalid.".into());
-    }
-    Ok(endpoint.to_string())
+pub(crate) fn offer_endpoint(offer: &PairingOffer) -> Result<String, String> {
+    super::mobile_transport::normalize_companion_origin(&offer.inviter_endpoint)
 }
 
 fn pairing_unsigned(
@@ -332,6 +325,11 @@ fn load_trust(app: &AppHandle) -> Result<DesktopTrust, String> {
         .map_err(|_| "This mobile JARVIS is not paired with a desktop Brain.".to_string())?;
     serde_json::from_slice(&data)
         .map_err(|_| "Stored JARVIS desktop trust is invalid.".to_string())
+}
+
+pub(crate) fn trusted_desktop_endpoint(app: &AppHandle) -> Result<String, String> {
+    let trust = load_trust(app)?;
+    super::mobile_transport::normalize_companion_origin(&trust.desktop_endpoint)
 }
 
 #[tauri::command]
@@ -660,4 +658,3 @@ pub fn mobile_verify_approval_receipt(
     }
     Ok(payload)
 }
-

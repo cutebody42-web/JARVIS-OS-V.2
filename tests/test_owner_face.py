@@ -1,9 +1,11 @@
 """Owner face identity contracts without requiring a physical camera."""
 
 import json
+import math
 import unittest
+from unittest.mock import MagicMock, patch
 
-from core.owner_face import OwnerFaceRecognizer
+from core.owner_face import FaceIdentityError, OwnerFaceRecognizer
 from core.secret_store import NoopSecretStore
 
 
@@ -77,6 +79,105 @@ class OwnerFaceTests(unittest.TestCase):
         recognizer.enroll_embeddings([vec(0, x) for x in (0.01, 0.02, 0.03, 0.04, 0.05, 0.06)])
         recognizer.forget()
         self.assertFalse(recognizer.enrolled)
+
+    def test_non_finite_samples_cannot_be_enrolled(self):
+        recognizer = OwnerFaceRecognizer(secret_store=NoopSecretStore())
+        for invalid in (math.nan, math.inf, -math.inf):
+            sample = vec(0)
+            sample[1] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                recognizer.enroll_embeddings([sample] * 6)
+        self.assertFalse(recognizer.enrolled)
+
+    def test_accidental_stranger_sample_cannot_become_an_owner_template(self):
+        recognizer = OwnerFaceRecognizer(secret_store=NoopSecretStore())
+        with self.assertRaisesRegex(ValueError, "same owner"):
+            recognizer.enroll_embeddings([vec(0)] * 5 + [vec(10)])
+        self.assertFalse(recognizer.enrolled)
+
+    def test_stored_malformed_template_fails_closed(self):
+        store = NoopSecretStore()
+        recognizer = OwnerFaceRecognizer(secret_store=store)
+        recognizer.enroll_embeddings([vec(0)] * 6)
+        payload = json.loads(store.get("identity.owner.face.v1"))
+        payload["templates"][0][0] = math.nan
+        store.set("identity.owner.face.v1", json.dumps(payload))
+        self.assertFalse(recognizer.enrolled)
+        with self.assertRaises(FaceIdentityError):
+            recognizer.verify_embedding(vec(0))
+
+    def test_no_face_recheck_revokes_previous_presence(self):
+        recognizer = StubRecognizer([vec(0)] * 5, secret_store=NoopSecretStore())
+        recognizer.enroll_embeddings([vec(0)] * 6)
+        self.assertTrue(recognizer.verify_from_camera().recognized)
+        recognizer.frames = []
+        self.assertFalse(recognizer.verify_from_camera().recognized)
+        self.assertFalse(recognizer.recognized)
+        self.assertEqual(recognizer.last_score, 0.0)
+
+    def test_camera_failure_recheck_revokes_previous_presence(self):
+        recognizer = StubRecognizer([vec(0)] * 5, secret_store=NoopSecretStore())
+        recognizer.enroll_embeddings([vec(0)] * 6)
+        recognizer.verify_from_camera()
+        with patch.object(recognizer, "_camera_embeddings", side_effect=FaceIdentityError("unavailable")):
+            with self.assertRaises(FaceIdentityError):
+                recognizer.verify_from_camera()
+        self.assertFalse(recognizer.recognized)
+
+    def test_reenrollment_revokes_previous_presence(self):
+        recognizer = StubRecognizer([vec(0)] * 5, secret_store=NoopSecretStore())
+        recognizer.enroll_embeddings([vec(0)] * 6)
+        recognizer.verify_from_camera()
+        recognizer.enroll_embeddings([vec(10)] * 6)
+        self.assertFalse(recognizer.recognized)
+
+    def test_forget_during_capture_cannot_restore_presence(self):
+        recognizer = StubRecognizer([vec(0)] * 5, secret_store=NoopSecretStore())
+        recognizer.enroll_embeddings([vec(0)] * 6)
+
+        def capture(**kwargs):
+            recognizer.forget()
+            return [vec(0)] * 5
+
+        with patch.object(recognizer, "_camera_embeddings", side_effect=capture):
+            result = recognizer.verify_from_camera()
+        self.assertFalse(result.enrolled)
+        self.assertFalse(result.recognized)
+        self.assertFalse(recognizer.recognized)
+
+    def test_linux_and_macos_use_the_default_camera_backend(self):
+        for platform in ("linux", "darwin"):
+            with self.subTest(platform=platform):
+                self._exercise_camera(platform, fallback=False)
+
+    def test_windows_falls_back_if_directshow_cannot_open_camera(self):
+        self._exercise_camera("win32", fallback=True)
+
+    def _exercise_camera(self, platform, *, fallback):
+        cv2 = MagicMock()
+        cv2.CAP_DSHOW = 700
+        capture = MagicMock()
+        capture.isOpened.return_value = True
+        capture.read.return_value = (True, object())
+        failed = MagicMock()
+        failed.isOpened.return_value = False
+        cv2.VideoCapture.side_effect = [failed, capture] if fallback else [capture]
+        recognizer = OwnerFaceRecognizer(secret_store=NoopSecretStore())
+        with (
+            patch.dict("sys.modules", {"cv2": cv2}),
+            patch("core.owner_face.sys.platform", platform),
+            patch("core.owner_face.time.sleep"),
+            patch.object(recognizer, "_vision_models"),
+            patch.object(recognizer, "_extract_embedding", return_value=vec(0)),
+        ):
+            self.assertEqual(len(recognizer._camera_embeddings(
+                camera_index=0, target_samples=1, timeout_seconds=2,
+            )), 1)
+        if fallback:
+            self.assertEqual(cv2.VideoCapture.call_args_list[0].args, (0, 700))
+            failed.release.assert_called_once()
+        self.assertEqual(cv2.VideoCapture.call_args_list[-1].args, (0,))
+        capture.release.assert_called_once()
 
 
 if __name__ == "__main__":

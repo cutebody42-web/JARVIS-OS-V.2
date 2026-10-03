@@ -106,6 +106,27 @@ class JarvisIdentityTests(unittest.TestCase):
         self.assertIs(classify_intent("what is the time"), BrainIntent.ACTION)
         self.assertIs(classify_intent("set the volume to 40"), BrainIntent.ACTION)
 
+    def test_discussing_commands_does_not_execute_them(self):
+        for message in (
+            "Explain how to open a browser",
+            "How do I stop a running process?",
+            "I am reading about how to start an application",
+            'Translate the phrase "open my browser"',
+            "Tell me why pause and resume work differently",
+        ):
+            with self.subTest(message=message):
+                self.assertIs(classify_intent(message), BrainIntent.CHAT)
+
+    def test_polite_direct_commands_still_execute(self):
+        for message in (
+            "Please open my browser",
+            "Could you please mute the speakers",
+            "JARVIS, set the volume to 40",
+            "Can you search the web for Python documentation",
+        ):
+            with self.subTest(message=message):
+                self.assertIs(classify_intent(message), BrainIntent.ACTION)
+
 
 
 class ConversationContinuityTests(unittest.TestCase):

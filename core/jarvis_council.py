@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+import re
 import threading
-from typing import Iterable
 
 from core.hardware_profile import HardwareProfiler, HardwareSnapshot
 from core.model_provider import ModelRequest, ModelTier
@@ -20,6 +20,7 @@ from core.providers.ollama import OllamaProvider
 
 
 CORE_MODEL = "jarvis-core-1b"
+_MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
 
 
 @dataclass(frozen=True)
@@ -45,14 +46,15 @@ class JarvisCouncil:
         manual_model: str | None = None,
         max_parallel_experts: int = 2,
     ):
-        if not isinstance(max_parallel_experts, int) or not 1 <= max_parallel_experts <= 4:
+        if isinstance(max_parallel_experts, bool) or not isinstance(max_parallel_experts, int) or not 1 <= max_parallel_experts <= 4:
             raise ValueError("max_parallel_experts must be between 1 and 4")
         self.base_url = ollama_base_url
         self.profiler = profiler
         self.runtime = runtime
         self.max_parallel_experts = max_parallel_experts
-        self._manual_model = manual_model
         self._lock = threading.RLock()
+        self._manual_model = None
+        self.set_manual_model(manual_model)
 
     @property
     def manual_model(self) -> str | None:
@@ -61,8 +63,10 @@ class JarvisCouncil:
 
     def set_manual_model(self, model: str | None) -> None:
         if model is not None:
+            if not isinstance(model, str):
+                raise ValueError("manual model name is invalid")
             model = model.strip()
-            if not model or len(model) > 128:
+            if not _MODEL_NAME.fullmatch(model):
                 raise ValueError("manual model name is invalid")
         with self._lock:
             self._manual_model = model or None
@@ -153,6 +157,8 @@ class JarvisCouncil:
     def consult(self, message: str, task: TaskKind) -> CouncilResult | None:
         if not isinstance(message, str) or not message.strip():
             raise ValueError("message must be non-empty")
+        if not isinstance(task, TaskKind):
+            raise ValueError("task must be a supported TaskKind")
         try:
             snapshot = self.profiler.capture()
             core_brief = self._core_brief(message.strip(), task)
@@ -162,7 +168,10 @@ class JarvisCouncil:
 
         candidates = self._expert_candidates(task, snapshot)
         manual = self.manual_model
-        if manual and manual not in {CORE_MODEL, *candidates}:
+        # Manual selection adds an expert but must obey the same memory and
+        # pressure gate as automatic selection. It never displaces the core.
+        experts_allowed = snapshot.system_pressure < 0.88 and snapshot.available_ram_gb >= 3.5
+        if experts_allowed and manual and manual not in {CORE_MODEL, *candidates}:
             candidates.insert(0, manual)
 
         # Preserve order while deduplicating, then cap concurrent specialists.

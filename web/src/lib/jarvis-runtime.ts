@@ -404,6 +404,25 @@ export async function listenForPairingDeepLinks(
 
 const NEXUS_MEDIA_TYPE = "application/vnd.nexus-sync+json";
 
+async function mobileCompanionPost(
+  endpoint: string,
+  body: string,
+  offer?: Record<string, unknown>,
+): Promise<Response> {
+  // Rust checks the saved desktop/invitation origin and fixed companion route.
+  // Native HTTP reaches tailnet addresses without weakening WebView CSP or
+  // relying on browser CORS, mixed-content or Android cleartext exceptions.
+  const reply = await core().invoke<{
+    status: number;
+    content_type: string;
+    body: string;
+  }>("mobile_companion_post", { endpoint, body, offer: offer || null });
+  return new Response([204, 205, 304].includes(reply.status) ? null : reply.body, {
+    status: reply.status,
+    headers: { "Content-Type": reply.content_type },
+  });
+}
+
 async function requireMobileOwnerPresence(
   reason: string,
   { requireFingerprint = false }: { requireFingerprint?: boolean } = {},
@@ -453,11 +472,9 @@ export async function pairMobileCompanion(
   const bundle = await core().invoke<MobilePairingBundle>("mobile_prepare_pairing", { offer });
 
   onState?.("requesting");
-  const submitted = await fetch(bundle.submit_url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(bundle.request),
-  });
+  const submitted = await mobileCompanionPost(
+    bundle.submit_url, JSON.stringify(bundle.request), offer,
+  );
   if (!submitted.ok && submitted.status !== 409) {
     const body = await submitted.json().catch(() => ({}));
     throw new Error(body.detail || `JARVIS pairing request failed (${submitted.status})`);
@@ -470,11 +487,9 @@ export async function pairMobileCompanion(
 
   onState?.("awaiting-owner");
   while (Date.now() < deadline) {
-    const response = await fetch(bundle.status_url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(bundle.request),
-    });
+    const response = await mobileCompanionPost(
+      bundle.status_url, JSON.stringify(bundle.request), offer,
+    );
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
@@ -509,14 +524,7 @@ export async function mobileBrainMessage(
     "mobile_sign_brain_request",
     { message, task: task || null },
   );
-  const response = await fetch(request.endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": NEXUS_MEDIA_TYPE,
-      Accept: NEXUS_MEDIA_TYPE,
-    },
-    body: request.body,
-  });
+  const response = await mobileCompanionPost(request.endpoint, request.body);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.detail || `JARVIS Brain request failed (${response.status})`);
@@ -541,14 +549,7 @@ export async function mobileBrainMessage(
 
 export async function mobilePendingApprovals(): Promise<PendingApproval[]> {
   const request = await core().invoke<MobileApprovalRequest>("mobile_sign_approval_list");
-  const response = await fetch(request.endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": NEXUS_MEDIA_TYPE,
-      Accept: NEXUS_MEDIA_TYPE,
-    },
-    body: request.body,
-  });
+  const response = await mobileCompanionPost(request.endpoint, request.body);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.detail || `JARVIS approval check failed (${response.status})`);
@@ -575,14 +576,7 @@ export async function mobileDecideApproval(
     "mobile_sign_approval_decision",
     { approvalId, approved },
   );
-  const response = await fetch(request.endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": NEXUS_MEDIA_TYPE,
-      Accept: NEXUS_MEDIA_TYPE,
-    },
-    body: request.body,
-  });
+  const response = await mobileCompanionPost(request.endpoint, request.body);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.detail || `JARVIS approval decision failed (${response.status})`);
@@ -596,4 +590,3 @@ export async function mobileDecideApproval(
     },
   );
 }
-

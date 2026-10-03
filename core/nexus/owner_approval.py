@@ -80,15 +80,29 @@ class OwnerApprovalManager:
         )
 
     def _expire_locked(self, db) -> None:
-        now = self._now().isoformat().replace("+00:00", "Z")
-        db.execute(
-            """
-            UPDATE nexus_owner_approvals
-            SET state='expired'
-            WHERE state='pending' AND expires_at < ?
-            """,
-            (now,),
+        now = self._now()
+        # Compare actual instants: ISO strings with optional fractional seconds
+        # do not sort reliably within the same second. An unused approved grant
+        # has the same deadline as the pending request and must expire too.
+        rows = db.execute(
+            "SELECT approval_id, expires_at FROM nexus_owner_approvals "
+            "WHERE state IN ('pending','approved') AND consumed=0"
+        ).fetchall()
+        expired = [
+            (row["approval_id"],)
+            for row in rows
+            if self._parse(row["expires_at"]) <= now
+        ]
+        db.executemany(
+            "UPDATE nexus_owner_approvals SET state='expired' WHERE approval_id=?",
+            expired,
         )
+
+    @staticmethod
+    def _digest(value: str) -> str:
+        if not isinstance(value, str) or not _DIGEST_RE.fullmatch(value.casefold()):
+            raise ValueError("action_digest must be a SHA-256 hex digest")
+        return value.casefold()
 
     def create(
         self,
@@ -101,9 +115,7 @@ class OwnerApprovalManager:
             raise ValueError("approval summary must be non-empty")
         if len(summary.strip()) > 500:
             raise ValueError("approval summary is too long")
-        digest = action_digest.casefold()
-        if not _DIGEST_RE.fullmatch(digest):
-            raise ValueError("action_digest must be a SHA-256 hex digest")
+        digest = self._digest(action_digest)
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or not 15 <= ttl_seconds <= 600:
             raise ValueError("approval TTL must be 15..600 seconds")
 
@@ -157,8 +169,10 @@ class OwnerApprovalManager:
         approved: bool,
         user_verified: bool,
     ) -> OwnerApproval:
-        if not user_verified:
+        if user_verified is not True:
             raise PermissionError("Companion approval requires local biometric verification.")
+        if not isinstance(approved, bool):
+            raise ValueError("approved must be boolean")
         if not isinstance(approval_id, str) or not approval_id:
             raise ValueError("approval_id is required")
         if not isinstance(peer_id, str) or not peer_id:
@@ -216,9 +230,7 @@ class OwnerApprovalManager:
         return self._row(row)
 
     def consume(self, approval_id: str, *, action_digest: str) -> OwnerApproval:
-        digest = action_digest.casefold()
-        if not _DIGEST_RE.fullmatch(digest):
-            raise ValueError("action_digest must be a SHA-256 hex digest")
+        digest = self._digest(action_digest)
         with self.store._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self._expire_locked(db)

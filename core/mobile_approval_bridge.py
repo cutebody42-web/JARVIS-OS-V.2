@@ -62,6 +62,7 @@ class MobileApprovalBridge:
         self.runtime = runtime
         self.consent_ttl_seconds = int(consent_ttl_seconds)
         self._guard = threading.RLock()
+        self._reconcile_guard = threading.Lock()
         self._pending: dict[str, BridgedApproval] = {}
         self._by_request: dict[str, str] = {}
         self._recent = deque(maxlen=recent_limit)
@@ -123,6 +124,13 @@ class MobileApprovalBridge:
 
     def reconcile(self) -> tuple[ApprovalExecution, ...]:
         """Process terminal phone decisions once; pending decisions remain untouched."""
+        # UI refresh and the background scheduler may arrive together. Only one
+        # reconciler may consume/approve/execute a request; a losing caller must
+        # not cancel the first caller's in-flight authorized action.
+        with self._reconcile_guard:
+            return self._reconcile_pending()
+
+    def _reconcile_pending(self) -> tuple[ApprovalExecution, ...]:
         with self._guard:
             items = tuple(self._pending.values())
 

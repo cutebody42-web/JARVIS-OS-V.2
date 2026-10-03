@@ -1,8 +1,11 @@
 """End-to-end exact action resumption after paired-phone biometric approval."""
 
 import os
+from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -105,6 +108,52 @@ class MobileApprovalBridgeTests(unittest.TestCase):
         second = self.bridge.queue_receipt(receipt)
         self.assertEqual(first.approval_id, second.approval_id)
         self.assertEqual(len(self.approvals.pending()), 1)
+
+    def test_approved_request_cannot_execute_after_approval_deadline(self):
+        now = [datetime.now(timezone.utc)]
+        self.approvals._clock = lambda: now[0]
+        _, bridged = self._pending_create("expired.txt", "never")
+        self.approvals.decide(
+            bridged.approval_id, peer_id="phone", approved=True, user_verified=True,
+        )
+        now[0] += timedelta(seconds=181)
+        outcomes = self.bridge.reconcile()
+        self.assertEqual(outcomes[0].state, "expired")
+        self.assertFalse((self.workspace / "expired.txt").exists())
+        self.assertEqual(self.runtime.owner.pending(), ())
+
+    def test_concurrent_reconciliation_cannot_cancel_the_authorized_execution(self):
+        _, bridged = self._pending_create("concurrent.txt", "once")
+        self.approvals.decide(
+            bridged.approval_id, peer_id="phone", approved=True, user_verified=True,
+        )
+        execute = self.runtime.execute_approved
+        entered = threading.Event()
+        release = threading.Event()
+
+        def held_execution(*args, **kwargs):
+            entered.set()
+            if not release.wait(timeout=3):
+                raise RuntimeError("test execution was not released")
+            return execute(*args, **kwargs)
+
+        with patch.object(self.runtime, "execute_approved", side_effect=held_execution):
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                first = pool.submit(self.bridge.reconcile)
+                self.assertTrue(entered.wait(timeout=3))
+                followers = [pool.submit(self.bridge.reconcile) for _ in range(2)]
+                try:
+                    # A second reconciler must wait, rather than consuming the
+                    # same approval and cancelling the first in-flight action.
+                    done, _ = wait(followers, timeout=0.1)
+                    self.assertFalse(done)
+                finally:
+                    release.set()
+                self.assertEqual(first.result(timeout=3)[0].state, "succeeded")
+                for follower in followers:
+                    self.assertEqual(follower.result(timeout=3), ())
+        self.assertEqual((self.workspace / "concurrent.txt").read_text("utf-8"), "once")
+        self.assertEqual(len(self.bridge.recent), 1)
 
 
 if __name__ == "__main__":

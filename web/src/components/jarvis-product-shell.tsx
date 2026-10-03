@@ -88,7 +88,10 @@ function MobileShell() {
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
 
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -576,6 +579,7 @@ export function JarvisProductShell() {
       setStatus(await client.status());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Owner face enrollment failed.");
+      setStatus(await client.status().catch(() => status));
     } finally {
       setBusy(false);
     }
@@ -590,6 +594,7 @@ export function JarvisProductShell() {
       setStatus(await client.status());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Owner face recognition failed.");
+      setStatus(await client.status().catch(() => status));
     } finally {
       setBusy(false);
     }
@@ -780,7 +785,7 @@ export function JarvisProductShell() {
           <dl className="status-readout">
             <div><dt>JARVIS Brain</dt><dd data-on={status?.brain_ready}>{status?.brain_ready ? "LOCAL" : "SETUP"}</dd></div>
             <div><dt>Model store</dt><dd title={status?.model_store || undefined}>{status?.model_store ? "OWNER PATH" : "DEFAULT"}</dd></div>
-            <div><dt>JARVIS Core</dt><dd data-on="true">ONLINE</dd></div>
+            <div><dt>JARVIS Core</dt><dd data-on={status?.brain_ready}>{status?.brain_ready ? "ONLINE" : "NOT READY"}</dd></div>
             <div><dt>Cognition</dt><dd data-on="true">ADAPTIVE</dd></div>
             <div><dt>Voice</dt><dd data-on={status?.voice.available}>{status?.voice.available ? status.voice.state.toUpperCase() : "UNAVAILABLE"}</dd></div>
             <div><dt>Owner face</dt><dd data-on={status?.owner_identity.face_recognized}>{status?.owner_identity.face_recognized ? "RECOGNIZED" : status?.owner_identity.face_enrolled ? "ENROLLED" : "NOT ENROLLED"}</dd></div>
@@ -811,6 +816,22 @@ export function JarvisProductShell() {
           <section className="device-link-card">
             <div className="capability-heading"><span>Local models</span><b>{status?.available_models.length ?? 0}</b></div>
             <p>JARVIS chooses hidden experts automatically. Override only when you want a specific installed local model to join the council.</p>
+            {status?.brain_ready && (
+              <details>
+                <summary>Change local model folder</summary>
+                <Input
+                  value={modelStore}
+                  onChange={(event) => setModelStore(event.target.value)}
+                  aria-label="Local JARVIS model folder"
+                  placeholder="Ollama model folder"
+                  disabled={busy}
+                />
+                <div className="pair-actions">
+                  <Button variant="secondary" onClick={() => void pickModelStore()} disabled={busy}>Choose folder</Button>
+                  <Button onClick={() => void initializeBrain()} disabled={busy}>Use this folder</Button>
+                </div>
+              </details>
+            )}
             <select
               value={manualModel}
               onChange={(event) => void chooseManualModel(event.target.value)}

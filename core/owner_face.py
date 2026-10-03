@@ -17,6 +17,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
 import threading
 import time
 from typing import Iterable
@@ -62,10 +63,15 @@ class FaceVerification:
 
 def _normalize(vector) -> list[float]:
     values = [float(value) for value in vector]
-    norm = math.sqrt(sum(value * value for value in values))
-    if norm <= 1e-9:
+    if not values or any(not math.isfinite(value) for value in values):
+        raise ValueError("face template vector must contain finite numbers")
+    scale = max(abs(value) for value in values)
+    if scale <= 1e-9:
         raise ValueError("face template vector is empty")
-    return [value / norm for value in values]
+    # Scale first so even finite, large values cannot overflow the norm.
+    scaled = [value / scale for value in values]
+    norm = math.sqrt(sum(value * value for value in scaled))
+    return [value / norm for value in scaled]
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -104,6 +110,7 @@ class OwnerFaceRecognizer:
         self._vision_guard = threading.RLock()
         self._recognized_until = 0.0
         self._last_score = 0.0
+        self._identity_generation = 0
         self._model_dir = (
             Path(model_dir).expanduser()
             if model_dir is not None
@@ -132,8 +139,26 @@ class OwnerFaceRecognizer:
             value.get("engine") != _ENGINE
             or not isinstance(value.get("templates"), list)
             or not isinstance(value.get("threshold"), (int, float))
+            or isinstance(value.get("threshold"), bool)
         ):
             raise FaceIdentityError("Stored owner face identity is invalid.")
+        try:
+            threshold = float(value["threshold"])
+            if any(not isinstance(item, list) for item in value["templates"]):
+                raise ValueError("invalid face template")
+            templates = [_normalize(item) for item in value["templates"]]
+            width = len(templates[0]) if templates else 0
+            if (
+                not math.isfinite(threshold)
+                or not 0.45 <= threshold <= 1.0
+                or len(templates) < 6
+                or width < 32
+                or any(len(item) != width for item in templates)
+            ):
+                raise ValueError("invalid face template shape or threshold")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise FaceIdentityError("Stored owner face identity is invalid.") from exc
+        value["templates"] = templates
         return value
 
     @property
@@ -159,8 +184,9 @@ class OwnerFaceRecognizer:
         return _ENGINE
 
     def forget(self) -> None:
-        self.store.delete(_FACE_KEY)
         with self._guard:
+            self.store.delete(_FACE_KEY)
+            self._identity_generation += 1
             self._recognized_until = 0.0
             self._last_score = 0.0
 
@@ -171,6 +197,15 @@ class OwnerFaceRecognizer:
         width = len(templates[0])
         if width < 32 or any(len(item) != width for item in templates):
             raise ValueError("Face templates have inconsistent dimensions.")
+
+        # One accidental stranger sample must never become an owner template.
+        # Each sample needs a same-identity majority among the enrollment set.
+        required = math.ceil(len(templates) * 0.6)
+        if any(
+            sum(_cosine(item, other) >= _SFACE_BASELINE_COSINE for other in templates) < required
+            for item in templates
+        ):
+            raise ValueError("Face samples do not consistently show the same owner. Please enroll again.")
 
         similarities: list[float] = []
         for index, left in enumerate(templates):
@@ -192,7 +227,11 @@ class OwnerFaceRecognizer:
             "threshold": round(threshold, 6),
             "templates": [[round(value, 7) for value in item] for item in templates],
         }
-        self.store.set(_FACE_KEY, json.dumps(payload, separators=(",", ":")))
+        with self._guard:
+            self.store.set(_FACE_KEY, json.dumps(payload, separators=(",", ":")))
+            self._identity_generation += 1
+            self._recognized_until = 0.0
+            self._last_score = 0.0
         return len(templates)
 
     def verify_embedding(self, embedding: Iterable[float]) -> tuple[bool, float]:
@@ -349,7 +388,10 @@ class OwnerFaceRecognizer:
         values = np.asarray(feature, dtype=np.float32).reshape(-1)
         if values.size < 32:
             return None
-        return _normalize(values.tolist())
+        try:
+            return _normalize(values.tolist())
+        except ValueError:
+            return None
 
     def _camera_embeddings(
         self,
@@ -374,8 +416,13 @@ class OwnerFaceRecognizer:
         # download cannot hold the webcam open.
         self._vision_models()
 
-        backend = getattr(cv2, "CAP_DSHOW", 0)
+        # DirectShow is a Windows backend. OpenCV exposes its constant on other
+        # platforms too, where selecting it prevents otherwise-working cameras.
+        backend = getattr(cv2, "CAP_DSHOW", 0) if sys.platform == "win32" else 0
         capture = cv2.VideoCapture(camera_index, backend) if backend else cv2.VideoCapture(camera_index)
+        if backend and not capture.isOpened():
+            capture.release()
+            capture = cv2.VideoCapture(camera_index)
         if not capture.isOpened():
             capture.release()
             raise FaceIdentityError("JARVIS could not open the selected camera.")
@@ -412,7 +459,10 @@ class OwnerFaceRecognizer:
             raise FaceIdentityError(
                 "JARVIS could not collect enough single-face samples for reliable enrollment."
             )
-        return self.enroll_embeddings(embeddings)
+        try:
+            return self.enroll_embeddings(embeddings)
+        except ValueError as exc:
+            raise FaceIdentityError(str(exc)) from exc
 
     def verify_from_camera(
         self,
@@ -421,6 +471,12 @@ class OwnerFaceRecognizer:
         samples: int = 5,
         timeout_seconds: float = 10.0,
     ) -> FaceVerification:
+        # An explicit recheck invalidates the old presence signal even when no
+        # face is found or the camera subsequently fails.
+        with self._guard:
+            self._recognized_until = 0.0
+            self._last_score = 0.0
+            identity_generation = self._identity_generation
         if not self.enrolled:
             return FaceVerification(False, False, 0.0, 0, 0)
         embeddings = self._camera_embeddings(
@@ -437,6 +493,8 @@ class OwnerFaceRecognizer:
         required = max(2, math.ceil(len(decisions) * 0.6))
         recognized = matched >= required
         with self._guard:
+            if identity_generation != self._identity_generation:
+                return FaceVerification(self.enrolled, False, 0.0, 0, len(decisions))
             self._last_score = score
             self._recognized_until = self._clock() + self._ttl if recognized else 0.0
         return FaceVerification(True, recognized, score, matched, len(decisions))

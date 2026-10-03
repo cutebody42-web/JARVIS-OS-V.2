@@ -12,6 +12,7 @@ This API is intentionally separate from the signed remote companion protocol:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from pathlib import Path
 import base64
 import hmac
@@ -41,6 +42,8 @@ from core.ollama_bootstrap import (
     ensure_ollama_service,
     find_ollama_executable,
     installed_model_names,
+    model_matches_manifest,
+    stop_owned_ollama_service,
 )
 from core.self_heal import (
     Incident,
@@ -270,6 +273,8 @@ class LocalBrainHost:
         return snapshot
 
     def local_brain_ready(self) -> bool:
+        if self.setup.phase not in {"boot", "setup_required", "ready"}:
+            return False
         executable = find_ollama_executable()
         if executable is None:
             return False
@@ -286,7 +291,16 @@ class LocalBrainHost:
             base_url=self.ollama_base_url,
             model_store=self.model_store,
         )
-        return bool(names & _REQUIRED_LOCAL_MODELS)
+        return bool(names & _REQUIRED_LOCAL_MODELS) and model_matches_manifest(
+            "jarvis-core-1b", 1.0, base_url=self.ollama_base_url,
+        )
+
+    def close(self) -> None:
+        """Release only runtime resources owned by this desktop process."""
+        self._approval_stop.set()
+        self._approval_thread.join(timeout=3)
+        self.voice.stop()
+        stop_owned_ollama_service(base_url=self.ollama_base_url)
 
     def status(self) -> dict[str, Any]:
         with self._guard:
@@ -450,14 +464,13 @@ class LocalBrainHost:
             with self._guard:
                 self.setup = SetupState("starting", 1.0, "Preparing local JARVIS Brain", None)
 
-            selected_store = self._set_model_store(model_store)
-            snapshot = self.refresh_hardware()
-
             def progress(phase: str, percent: float, message: str) -> None:
                 with self._guard:
                     self.setup = SetupState(phase, float(percent), str(message)[:500], None)
 
             try:
+                selected_store = self._set_model_store(model_store)
+                snapshot = self.refresh_hardware()
                 bootstrap_local_brain(
                     snapshot=snapshot,
                     allow_install=True,
@@ -465,9 +478,11 @@ class LocalBrainHost:
                     base_url=self.ollama_base_url,
                     model_store=selected_store,
                 )
-            except OllamaBootstrapError as exc:
+            except (OllamaBootstrapError, ValueError, OSError) as exc:
                 with self._guard:
                     self.setup = SetupState("failed", 0.0, "Local Brain setup failed", str(exc))
+                if isinstance(exc, OSError):
+                    raise OllamaBootstrapError("Local model folder could not be prepared.") from exc
                 raise
 
             with self._guard:
@@ -481,9 +496,17 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
     if not isinstance(host, LocalBrainHost):
         raise TypeError("host must be LocalBrainHost")
 
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        try:
+            yield
+        finally:
+            host.close()
+
     app = FastAPI(
         title="JARVIS Local Brain",
         version="2.0.0",
+        lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -531,8 +554,8 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
             raise HTTPException(status_code=403, detail=str(exc)) from None
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
-        except OllamaBootstrapError:
-            raise HTTPException(status_code=503, detail="Local Brain setup failed") from None
+        except OllamaBootstrapError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
 
     @app.post("/v1/approval/request", dependencies=[Depends(require_ui)])
     def create_owner_approval(request: ApprovalCreateRequest) -> dict[str, Any]:
@@ -681,10 +704,13 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
                 ),
             )
         endpoint = request.endpoint or host.companion_endpoint
-        offer = host.node.pairing.create_offer(
-            endpoint,
-            ttl_seconds=request.ttl_seconds,
-        )
+        try:
+            offer = host.node.pairing.create_offer(
+                endpoint,
+                ttl_seconds=request.ttl_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
         payload = offer.public_payload()
         encoded = base64.urlsafe_b64encode(
             json.dumps(
@@ -733,7 +759,10 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
 
     @app.post("/v1/pair/approve", dependencies=[Depends(require_ui)])
     def pair_approve(request: PairDecisionRequest) -> dict[str, Any]:
-        peer = host.node.pairing.approve(request.pairing_id)
+        try:
+            peer = host.node.pairing.approve(request.pairing_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
         return {
             "approved": True,
             "peer_id": peer.peer_id,

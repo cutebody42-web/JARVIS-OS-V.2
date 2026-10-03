@@ -26,9 +26,10 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _watch_parent(parent_pid: int) -> None:
+def _watch_parent(parent_pid: int, host: LocalBrainHost) -> None:
     while True:
         if parent_pid <= 0 or not psutil.pid_exists(parent_pid):
+            host.close()
             os._exit(0)
         time.sleep(2.0)
 
@@ -51,13 +52,6 @@ def main(argv=None) -> int:
     if len(args.ui_token) < 32:
         raise ValueError("--ui-token is too short")
 
-    threading.Thread(
-        target=_watch_parent,
-        args=(args.parent_pid,),
-        name="jarvis-parent-watch",
-        daemon=True,
-    ).start()
-
     gateway = resolve_companion_gateway()
     host = LocalBrainHost(
         ui_token=args.ui_token,
@@ -65,6 +59,13 @@ def main(argv=None) -> int:
         allow_cloud=args.cloud_boost,
         companion_endpoint=gateway.endpoint if gateway is not None else None,
     )
+
+    threading.Thread(
+        target=_watch_parent,
+        args=(args.parent_pid, host),
+        name="jarvis-parent-watch",
+        daemon=True,
+    ).start()
 
     if gateway is not None:
         companion_app = create_sync_app(

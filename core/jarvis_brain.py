@@ -218,7 +218,9 @@ _REALTIME_RE = re.compile(
 )
 
 _ACTION_RE = re.compile(
-    r"\b(open|close|launch|start|stop|pause|resume|mute|unmute|"
+    r"^\s*(?:jarvis[,:]?\s+)?"
+    r"(?:(?:please|(?:can|could|would|will)\s+you)\s+)*"
+    r"(?:open|close|launch|start|stop|pause|resume|mute|unmute|"
     r"set (?:the )?(?:volume|brightness)|search (?:the )?web|"
     r"look up|what(?:'s| is) the (?:time|weather)|weather (?:in|for)|"
     r"remind me|set (?:a )?timer)\b",
@@ -257,7 +259,7 @@ def classify_intent(text: str) -> BrainIntent:
     """
     if not isinstance(text, str) or not text.strip():
         raise ValueError("text must be non-empty")
-    return BrainIntent.ACTION if _ACTION_RE.search(text.strip()) else BrainIntent.CHAT
+    return BrainIntent.ACTION if _ACTION_RE.match(text.strip()) else BrainIntent.CHAT
 
 
 class JarvisBrain:

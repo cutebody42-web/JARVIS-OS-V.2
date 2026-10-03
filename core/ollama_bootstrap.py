@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from typing import Callable, Iterable
 from urllib.parse import urlparse
@@ -31,6 +32,12 @@ from core.hardware_profile import HardwareSnapshot
 Progress = Callable[[str, float, str], None]
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+
+# A model directory is a server setting, not a per-request/CLI setting. Keep
+# ownership of servers we start so a later directory change can restart only
+# our process, without terminating the owner's unrelated Ollama application.
+_SERVICE_LOCK = threading.RLock()
+_OWNED_SERVICES: dict[str, tuple[subprocess.Popen, str | None]] = {}
 
 
 def _ollama_environment(
@@ -52,6 +59,8 @@ def _ollama_environment(
         port = parsed.port or 11434
     except ValueError as exc:
         raise OllamaBootstrapError("JARVIS Ollama endpoint has an invalid port.") from exc
+    if parsed.port == 0:
+        raise OllamaBootstrapError("JARVIS Ollama endpoint has an invalid port.")
 
     env = os.environ.copy()
     env["OLLAMA_HOST"] = f"127.0.0.1:{port}"
@@ -212,26 +221,66 @@ def ensure_ollama_service(
     model_store: str | Path | None = None,
     popen=subprocess.Popen,
 ) -> None:
-    if wait_for_ollama(base_url, timeout_seconds=2.0):
-        return
+    env = _ollama_environment(base_url, model_store)
+    key = env["OLLAMA_HOST"]
+    store = env.get("OLLAMA_MODELS")
+    with _SERVICE_LOCK:
+        owned = _OWNED_SERVICES.get(key)
+        if owned is not None and owned[0].poll() is not None:
+            _OWNED_SERVICES.pop(key, None)
+            owned = None
+        ready = wait_for_ollama(base_url, timeout_seconds=2.0)
+        if ready:
+            if owned is None:
+                if model_store is not None:
+                    raise OllamaBootstrapError(
+                        "An unrelated Ollama service is already using this endpoint. "
+                        "Its model folder cannot be changed safely; stop that service "
+                        "or use a free local JARVIS endpoint."
+                    )
+                return
+            if owned[1] == store:
+                return
 
-    kwargs = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if base_url != DEFAULT_OLLAMA_URL or model_store is not None:
-        kwargs["env"] = _ollama_environment(base_url, model_store)
-    if sys.platform == "win32":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if owned is not None:
+            stop_owned_ollama_service(base_url=base_url)
 
-    try:
-        popen([executable, "serve"], **kwargs)
-    except OSError as exc:
-        raise OllamaBootstrapError("Ollama service could not be started.") from exc
+        kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "env": env,
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-    if not wait_for_ollama(base_url):
-        raise OllamaBootstrapError("Ollama service did not become ready.")
+        try:
+            process = popen([executable, "serve"], **kwargs)
+        except OSError as exc:
+            raise OllamaBootstrapError("Ollama service could not be started.") from exc
+        _OWNED_SERVICES[key] = (process, store)
+
+        if not wait_for_ollama(base_url) or process.poll() is not None:
+            stop_owned_ollama_service(base_url=base_url)
+            raise OllamaBootstrapError("Ollama service did not become ready.")
+
+
+def stop_owned_ollama_service(*, base_url: str = DEFAULT_OLLAMA_URL) -> bool:
+    """Stop only the Ollama child process created by this Python process."""
+    key = _ollama_environment(base_url)["OLLAMA_HOST"]
+    with _SERVICE_LOCK:
+        owned = _OWNED_SERVICES.pop(key, None)
+        if owned is None:
+            return False
+        process = owned[0]
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        return True
 
 
 def _run_ollama(
@@ -242,9 +291,7 @@ def _run_ollama(
     model_store: str | Path | None = None,
     runner=subprocess.run,
 ) -> None:
-    kwargs = {}
-    if base_url != DEFAULT_OLLAMA_URL or model_store is not None:
-        kwargs["env"] = _ollama_environment(base_url, model_store)
+    kwargs = {"env": _ollama_environment(base_url, model_store)}
     try:
         completed = runner(
             [executable, *args],
@@ -294,8 +341,49 @@ def model_matches_manifest(
     except Exception:
         return False
 
+    # The human-readable size is rounded, so allow a small difference from the
+    # advertised family size. A sub-billion model cannot satisfy a 1B core.
+    if expected_parameters_b >= 1.0 and actual < 1.0:
+        return False
     tolerance = max(0.15, expected_parameters_b * 0.20)
     return abs(actual - expected_parameters_b) <= tolerance
+
+
+def verify_model_inference(
+    model: str,
+    *,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    request_post=requests.post,
+) -> bool:
+    """Smoke-test actual text generation; this does not measure intelligence."""
+    _ollama_environment(base_url)
+    try:
+        response = request_post(
+            base_url + "/api/chat",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply briefly: JARVIS is ready."}],
+                "stream": False,
+                "think": False,
+                "keep_alive": "5m",
+                "options": {"num_ctx": 1024, "num_predict": 24, "temperature": 0},
+            },
+            timeout=180,
+        )
+        response.raise_for_status()
+        body = response.json()
+        message = body.get("message") if isinstance(body, dict) else None
+        return bool(
+            isinstance(body, dict)
+            and body.get("done") is True
+            and isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and isinstance(message.get("content"), str)
+            and message["content"].strip()
+            and not message.get("tool_calls")
+        )
+    except Exception:
+        return False
 
 
 def installed_model_names(
@@ -305,9 +393,7 @@ def installed_model_names(
     model_store: str | Path | None = None,
     runner=subprocess.run,
 ) -> set[str]:
-    kwargs = {}
-    if base_url != DEFAULT_OLLAMA_URL or model_store is not None:
-        kwargs["env"] = _ollama_environment(base_url, model_store)
+    kwargs = {"env": _ollama_environment(base_url, model_store)}
     try:
         completed = runner(
             [executable, "list"],
@@ -412,6 +498,10 @@ def provision_brain_models(
             model_store=model_store,
             runner=runner,
         )
+        if not model_matches_manifest(spec.alias, spec.parameters_b, base_url=base_url):
+            raise OllamaBootstrapError(
+                f"{spec.alias} was created but its parameter size could not be verified."
+            )
         completed_aliases.append(spec.alias)
         _emit(
             progress,
@@ -460,6 +550,13 @@ def bootstrap_local_brain(
         model_store=model_store,
         runner=runner,
     )
+    core = next(spec for spec in load_brain_manifest() if spec.role == "coordinator")
+    _emit(progress, "verification", 95, "Testing JARVIS Core text generation")
+    if not verify_model_inference(core.alias, base_url=base_url):
+        raise OllamaBootstrapError(
+            "JARVIS Core is installed but its text-generation check failed. "
+            "Setup is incomplete; check Ollama and available device memory, then retry."
+        )
     _emit(progress, "complete", 100, "JARVIS Brain is ready")
 
     return BootstrapResult(executable, installed, provisioned, skipped)

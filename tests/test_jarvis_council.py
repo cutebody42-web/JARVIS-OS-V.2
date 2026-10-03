@@ -1,6 +1,7 @@
 """Hidden JARVIS Core 1B + expert council contracts."""
 
 from datetime import datetime, timezone
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -106,6 +107,49 @@ class CouncilTests(unittest.TestCase):
         )
         result = council.consult("hello", TaskKind.GENERAL)
         self.assertEqual(result.models, (CORE_MODEL,))
+
+    @patch("core.jarvis_council.OllamaProvider", Provider)
+    def test_manual_model_obeys_critical_memory_gate(self):
+        for snapshot in (hardware(available=2.5), hardware(pressure=0.92)):
+            with self.subTest(snapshot=snapshot):
+                council = JarvisCouncil(
+                    ollama_base_url="http://127.0.0.1:11435",
+                    profiler=Profiler(snapshot), runtime=Runtime(),
+                    manual_model="owners-expert:latest",
+                )
+                result = council.consult("hello", TaskKind.GENERAL)
+                self.assertEqual(result.models, (CORE_MODEL,))
+
+    def test_invalid_manual_model_is_rejected_at_construction_and_selection(self):
+        kwargs = dict(ollama_base_url="http://127.0.0.1:11435", profiler=Profiler(hardware()), runtime=Runtime())
+        for name in ("bad name", "../../model; echo no", 123):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    JarvisCouncil(**kwargs, manual_model=name)
+                with self.assertRaises(ValueError):
+                    JarvisCouncil(**kwargs).set_manual_model(name)
+
+    def test_experts_really_start_concurrently_and_one_failure_is_isolated(self):
+        barrier = threading.Barrier(2)
+
+        class ConcurrentProvider(Provider):
+            def generate(self, request):
+                if self.model == CORE_MODEL:
+                    return super().generate(request)
+                # This rendezvous cannot succeed if expert calls are serialized.
+                barrier.wait(timeout=3)
+                if self.model == "jarvis-brain-fast":
+                    raise RuntimeError("expert unavailable")
+                return ModelResponse("surviving note", "ollama", self.model)
+
+        with patch("core.jarvis_council.OllamaProvider", ConcurrentProvider):
+            council = JarvisCouncil(
+                ollama_base_url="http://127.0.0.1:11435",
+                profiler=Profiler(hardware()), runtime=Runtime(),
+            )
+            result = council.consult("plan tomorrow", TaskKind.GENERAL)
+        self.assertEqual(result.models, (CORE_MODEL, "jarvis-brain-lite"))
+        self.assertEqual(result.notes[0].text, "surviving note")
 
 
 if __name__ == "__main__":

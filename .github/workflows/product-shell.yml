@@ -39,6 +39,7 @@ jobs:
         run: npm audit --audit-level=high
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm test
       - run: npm run build
       - name: Verify static export
         run: |
@@ -72,3 +73,5 @@ jobs:
           cargo --version
       - name: Check JARVIS Tauri shell
         run: cargo check --manifest-path web/src-tauri/Cargo.toml
+      - name: Test native companion origin and route restrictions
+        run: cargo test --manifest-path web/src-tauri/Cargo.toml --lib

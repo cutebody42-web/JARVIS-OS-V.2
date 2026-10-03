@@ -185,7 +185,7 @@ def load_or_create_device_signer(
     device_id = _device(device_id)
     store = secret_store or get_secret_store()
     key_name = f"nexus.sync.ed25519.{device_id}"
-    existing = store.get(key_name)
+    existing = store.get_persistent(key_name)
     if existing:
         return DeviceSigner.from_private_b64(existing)
     signer = DeviceSigner.generate()
