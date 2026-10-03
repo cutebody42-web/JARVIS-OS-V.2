@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "externalBin": ["binaries/jarvis-brain"],
+    "windows": {
+      "bundleVCRuntime": true
+    }
+  }
+}

@@ -13,6 +13,7 @@ ENV/
 
 # Packaging
 build/
+build-info.json
 dist/
 *.egg-info/
 *.egg
@@ -68,6 +69,8 @@ playwright/.cache/
 # Hosted web build artifacts
 web/node_modules/
 web/.next/
+web/out/
+web/src-tauri/target/
 web/tsconfig.tsbuildinfo
 
 # If you generate local status/log files

@@ -42,6 +42,85 @@ class GPUMemoryKind(str, Enum):
 
 
 @dataclass(frozen=True)
+class CgroupMemoryBudget:
+    limit_bytes: int | None = None
+    available_bytes: int | None = None
+    warnings: tuple[str, ...] = ()
+
+
+def _probe_cgroup_memory(
+    *,
+    read_text: Callable[[Path], str] | None = None,
+    platform_name: str | None = None,
+) -> CgroupMemoryBudget:
+    """Read Linux cgroup hard limits and remaining allocation headroom.
+
+    Usage includes file cache. We deliberately do not subtract presumed
+    reclaimable cache: mapped or pinned model pages may still consume the limit.
+    Parent limits also apply, including memory consumed by sibling processes.
+    """
+    if (platform_name or platform.system()) != "Linux":
+        return CgroupMemoryBudget()
+    read = read_text or (lambda path: path.read_text(encoding="ascii"))
+    roots = {"v2": Path("/sys/fs/cgroup"), "v1": Path("/sys/fs/cgroup/memory")}
+    relative = {"v2": "", "v1": ""}
+    warnings: list[str] = []
+    try:
+        for line in read(Path("/proc/self/cgroup")).splitlines():
+            parts = line.split(":", 2)
+            if len(parts) != 3:
+                continue
+            mode = "v2" if parts[:2] == ["0", ""] else "v1" if "memory" in parts[1].split(",") else None
+            if mode and ".." not in Path(parts[2]).parts:
+                relative[mode] = parts[2].lstrip("/")
+    except (OSError, UnicodeError):
+        # Namespace roots often expose the effective limit directly even when
+        # /proc is unavailable, so still inspect the mounted roots.
+        pass
+
+    limits: list[int] = []
+    headrooms: list[int] = []
+    for mode, root in roots.items():
+        limit_name, usage_name = (("memory.max", "memory.current") if mode == "v2"
+                                  else ("memory.limit_in_bytes", "memory.usage_in_bytes"))
+        current = root / relative[mode]
+        while True:
+            try:
+                value = read(current / limit_name).strip()
+                limit = None if value == "max" else int(value)
+                # v1 represents no limit with a page-aligned LONG_MAX sentinel.
+                if mode == "v1" and limit is not None and limit >= 2**60:
+                    limit = None
+                if limit is not None:
+                    if limit <= 0:
+                        raise ValueError("invalid hard limit")
+                    limits.append(limit)
+                    try:
+                        usage = int(read(current / usage_name).strip())
+                        if usage < 0:
+                            raise ValueError("invalid usage")
+                        headrooms.append(max(0, limit - usage))
+                    except (OSError, ValueError, UnicodeError):
+                        headrooms.append(0)
+                        warnings.append("cgroup_memory_usage_unavailable")
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError, UnicodeError):
+                # A present but unreadable/invalid constraint cannot be treated
+                # as unlimited memory for new model allocations.
+                headrooms.append(0)
+                warnings.append("cgroup_memory_limit_unavailable")
+            if current == root:
+                break
+            current = current.parent
+    return CgroupMemoryBudget(
+        min(limits) if limits else None,
+        min(headrooms) if headrooms else None,
+        tuple(dict.fromkeys(warnings)),
+    )
+
+
+@dataclass(frozen=True)
 class HardwareSnapshot:
     """Immutable, serializable-enough input for model routing tests."""
 
@@ -196,6 +275,7 @@ class HardwareProfiler:
         psutil_module=None,
         http_get: Callable | None = None,
         gpu_probe: Callable[[], tuple[float | None, GPUMemoryKind]] | None = None,
+        memory_probe: Callable[[], CgroupMemoryBudget] | None = None,
         clock: Callable[[], datetime] | None = None,
         ollama_timeout_seconds: float = 1.5,
     ):
@@ -208,6 +288,11 @@ class HardwareProfiler:
         self._psutil = psutil_module
         self._http_get = http_get
         self._gpu_probe = gpu_probe or _probe_nvidia_vram_gb
+        # Injected psutil fixtures describe their own machine. Only real OS
+        # capture gets ambient cgroup limits unless a test supplies its probe.
+        self._memory_probe = memory_probe if memory_probe is not None else (
+            _probe_cgroup_memory if psutil_module is None else None
+        )
         self._clock = clock or _utc_now
         self._ollama_timeout = ollama_timeout_seconds
         self._ollama_base_url = _normalize_base_url(
@@ -265,10 +350,34 @@ class HardwareProfiler:
         total_ram_gb = float(vm.total) / _GIB
         available_ram_gb = float(vm.available) / _GIB
 
+        warnings: list[str] = []
+        if self._memory_probe is not None:
+            try:
+                budget = self._memory_probe()
+                warnings.extend(budget.warnings)
+                host_total, host_available = total_ram_gb, available_ram_gb
+                if budget.limit_bytes is not None:
+                    total_ram_gb = min(total_ram_gb, budget.limit_bytes / _GIB)
+                if budget.available_bytes is not None:
+                    available_ram_gb = min(available_ram_gb, budget.available_bytes / _GIB)
+                available_ram_gb = max(0.0, min(available_ram_gb, total_ram_gb))
+                if total_ram_gb < host_total or available_ram_gb < host_available:
+                    warnings.append("cgroup_memory_limit_applied")
+            except Exception:
+                available_ram_gb = 0.0
+                warnings.append("cgroup_memory_probe_failed")
+
         cpu_percent = float(psutil.cpu_percent(interval=None))
         cpu_count = int(psutil.cpu_count(logical=True) or 1)
 
-        battery = psutil.sensors_battery()
+        try:
+            battery = psutil.sensors_battery()
+        except Exception:
+            # Battery telemetry may be missing on desktops, containers, or an
+            # OS without a supported power-supply interface. RAM/CPU routing
+            # must still work; never invent a battery or an AC power reading.
+            battery = None
+            warnings.append("battery_probe_failed")
         if battery is None:
             power_source = PowerSource.UNKNOWN
             battery_pct = None
@@ -287,7 +396,6 @@ class HardwareProfiler:
             if battery_pct is not None:
                 battery_pct = min(100, max(0, battery_pct))
 
-        warnings: list[str] = []
         try:
             gpu_vram_gb, gpu_memory_kind = self._gpu_probe()
         except Exception:

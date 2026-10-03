@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 import json
 import hashlib
 import re
@@ -107,12 +108,18 @@ def normalize_peer_endpoint(value: str) -> str:
     return urlunparse(parsed).rstrip("/")
 
 
+class PeerRole(str, Enum):
+    NODE = "node"
+    COMPANION = "companion"
+
+
 @dataclass(frozen=True)
 class TrustedPeer:
     peer_id: str
     public_key: str
-    endpoint: str
+    endpoint: str | None
     revoked: bool = False
+    role: PeerRole = PeerRole.NODE
 
 
 class DeviceSigner:
@@ -178,7 +185,7 @@ def load_or_create_device_signer(
     device_id = _device(device_id)
     store = secret_store or get_secret_store()
     key_name = f"nexus.sync.ed25519.{device_id}"
-    existing = store.get(key_name)
+    existing = store.get_persistent(key_name)
     if existing:
         return DeviceSigner.from_private_b64(existing)
     signer = DeviceSigner.generate()
@@ -206,6 +213,65 @@ class PeerRegistry:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(nexus_trusted_peers)")
+            }
+            if "role" not in columns:
+                db.execute(
+                    "ALTER TABLE nexus_trusted_peers "
+                    "ADD COLUMN role TEXT NOT NULL DEFAULT 'node'"
+                )
+
+    def _upsert_peer_in_db(
+        self,
+        db,
+        peer_id: str,
+        public_key: str,
+        *,
+        role: PeerRole,
+        endpoint: str | None,
+    ) -> TrustedPeer:
+        peer_id = _device(peer_id)
+        if peer_id == self._store.device_id:
+            raise ValueError("cannot trust the local device as a remote peer")
+        raw_key = _unb64(public_key)
+        if len(raw_key) != 32:
+            raise ValueError("peer Ed25519 public key must be 32 bytes")
+        if not isinstance(role, PeerRole):
+            raise TypeError("role must be PeerRole")
+
+        if role is PeerRole.NODE:
+            stored_endpoint = normalize_peer_endpoint(endpoint)
+            exposed_endpoint: str | None = stored_endpoint
+        else:
+            if endpoint not in {None, ""}:
+                raise ValueError("companion peers do not expose sync endpoints")
+            stored_endpoint = ""
+            exposed_endpoint = None
+
+        now = _utc_now().isoformat().replace("+00:00", "Z")
+        db.execute(
+            """
+            INSERT INTO nexus_trusted_peers(
+                peer_id, public_key, endpoint, revoked, created_at, updated_at, role
+            ) VALUES (?, ?, ?, 0, ?, ?, ?)
+            ON CONFLICT(peer_id) DO UPDATE SET
+                public_key=excluded.public_key,
+                endpoint=excluded.endpoint,
+                revoked=0,
+                updated_at=excluded.updated_at,
+                role=excluded.role
+            """,
+            (peer_id, public_key, stored_endpoint, now, now, role.value),
+        )
+        return TrustedPeer(
+            peer_id,
+            public_key,
+            exposed_endpoint,
+            False,
+            role,
+        )
 
     def _trust_peer_in_db(
         self,
@@ -214,32 +280,35 @@ class PeerRegistry:
         public_key: str,
         endpoint: str,
     ) -> TrustedPeer:
-        peer_id = _device(peer_id)
-        if peer_id == self._store.device_id:
-            raise ValueError("cannot trust the local device as a remote peer")
-        raw_key = _unb64(public_key)
-        if len(raw_key) != 32:
-            raise ValueError("peer Ed25519 public key must be 32 bytes")
-        normalized = normalize_peer_endpoint(endpoint)
-        now = _utc_now().isoformat().replace("+00:00", "Z")
-        db.execute(
-            """
-            INSERT INTO nexus_trusted_peers(
-                peer_id, public_key, endpoint, revoked, created_at, updated_at
-            ) VALUES (?, ?, ?, 0, ?, ?)
-            ON CONFLICT(peer_id) DO UPDATE SET
-                public_key=excluded.public_key,
-                endpoint=excluded.endpoint,
-                revoked=0,
-                updated_at=excluded.updated_at
-            """,
-            (peer_id, public_key, normalized, now, now),
+        return self._upsert_peer_in_db(
+            db,
+            peer_id,
+            public_key,
+            role=PeerRole.NODE,
+            endpoint=endpoint,
         )
-        return TrustedPeer(peer_id, public_key, normalized, False)
+
+    def _trust_companion_in_db(
+        self,
+        db,
+        peer_id: str,
+        public_key: str,
+    ) -> TrustedPeer:
+        return self._upsert_peer_in_db(
+            db,
+            peer_id,
+            public_key,
+            role=PeerRole.COMPANION,
+            endpoint=None,
+        )
 
     def trust_peer(self, peer_id: str, public_key: str, endpoint: str) -> TrustedPeer:
         with self._store._connect() as db:
             return self._trust_peer_in_db(db, peer_id, public_key, endpoint)
+
+    def trust_companion(self, peer_id: str, public_key: str) -> TrustedPeer:
+        with self._store._connect() as db:
+            return self._trust_companion_in_db(db, peer_id, public_key)
 
     def revoke_peer(self, peer_id: str) -> bool:
         peer_id = _device(peer_id)
@@ -260,30 +329,49 @@ class PeerRegistry:
         with self._store._connect() as db:
             row = db.execute(
                 """
-                SELECT peer_id, public_key, endpoint, revoked
+                SELECT peer_id, public_key, endpoint, revoked, role
                 FROM nexus_trusted_peers WHERE peer_id=?
                 """,
                 (peer_id,),
             ).fetchone()
         if row is None or (bool(row["revoked"]) and not include_revoked):
             return None
+        role = PeerRole(row["role"])
+        endpoint = row["endpoint"] if role is PeerRole.NODE else None
         return TrustedPeer(
-            row["peer_id"], row["public_key"], row["endpoint"], bool(row["revoked"])
+            row["peer_id"],
+            row["public_key"],
+            endpoint,
+            bool(row["revoked"]),
+            role,
         )
 
     def active_peers(self) -> tuple[TrustedPeer, ...]:
         with self._store._connect() as db:
             rows = db.execute(
                 """
-                SELECT peer_id, public_key, endpoint, revoked
+                SELECT peer_id, public_key, endpoint, revoked, role
                 FROM nexus_trusted_peers
                 WHERE revoked=0
                 ORDER BY peer_id
                 """
             ).fetchall()
         return tuple(
-            TrustedPeer(r["peer_id"], r["public_key"], r["endpoint"], False)
-            for r in rows
+            TrustedPeer(
+                row["peer_id"],
+                row["public_key"],
+                row["endpoint"] if PeerRole(row["role"]) is PeerRole.NODE else None,
+                False,
+                PeerRole(row["role"]),
+            )
+            for row in rows
+        )
+
+    def active_sync_peers(self) -> tuple[TrustedPeer, ...]:
+        return tuple(
+            peer
+            for peer in self.active_peers()
+            if peer.role is PeerRole.NODE and peer.endpoint is not None
         )
 
 

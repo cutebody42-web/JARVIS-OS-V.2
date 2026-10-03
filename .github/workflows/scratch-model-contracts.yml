@@ -1,0 +1,48 @@
+name: Scratch model contracts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [product/jarvis-brain]
+    paths:
+      - 'training/**'
+      - 'tests/test_scratch_training.py'
+      - '.github/workflows/scratch-model-contracts.yml'
+  pull_request:
+    paths:
+      - 'training/**'
+      - 'tests/test_scratch_training.py'
+      - '.github/workflows/scratch-model-contracts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  scratch-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: training/requirements.txt
+      - name: Check dependency-free guards and pipeline syntax
+        run: |
+          python -m unittest discover -s tests -p 'test_scratch_training.py' -v
+          python -m compileall -q training
+          python -m training.validate
+      - name: Install isolated CPU model libraries
+        run: |
+          python -m pip install 'torch==2.14.1' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r training/requirements.txt
+      - name: Inspect real library architecture without allocating weights
+        run: python -m training.inspect_architecture --output "$RUNNER_TEMP/scratch-meta-report.json"
+      - name: Preserve meta-only architecture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scratch-meta-architecture
+          path: ${{ runner.temp }}/scratch-meta-report.json
+          if-no-files-found: warn

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Scan the pairing QR code shown by your JARVIS desktop.</string>
+  <key>NSFaceIDUsageDescription</key>
+  <string>Check biometric hardware availability. JARVIS owner approval requires Touch ID.</string>
+</dict>
+</plist>

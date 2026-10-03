@@ -64,7 +64,7 @@ class SyncScheduler:
     def tick(self) -> tuple[SyncReport, ...]:
         now = self._clock()
         reports: list[SyncReport] = []
-        active_ids = {peer.peer_id for peer in self.registry.active_peers()}
+        active_ids = {peer.peer_id for peer in self.registry.active_sync_peers()}
 
         # Revoked peers are removed from future scheduling immediately.
         for peer_id in tuple(self._state):

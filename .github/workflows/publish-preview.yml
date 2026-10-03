@@ -1,0 +1,344 @@
+name: Publish JARVIS validated preview
+
+on:
+  push:
+    branches: ["product/jarvis-brain"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/product/jarvis-brain'
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    env:
+      PREVIEW_SHA: ${{ github.sha }}
+      PREVIEW_BRANCH: product/jarvis-brain
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+
+      - name: Wait for all nine validations of this exact commit
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const repo = context.repo;
+            const sha = process.env.PREVIEW_SHA;
+            const branch = process.env.PREVIEW_BRANCH;
+            const workflows = [
+              'build-windows.yml',
+              'build-android.yml',
+              'real-cloud-validation.yml',
+              'product-shell.yml',
+              'ci.yml',
+              'nexus-contracts.yml',
+              'nexus-legacy-audit.yml',
+              'build-ios.yml',
+              'scratch-model-contracts.yml',
+            ];
+            const repository = (await github.rest.repos.get(repo)).data;
+            if (repository.private) {
+              throw new Error('Public preview downloads require a public repository.');
+            }
+            const deadline = Date.now() + 70 * 60 * 1000;
+            let previous = '';
+            while (Date.now() < deadline) {
+              const reference = (await github.rest.git.getRef({
+                ...repo, ref: `heads/${branch}`,
+              })).data;
+              if (reference.object.sha !== sha) {
+                throw new Error('The branch has moved; this superseded commit will not be published.');
+              }
+              const results = await Promise.all(workflows.map(async (workflow) => {
+                let response;
+                try {
+                  response = await github.rest.actions.listWorkflowRuns({
+                    ...repo,
+                    workflow_id: workflow,
+                    head_sha: sha,
+                    per_page: 50,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  return { workflow, state: 'waiting for workflow registration' };
+                }
+                const allowedEvents = ['build-ios.yml', 'scratch-model-contracts.yml'].includes(workflow)
+                  ? ['push', 'pull_request']
+                  : ['push', 'pull_request', 'workflow_dispatch'];
+                const runs = response.data.workflow_runs
+                  .filter((run) => run.head_sha === sha &&
+                    allowedEvents.includes(run.event))
+                  .sort((left, right) => right.id - left.id);
+                const run = runs[0];
+                if (!run) return { workflow, state: 'waiting for an exact-commit run' };
+                return {
+                  workflow,
+                  id: run.id,
+                  head_sha: run.head_sha,
+                  status: run.status,
+                  conclusion: run.conclusion,
+                  html_url: run.html_url,
+                  state: `${run.status}/${run.conclusion || 'pending'}`,
+                };
+              }));
+              const summary = results.map((result) => `${result.workflow}: ${result.state}`).join('\n');
+              if (summary !== previous) {
+                core.info(summary);
+                previous = summary;
+              }
+              const failed = results.find((result) =>
+                result.status === 'completed' && result.conclusion !== 'success');
+              if (failed) {
+                throw new Error(`${failed.workflow} did not pass: ${failed.conclusion} (${failed.html_url})`);
+              }
+              if (results.every((result) =>
+                result.status === 'completed' && result.conclusion === 'success')) {
+                fs.writeFileSync('validated-runs.json', JSON.stringify(results, null, 2) + '\n');
+                core.setOutput('windows_run_id', String(results.find((result) => result.workflow === 'build-windows.yml').id));
+                core.setOutput('android_run_id', String(results.find((result) => result.workflow === 'build-android.yml').id));
+                await core.summary
+                  .addHeading('Exact-commit preview validation')
+                  .addRaw(`Commit: ${sha}\n\n`)
+                  .addTable([
+                    [{ data: 'Workflow', header: true }, { data: 'Successful run', header: true }],
+                    ...results.map((result) => [result.workflow, result.html_url]),
+                  ])
+                  .write();
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 30000));
+            }
+            throw new Error('Timed out after 70 minutes waiting for all nine exact-commit validations. No preview was published.');
+
+      - name: Download the verified Windows installer run
+        uses: actions/download-artifact@v4
+        with:
+          name: JARVIS-Windows-Installer
+          path: downloaded/windows
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.gate.outputs.windows_run_id }}
+
+      - name: Download the verified Android companion run
+        uses: actions/download-artifact@v4
+        with:
+          name: JARVIS-Android-Companion
+          path: downloaded/android
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.gate.outputs.android_run_id }}
+
+      - name: Verify provenance and write the pinned major update manifest
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import shutil
+          import subprocess
+
+          sha = os.environ["PREVIEW_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise RuntimeError("A complete exact source commit is required")
+          actual_head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if actual_head != sha:
+              raise RuntimeError("Checkout does not identify the validated commit")
+
+          output = Path("release-assets")
+          output.mkdir(exist_ok=True)
+          hashes = {}
+          for platform, name, magic in (
+              ("windows", "JARVIS-Setup.exe", b"MZ"),
+              ("android", "JARVIS-Companion.apk", b"PK"),
+          ):
+              directory = Path("downloaded") / platform
+              info = {}
+              for line in (directory / "build-info.txt").read_text("utf-8-sig").splitlines():
+                  if not line.strip():
+                      continue
+                  key, separator, value = line.partition("=")
+                  if not separator or key in info:
+                      raise RuntimeError(f"Invalid or duplicate provenance field for {platform}")
+                  info[key] = value.strip()
+              if info.get("commit") != sha:
+                  raise RuntimeError(f"{platform} artifact was built from another source commit")
+              expected = info.get("sha256", "").lower()
+              if not re.fullmatch(r"[0-9a-f]{64}", expected):
+                  raise RuntimeError(f"{platform} artifact has no valid SHA-256 provenance")
+              payload = directory / name
+              if payload.is_symlink() or not payload.is_file():
+                  raise RuntimeError(f"Missing regular artifact payload: {name}")
+              digest = hashlib.sha256()
+              with payload.open("rb") as handle:
+                  if handle.read(2) != magic:
+                      raise RuntimeError(f"Unexpected artifact format: {name}")
+                  handle.seek(0)
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              actual = digest.hexdigest()
+              if actual != expected:
+                  raise RuntimeError(f"Artifact SHA-256 mismatch: {name}")
+              hashes[name] = actual
+              shutil.copyfile(payload, output / name)
+
+          parents = subprocess.check_output(["git", "show", "--format=%P", "-s", sha], text=True).strip().split()
+          if parents:
+              raw_paths = subprocess.check_output([
+                  "git", "diff", "--no-renames", "--name-only", "-z", parents[0], sha,
+              ])
+          else:
+              raw_paths = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", "-z", sha])
+          changed_paths = sorted(path.decode("utf-8") for path in raw_paths.split(b"\0") if path)
+          if not changed_paths or len({path.casefold() for path in changed_paths}) != len(changed_paths):
+              raise RuntimeError("Update must declare nonempty, distinct changed paths")
+          for path in changed_paths:
+              parsed = PurePosixPath(path)
+              if parsed.is_absolute() or ".." in parsed.parts or "\\" in path or any(ord(character) < 32 for character in path):
+                  raise RuntimeError("Update contains an unsupported repository path")
+
+          manifest = {
+              "version": "2.0.0",
+              "commit_sha": sha,
+              "artifact_sha256": hashes["JARVIS-Setup.exe"],
+              "changed_paths": changed_paths,
+              "notes": (
+                  "Validated JARVIS preview. Nine workflows passed for this exact source commit. "
+                  "Physical laptop and phone acceptance remains pending. JARVIS Core uses the "
+                  "Llama 3.2 1B base. The scratch-model pipeline defines a 1.5B architecture and "
+                  "validates training guards; its weights have not been trained. iOS validation "
+                  "covers an unsigned simulator app only; physical installation needs Apple signing. "
+                  "Installation through the update manager requires approval for this major update."
+              ),
+              "update_class": "major",
+              "release_tag": "jarvis-preview-" + sha[:12],
+              "artifact_name": "JARVIS-Setup.exe",
+          }
+          (output / "jarvis-update.json").write_text(json.dumps(manifest, indent=2) + "\n", "utf-8")
+          print(json.dumps({"commit": sha, "artifact_sha256": hashes, "release_tag": manifest["release_tag"]}))
+
+      - name: Publish complete public prerelease pinned to the validated commit
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const repo = context.repo;
+            const sha = process.env.PREVIEW_SHA;
+            const branch = process.env.PREVIEW_BRANCH;
+            const manifest = JSON.parse(fs.readFileSync('release-assets/jarvis-update.json', 'utf8'));
+            const validated = JSON.parse(fs.readFileSync('validated-runs.json', 'utf8'));
+            const tag = manifest.release_tag;
+            const currentHead = async () => {
+              const reference = (await github.rest.git.getRef({ ...repo, ref: `heads/${branch}` })).data;
+              if (reference.object.sha !== sha) {
+                throw new Error('The branch moved before publication; this superseded preview will not be published.');
+              }
+            };
+            await currentHead();
+            const verifyValidations = async () => {
+              const confirmations = await Promise.all(validated.map(async (run) => {
+                const current = (await github.rest.actions.getWorkflowRun({ ...repo, run_id: run.id })).data;
+                if (current.head_sha !== sha || current.status !== 'completed' || current.conclusion !== 'success') {
+                  throw new Error(`Validation changed before publication: ${run.workflow}`);
+                }
+                return current;
+              }));
+              if (confirmations.length !== 9) throw new Error('All nine validation records are required.');
+            };
+            await verifyValidations();
+            let reference;
+            try {
+              reference = (await github.rest.git.getRef({ ...repo, ref: `tags/${tag}` })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              reference = (await github.rest.git.createRef({ ...repo, ref: `refs/tags/${tag}`, sha })).data;
+            }
+            if (reference.object.type !== 'commit' || reference.object.sha !== sha) {
+              throw new Error('Preview tag does not identify the exact validated commit.');
+            }
+            const body = [
+              `Source commit: \`${sha}\`.`,
+              '',
+              'Download JARVIS-Setup.exe for a Windows x64 laptop and JARVIS-Companion.apk for an ARM64 Android phone (Android 9 or newer). These release assets can be downloaded without signing in to GitHub. The Windows installer includes the Brain runtime; Python is not required. Missing Ollama/model weights are prepared during initial setup.',
+              '',
+              'This is a prerelease. Physical acceptance of the owner\'s laptop microphone/camera and Android fingerprint sensor remains pending. The Android APK is debug-signed. JARVIS Core uses Llama 3.2 1B base weights. The scratch-model pipeline defines a 1.5B architecture with CPU contract/guard validation; its weights have not been trained.',
+              '',
+              'iOS checks compile, install and launch an unsigned simulator companion. They do not produce a phone-installable release: physical iPhone or iPad installation requires Apple signing/provisioning and device acceptance. This release contains Windows and Android installers only.',
+              '',
+              `Installation and device checks: https://github.com/${repo.owner}/${repo.repo}/blob/${sha}/docs/JARVIS-INSTALL.md`,
+              '',
+              'The installer SHA-256, exact source commit, changed paths, and major update classification are pinned in jarvis-update.json.',
+              '',
+              'All nine exact-commit validations passed:',
+              ...validated.map((run) => `- ${run.workflow}: ${run.html_url}`),
+            ].join('\n');
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ ...repo, tag })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = (await github.rest.repos.createRelease({
+                ...repo, tag_name: tag, target_commitish: sha,
+                name: `JARVIS preview ${sha.slice(0, 12)}`,
+                body, draft: true, prerelease: true, make_latest: 'false',
+              })).data;
+            }
+            if (!release.prerelease) throw new Error('Existing release is not a preview; refusing to alter it.');
+            const names = ['JARVIS-Setup.exe', 'JARVIS-Companion.apk', 'jarvis-update.json'];
+            let assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              ...repo, release_id: release.id, per_page: 100,
+            });
+            for (const name of names) {
+              const data = fs.readFileSync(`release-assets/${name}`);
+              const digest = 'sha256:' + crypto.createHash('sha256').update(data).digest('hex');
+              const existing = assets.find((asset) => asset.name === name);
+              if (existing) {
+                if (existing.digest !== digest || existing.size !== data.length || existing.state !== 'uploaded') {
+                  throw new Error(`Existing release asset differs from the validated payload: ${name}`);
+                }
+                continue;
+              }
+              if (!release.draft) throw new Error(`Published preview is missing a required asset: ${name}`);
+              const uploaded = (await github.rest.repos.uploadReleaseAsset({
+                ...repo, release_id: release.id, name, data,
+                headers: {
+                  'content-type': name.endsWith('.json') ? 'application/json' : 'application/octet-stream',
+                  'content-length': data.length,
+                },
+              })).data;
+              if (uploaded.digest !== digest || uploaded.size !== data.length || uploaded.state !== 'uploaded') {
+                throw new Error(`GitHub did not confirm the expected uploaded bytes: ${name}`);
+              }
+              assets.push(uploaded);
+            }
+            await currentHead();
+            await verifyValidations();
+            if (release.draft) {
+              release = (await github.rest.repos.updateRelease({
+                ...repo, release_id: release.id, draft: false, prerelease: true,
+                body, make_latest: 'false',
+              })).data;
+            }
+            const base = `https://github.com/${repo.owner}/${repo.repo}/releases/download/${tag}`;
+            await core.summary
+              .addHeading('Public JARVIS preview downloads')
+              .addLink('Preview release', release.html_url)
+              .addRaw('\n\n')
+              .addLink('Windows installer', `${base}/JARVIS-Setup.exe`)
+              .addRaw('\n\n')
+              .addLink('Android companion', `${base}/JARVIS-Companion.apk`)
+              .addRaw('\n\nPhysical-device acceptance remains pending. The 1.5B scratch-model architecture has no trained weights. iOS is simulator-only and needs Apple signing for physical installation.\n')
+              .write();

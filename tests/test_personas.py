@@ -89,13 +89,13 @@ class PlanProvider:
 
 
 class PersonaContractTests(unittest.TestCase):
-    def test_builtin_personas_have_distinct_default_tasks_and_namespaces(self):
+    def test_builtin_lanes_have_distinct_tasks_but_share_one_jarvis_namespace(self):
         self.assertEqual(TABY.default_task, TaskKind.GENERAL)
         self.assertEqual(FRIDAY.default_task, TaskKind.REALTIME)
         self.assertEqual(JARVIS.default_task, TaskKind.CODING)
         self.assertEqual(
             {TABY.context_namespace, FRIDAY.context_namespace, JARVIS.context_namespace},
-            {"taby", "friday", "jarvis"},
+            {"jarvis"},
         )
 
     def test_invalid_task_is_rejected_by_persona(self):
@@ -244,6 +244,22 @@ class PersonaRuntimeTests(unittest.TestCase):
         self.assertIs(second_provider.runtime, runtime)
         self.assertIs(first_provider.profiler, profiler)
         self.assertIs(second_provider.profiler, profiler)
+
+    def test_configured_ollama_endpoint_survives_persona_rebuilds(self):
+        endpoint = "http://127.0.0.1:11435"
+        profiler = FakeProfiler(hardware())
+        runtime = FakeRuntime()
+        agent = PersonaAgentRuntime(
+            FRIDAY,
+            profiler=profiler,
+            model_runtime=runtime,
+            ollama_base_url=endpoint,
+            ollama_factory=lambda choice: RecordingProvider("ollama", choice.model),
+            gemini_factory=lambda choice: RecordingProvider("gemini", choice.model),
+        )
+        self.assertEqual(agent.provider._ollama_base_url, endpoint)
+        agent.switch_persona("jarvis")
+        self.assertEqual(agent.provider._ollama_base_url, endpoint)
 
 
 if __name__ == "__main__":

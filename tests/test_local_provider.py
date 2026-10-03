@@ -68,6 +68,7 @@ class LocalProviderTests(unittest.TestCase):
         self.assertEqual(body["messages"][1]["content"], "مرحبا")
         self.assertEqual(body["format"], "json")
         self.assertFalse(body["stream"])
+        self.assertIs(body["think"], False)
         self.assertEqual(body["keep_alive"], "5m")
         self.assertEqual(body["options"], {"num_ctx": 4096, "num_predict": 512})
         self.assertNotIn("tools", body)

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 """Small abstraction for storing/retrieving secrets locally.
 
-Currently uses `keyring` (OS keychain). Falls back to an in-memory stub if
-keyring backend isn't available.
+Uses `keyring` (OS keychain). If secure storage is unavailable, reads of
+optional settings remain possible but persistent writes fail explicitly.
+The in-memory store is only for callers that deliberately inject it.
 """
 
 from dataclasses import dataclass
@@ -16,6 +17,18 @@ from cryptography.fernet import Fernet, InvalidToken
 SERVICE = "jarvis"
 
 
+class SecretStoreUnavailableError(RuntimeError):
+    """Persistent OS credential storage cannot safely complete an operation."""
+
+
+_UNAVAILABLE_MESSAGE = (
+    "Secure OS credential storage is unavailable or locked. "
+    "Restore access to Windows Credential Manager, macOS Keychain, or a Linux "
+    "Secret Service session, then restart JARVIS. Device pairing and face "
+    "enrollment require persistent secure storage."
+)
+
+
 @dataclass
 class SecretStore:
     """Key/value secret store."""
@@ -26,6 +39,10 @@ class SecretStore:
     def get(self, key: str) -> Optional[str]:
         raise NotImplementedError
 
+    def get_persistent(self, key: str) -> Optional[str]:
+        """Read without treating an inaccessible identity as a missing one."""
+        return self.get(key)
+
     def delete(self, key: str) -> None:
         raise NotImplementedError
 
@@ -35,19 +52,42 @@ class KeyringSecretStore(SecretStore):
         self.service = service
         import keyring
 
+        backend = keyring.get_keyring()
+        if backend.priority <= 0:
+            raise SecretStoreUnavailableError(_UNAVAILABLE_MESSAGE)
+        candidates = tuple(getattr(backend, "backends", (backend,)))
+        if not candidates:
+            raise SecretStoreUnavailableError(_UNAVAILABLE_MESSAGE)
+        for candidate in candidates:
+            module = type(candidate).__module__
+            if (
+                candidate.priority <= 0
+                or module.startswith("keyrings.alt.file")
+                or module == "keyring.backends.null"
+            ):
+                raise SecretStoreUnavailableError(_UNAVAILABLE_MESSAGE)
         self._keyring = keyring
 
     def set(self, key: str, value: str) -> None:
         # keyring handles encryption on supported platforms.
-        self._keyring.set_password(self.service, key, value)
+        try:
+            self._keyring.set_password(self.service, key, value)
+        except Exception:
+            raise SecretStoreUnavailableError(_UNAVAILABLE_MESSAGE) from None
 
     def get(self, key: str) -> Optional[str]:
         try:
+            return self.get_persistent(key)
+        except SecretStoreUnavailableError:
+            # Optional API-key reads allow setup to validate a session key.
+            # Signing identity reads use get_persistent and cannot hide failure.
+            return None
+
+    def get_persistent(self, key: str) -> Optional[str]:
+        try:
             return self._keyring.get_password(self.service, key)
         except Exception:
-            # A locked/unavailable macOS Keychain must not abort JARVIS boot.
-            # Setup remains available so the user can validate a session key.
-            return None
+            raise SecretStoreUnavailableError(_UNAVAILABLE_MESSAGE) from None
 
     def delete(self, key: str) -> None:
         try:
@@ -57,8 +97,24 @@ class KeyringSecretStore(SecretStore):
             pass
 
 
+class UnavailableSecretStore(SecretStore):
+    """Allow optional reads while refusing to invent a temporary identity."""
+
+    def set(self, key: str, value: str) -> None:
+        raise SecretStoreUnavailableError(_UNAVAILABLE_MESSAGE)
+
+    def get(self, key: str) -> Optional[str]:
+        return None
+
+    def get_persistent(self, key: str) -> Optional[str]:
+        raise SecretStoreUnavailableError(_UNAVAILABLE_MESSAGE)
+
+    def delete(self, key: str) -> None:
+        raise SecretStoreUnavailableError(_UNAVAILABLE_MESSAGE)
+
+
 class NoopSecretStore(SecretStore):
-    """Does not persist secrets; used if keyring cannot be used."""
+    """Explicitly injected memory-only store for tests and temporary sessions."""
 
     def __init__(self):
         self._mem: dict[str, str] = {}
@@ -138,5 +194,5 @@ def get_secret_store() -> SecretStore:
     try:
         _store = KeyringSecretStore()
     except Exception:
-        _store = NoopSecretStore()
+        _store = UnavailableSecretStore()
     return _store

@@ -1,0 +1,10 @@
+# Trained weights, owner data and evaluation transcripts stay off GitHub.
+private/
+runs/
+cache/
+*.safetensors
+*.bin
+*.pt
+*.gguf
+__pycache__/
+.venv/

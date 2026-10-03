@@ -38,6 +38,8 @@ jobs:
       AUTO_CREATE_TABLES: "0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
       - name: Install Qt runtime libraries
@@ -52,6 +54,8 @@ jobs:
       run: { working-directory: web }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json }
       - run: npm ci

@@ -17,7 +17,7 @@ from typing import FrozenSet, Mapping
 
 from core.hardware_profile import HardwareSnapshot, PowerSource
 from core.model_provider import ModelRequest, ModelTier
-from core.model_runtime import ModelInfo, ModelState, RuntimeStatus
+from core.model_runtime import ModelInfo, ModelState, RuntimeStatus, canonical_model_name
 
 
 class ProviderKind(str, Enum):
@@ -161,7 +161,7 @@ class ModelRouter:
     def _warm_models(runtime_status: RuntimeStatus) -> Mapping[str, ModelInfo]:
         return MappingProxyType(
             {
-                name: info
+                canonical_model_name(name): info
                 for name, info in runtime_status.models.items()
                 if info.state is ModelState.WARM
             }
@@ -257,7 +257,7 @@ class ModelRouter:
         warm_choices: list[ProviderChoice] = []
         if hw.system_pressure < self._policy.warm_hard_stop_pressure:
             for candidate in candidates:
-                if candidate.model in warm:
+                if canonical_model_name(candidate.model) in warm:
                     warm_choices.append(
                         ProviderChoice(
                             provider=ProviderKind.OLLAMA,
@@ -272,7 +272,7 @@ class ModelRouter:
         cold_choices: list[ProviderChoice] = []
         warm_count = len(warm)
         for candidate in candidates:
-            if candidate.model in warm:
+            if canonical_model_name(candidate.model) in warm:
                 continue
             allowed, reason = self._new_load_allowed(candidate, hw, warm_count)
             if not allowed:
@@ -304,7 +304,11 @@ class ModelRouter:
         deduped: list[ProviderChoice] = []
         seen: set[tuple[ProviderKind, str]] = set()
         for choice in [*ordered, cloud]:
-            key = (choice.provider, choice.model)
+            key = (
+                choice.provider,
+                canonical_model_name(choice.model)
+                if choice.provider is ProviderKind.OLLAMA else choice.model,
+            )
             if key not in seen:
                 seen.add(key)
                 deduped.append(choice)

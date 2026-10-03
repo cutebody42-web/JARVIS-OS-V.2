@@ -1,0 +1,515 @@
+name: Real JARVIS cloud validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "brain_sidecar.py"
+      - "api/jarvis_local_server.py"
+      - "core/**"
+      - "agent/**"
+      - "actions/**"
+      - "memory/**"
+      - "models/**"
+      - "packaging/**"
+      - "scripts/generate_build_info.py"
+      - "web/**"
+      - ".github/workflows/real-cloud-validation.yml"
+  push:
+    branches: ["product/**"]
+    paths:
+      - "brain_sidecar.py"
+      - "api/jarvis_local_server.py"
+      - "core/**"
+      - "agent/**"
+      - "actions/**"
+      - "memory/**"
+      - "models/**"
+      - "packaging/**"
+      - "scripts/generate_build_info.py"
+      - "web/**"
+      - ".github/workflows/real-cloud-validation.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  local-ai-real-inference:
+    name: Local AI — real JARVIS Core 1B inference
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OLLAMA_HOST: "127.0.0.1:11435"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production local AI dependencies
+        run: python -m pip install --quiet google-genai requests psutil "cryptography>=44,<51"
+
+      - name: Install Ollama runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama --version
+          export OLLAMA_MODELS="$RUNNER_TEMP/jarvis-ollama-models"
+          echo "OLLAMA_MODELS=$OLLAMA_MODELS" >> "$GITHUB_ENV"
+          mkdir -p "$OLLAMA_MODELS" artifacts/real-cloud/local-ai
+
+      - name: Start isolated JARVIS Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup env OLLAMA_HOST="$OLLAMA_HOST" OLLAMA_MODELS="$OLLAMA_MODELS" ollama serve             > artifacts/real-cloud/local-ai/ollama.log 2>&1 &
+          echo $! > artifacts/real-cloud/local-ai/ollama.pid
+          for i in $(seq 1 60); do
+            if curl -fsS "http://$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          cat artifacts/real-cloud/local-ai/ollama.log
+          exit 1
+
+      - name: Pull JARVIS Core 1B and hidden expert
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+          from core.jarvis_council import CORE_MODEL
+
+          manifest = json.loads(Path("models/manifest.json").read_text("utf-8"))
+          required = {CORE_MODEL, "jarvis-brain-fast"}
+          specs = [item for item in manifest["models"] if item["alias"] in required]
+          if {item["alias"] for item in specs} != required:
+              raise SystemExit("Core and fast expert are missing from the manifest")
+          for base in dict.fromkeys(item["base"] for item in specs):
+              subprocess.run(["ollama", "pull", base], check=True)
+          for spec in specs:
+              subprocess.run([
+                  "ollama", "create", spec["alias"], "-f",
+                  str(Path("models") / (spec["alias"] + ".Modelfile")),
+              ], check=True)
+          listed = subprocess.check_output(["ollama", "list"], text=True)
+          Path("artifacts/real-cloud/local-ai/ollama-list.txt").write_text(listed, "utf-8")
+          print(listed)
+          for alias, label in ((CORE_MODEL, "core"), ("jarvis-brain-fast", "expert")):
+              shown = subprocess.check_output(["ollama", "show", alias], text=True)
+              Path(f"artifacts/real-cloud/local-ai/ollama-show-{label}.txt").write_text(shown, "utf-8")
+              print(shown)
+          PY
+
+      - name: Run real Core plus expert inference concurrently
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import concurrent.futures
+          import json
+          import re
+          import subprocess
+          import time
+          import urllib.request
+          from pathlib import Path
+          from core.jarvis_council import CORE_MODEL
+
+          manifest = json.loads(Path("models/manifest.json").read_text("utf-8"))
+          core = next(item for item in manifest["models"] if item["alias"] == CORE_MODEL)
+          expert = next(item for item in manifest["models"] if item["alias"] == "jarvis-brain-fast")
+          assert float(core["parameters_b"]) >= 1.0, core
+
+          shown = subprocess.check_output(
+              ["ollama", "show", CORE_MODEL],
+              text=True,
+              encoding="utf-8",
+              errors="replace",
+          )
+          match = re.search(r"parameters\s+([0-9]+(?:\.[0-9]+)?)\s*([BM])", shown, re.I)
+          if not match:
+              raise SystemExit("Could not verify JARVIS Core parameter count from ollama show")
+          value = float(match.group(1))
+          params_b = value if match.group(2).upper() == "B" else value / 1000.0
+          if params_b < 1.0:
+              raise SystemExit(f"JARVIS Core base is below the 1B family: {params_b:.3f}B")
+
+          def generate(model, prompt):
+              payload = json.dumps({
+                  "model": model,
+                  "prompt": prompt,
+                  "stream": False,
+                  "think": False,
+                  "options": {"temperature": 0, "num_predict": 96},
+                  "keep_alive": "5m",
+              }).encode("utf-8")
+              request = urllib.request.Request(
+                  "http://127.0.0.1:11435/api/generate",
+                  data=payload,
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              started = time.monotonic()
+              with urllib.request.urlopen(request, timeout=300) as response:
+                  result = json.load(response)
+              text = str(result.get("response", "")).strip()
+              if not result.get("done") or not text:
+                  raise RuntimeError(f"{model} did not return a completed non-empty response")
+              return {
+                  "model": result.get("model"),
+                  "response": text,
+                  "elapsed_seconds": round(time.monotonic() - started, 3),
+                  "eval_count": result.get("eval_count"),
+                  "eval_duration": result.get("eval_duration"),
+              }
+
+          started = time.monotonic()
+          with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+              core_future = pool.submit(
+                  generate,
+                  CORE_MODEL,
+                  "Produce a short internal routing brief for: plan tomorrow efficiently.",
+              )
+              expert_future = pool.submit(
+                  generate,
+                  "jarvis-brain-fast",
+                  "Give a concise hidden specialist analysis for planning tomorrow efficiently.",
+              )
+              core_result = core_future.result()
+              expert_result = expert_future.result()
+          wall = round(time.monotonic() - started, 3)
+
+          evidence = {
+              "core_manifest_base": core["base"],
+              "core_manifest_parameters_b": core["parameters_b"],
+              "core_verified_parameters_b": params_b,
+              "expert_manifest_parameters_b": expert["parameters_b"],
+              "parallel_wall_seconds": wall,
+              "core": core_result,
+              "expert": expert_result,
+              "both_completed": True,
+          }
+          Path("artifacts/real-cloud/local-ai/inference.json").write_text(
+              json.dumps(evidence, indent=2, ensure_ascii=False),
+              "utf-8",
+          )
+          print(json.dumps(evidence, ensure_ascii=False))
+          PY
+
+      - name: Verify real production JARVIS Brain and council chat
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          python packaging/smoke/brain_inference.py \
+            --ollama-url "http://$OLLAMA_HOST" \
+            --output artifacts/real-cloud/local-ai/application-inference.json
+
+      - name: Validate production face-recognition engine and pinned models
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet "opencv-python-headless>=4.10,<5" requests numpy
+          python - <<'PY'
+          import hashlib
+          import json
+          import tempfile
+          from pathlib import Path
+          import numpy as np
+          from core.owner_face import OwnerFaceRecognizer
+
+          with tempfile.TemporaryDirectory() as tmp:
+              recognizer = OwnerFaceRecognizer(model_dir=tmp)
+              detector, face_model = recognizer._vision_models()
+              blank = np.zeros((480, 640, 3), dtype=np.uint8)
+              embedding = recognizer._extract_embedding(blank)
+              assert embedding is None
+              files = {}
+              for path in sorted(Path(tmp).glob("*.onnx")):
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  files[path.name] = {"bytes": path.stat().st_size, "sha256": digest}
+              assert len(files) == 2, files
+              evidence = {
+                  "engine": recognizer.engine,
+                  "models": files,
+                  "initialized": detector is not None and face_model is not None,
+                  "blank_frame_rejected": True,
+                  "physical_camera_certified": False,
+              }
+              Path("artifacts/real-cloud/local-ai/face-engine.json").write_text(
+                  json.dumps(evidence, indent=2), "utf-8"
+              )
+              print(json.dumps(evidence))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: JARVIS-Real-Local-AI-Evidence
+          path: artifacts/real-cloud/local-ai
+          if-no-files-found: warn
+
+  windows-real-runtime:
+    name: Windows VM — install and run JARVIS
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      JARVIS_SMOKE_PORT: "18765"
+      JARVIS_SMOKE_TOKEN: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build embedded Brain executable
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.10,<7"
+          python scripts/generate_build_info.py
+          python scripts/fetch_face_models.py models/vision
+          pyinstaller --clean --noconfirm packaging/windows/JARVIS-Brain.spec
+          if (!(Test-Path "dist/jarvis-brain.exe")) { throw "Packaged JARVIS Brain executable was not produced" }
+          python packaging/smoke/binary_update_self_test.py dist/jarvis-brain.exe "${{ github.event.pull_request.head.sha || github.sha }}"
+          New-Item -ItemType Directory -Force "web/src-tauri/binaries" | Out-Null
+          Copy-Item "dist/jarvis-brain.exe" "web/src-tauri/binaries/jarvis-brain-x86_64-pc-windows-msvc.exe" -Force
+
+      - name: Run packaged Brain and exercise live API
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "artifacts/real-cloud/windows" | Out-Null
+          $brain = Start-Process -FilePath "$PWD/dist/jarvis-brain.exe" -ArgumentList @("--port",$env:JARVIS_SMOKE_PORT,"--ui-token",$env:JARVIS_SMOKE_TOKEN,"--parent-pid","$PID","--state-dir","$env:RUNNER_TEMP\jarvis-smoke-state") -PassThru -RedirectStandardOutput "artifacts/real-cloud/windows/brain-stdout.txt" -RedirectStandardError "artifacts/real-cloud/windows/brain-stderr.txt"
+          $ready = $false
+          for ($i = 0; $i -lt 45; $i++) {
+            if ($brain.HasExited) { Get-Content "artifacts/real-cloud/windows/brain-stderr.txt" -ErrorAction SilentlyContinue; throw "Packaged JARVIS Brain exited before becoming healthy" }
+            try {
+              $health = Invoke-RestMethod -Uri "http://127.0.0.1:$env:JARVIS_SMOKE_PORT/v1/health" -TimeoutSec 2
+              if ($health.ok -eq $true -and $health.identity -eq "JARVIS") { $ready = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 1
+          }
+          if (!$ready) { throw "Packaged JARVIS Brain did not become healthy" }
+          $headers = @{ Authorization = "Bearer $env:JARVIS_SMOKE_TOKEN" }
+          $status = Invoke-RestMethod -Headers $headers -Uri "http://127.0.0.1:$env:JARVIS_SMOKE_PORT/v1/status" -TimeoutSec 5
+          if ($status.identity -ne "JARVIS") { throw "Live status identity mismatch" }
+          if (!$status.device.device_id) { throw "Live status did not expose a device id" }
+          if ($status.voice.available -ne $true) { throw "Packaged JARVIS did not expose the Windows-local voice runtime" }
+          if ($status.voice.privacy -ne "local_os_speech") { throw "JARVIS voice privacy mode mismatch" }
+          $health | ConvertTo-Json -Depth 8 | Out-File "artifacts/real-cloud/windows/live-health.json" -Encoding utf8
+          $status | ConvertTo-Json -Depth 8 | Out-File "artifacts/real-cloud/windows/live-status.json" -Encoding utf8
+
+          Add-Type -AssemblyName System.Speech
+          $voice = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $voiceFile = "$PWD/artifacts/real-cloud/windows/voice-smoke.wav"
+          try {
+            $voice.SetOutputToWaveFile($voiceFile)
+            $voice.Speak("JARVIS voice runtime validation.")
+          } finally {
+            $voice.Dispose()
+          }
+          if (!(Test-Path $voiceFile) -or (Get-Item $voiceFile).Length -lt 1000) {
+            throw "Windows System.Speech synthesis did not produce valid audio evidence"
+          }
+          $recognizers = @([System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers())
+          @{
+            engine = "windows-system-speech"
+            tts_wave_bytes = (Get-Item $voiceFile).Length
+            installed_recognizers = $recognizers.Count
+            physical_microphone_certified = $false
+          } | ConvertTo-Json | Out-File "artifacts/real-cloud/windows/voice-evidence.json" -Encoding utf8
+
+          Stop-Process -Id $brain.Id -Force
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Prepare Rust and libsodium
+        shell: pwsh
+        run: |
+          rustup update stable
+          rustup default stable
+          $env:VCPKG_DEFAULT_TRIPLET = "x64-windows"
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) {
+            $vcpkgExe = (Get-Command vcpkg).Source
+            $vcpkgRoot = Split-Path $vcpkgExe -Parent
+          }
+          if (-not (Test-Path $vcpkgRoot)) { throw "VCPKG root could not be resolved" }
+          vcpkg install libsodium:x64-windows
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DEFAULT_TRIPLET=x64-windows" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "SODIUM_USE_PKG_CONFIG=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKGRS_DYNAMIC=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Generate Windows icons
+        working-directory: web
+        shell: pwsh
+        run: npx --yes @tauri-apps/cli@2.12.0 icon src-tauri/jarvis-icon.svg
+
+      - name: Build real NSIS installer
+        working-directory: web
+        shell: pwsh
+        run: npx --yes @tauri-apps/cli@2.12.0 build --bundles nsis
+
+      - name: Silent-install and launch desktop product
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "web/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if ($null -eq $installer) { throw "NSIS installer was not produced" }
+          Copy-Item $installer.FullName "artifacts/real-cloud/windows/JARVIS-Setup.exe" -Force
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "JARVIS installer exited with code $($install.ExitCode)" }
+          $roots = @($env:LOCALAPPDATA, $env:ProgramFiles, [Environment]::GetFolderPath("ProgramFilesX86")) | Where-Object { $_ -and (Test-Path $_) }
+          $exe = $null
+          $candidateNames = @("JARVIS.exe", "jarvis-shell.exe")
+          foreach ($root in $roots) {
+            foreach ($candidateName in $candidateNames) {
+              $exe = Get-ChildItem $root -Filter $candidateName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($exe) { break }
+            }
+            if ($exe) { break }
+          }
+          if ($null -eq $exe) { throw "Installed JARVIS desktop executable could not be located" }
+          "installed_exe=$($exe.FullName)" | Out-File "artifacts/real-cloud/windows/install-result.txt"
+          $desktop = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep -Seconds 15
+          if ($desktop.HasExited) { throw "Installed JARVIS desktop exited during startup" }
+          $jarvisProcesses = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match "jarvis" } | Select-Object Id,ProcessName,Path
+          $jarvisProcesses | Format-List | Out-File "artifacts/real-cloud/windows/processes.txt"
+          if (-not ($jarvisProcesses | Where-Object { $_.ProcessName -match "^JARVIS$|jarvis-shell" })) { throw "Installed JARVIS desktop process was not observable" }
+          try {
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -AssemblyName System.Drawing
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size)
+            $bitmap.Save("$PWD/artifacts/real-cloud/windows/windows-desktop.png")
+            $graphics.Dispose(); $bitmap.Dispose()
+          } catch { "screenshot_unavailable=$($_.Exception.GetType().Name)" | Out-File "artifacts/real-cloud/windows/screenshot-note.txt" }
+          Stop-Process -Id $desktop.Id -Force -ErrorAction SilentlyContinue
+          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match "jarvis-brain" } | Stop-Process -Force -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: JARVIS-Real-Windows-VM-Evidence
+          path: artifacts/real-cloud/windows
+          if-no-files-found: warn
+
+  android-real-runtime:
+    name: Android emulator — install and run JARVIS
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Resolve Android NDK and Rust target
+        shell: bash
+        run: |
+          if [ -n "$ANDROID_NDK_LATEST_HOME" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          elif [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+            NDK="$ANDROID_NDK_HOME"
+          else
+            NDK="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then echo "Android NDK is unavailable" >&2; exit 1; fi
+          echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          rustup update stable
+          rustup default stable
+          rustup target add x86_64-linux-android
+
+      - name: Initialize Android project
+        working-directory: web
+        env:
+          CI: "true"
+        run: npx --yes @tauri-apps/cli@2.12.0 android init
+
+      - name: Pin generated SDK to API 36
+        working-directory: web
+        shell: bash
+        run: |
+          find src-tauri/gen/android -type f \( -name "*.gradle.kts" -o -name "*.gradle" \) -print0 | while IFS= read -r -d "" file; do
+            sed -i -E "s/compileSdk([[:space:]]*=[[:space:]]*)[0-9]+/compileSdk\\1 36/g" "$file"
+            sed -i -E "s/targetSdk([[:space:]]*=[[:space:]]*)[0-9]+/targetSdk\\1 36/g" "$file"
+          done
+
+      - name: Build x86_64 emulator APK
+        working-directory: web
+        env:
+          CI: "true"
+        run: npx --yes @tauri-apps/cli@2.12.0 android build --debug --apk --target x86_64
+
+      - name: Collect emulator APK
+        shell: bash
+        run: |
+          mkdir -p artifacts/real-cloud/android
+          APK="$(find web/src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" | head -n 1)"
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then echo "x86_64 emulator APK was not produced" >&2; exit 1; fi
+          cp "$APK" artifacts/real-cloud/android/JARVIS-Emulator.apk
+          echo "APK=$GITHUB_WORKSPACE/artifacts/real-cloud/android/JARVIS-Emulator.apk" >> "$GITHUB_ENV"
+
+      - name: Boot emulator and exercise real mobile app
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 36
+          arch: x86_64
+          profile: pixel_6
+          target: google_apis
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash .github/scripts/android-emulator-smoke.sh "$APK"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: JARVIS-Real-Android-Emulator-Evidence
+          path: artifacts/real-cloud/android
+          if-no-files-found: warn

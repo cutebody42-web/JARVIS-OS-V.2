@@ -62,6 +62,7 @@ class OllamaProvider:
         payload = {"model": self.model, "messages": [
             {"role": "system", "content": request.system_instruction},
             {"role": "user", "content": request.prompt}], "stream": False,
+            "think": False,
             "options": {"num_ctx": 4096, "num_predict": 512}}
         if self._keep_alive is not None:
             payload["keep_alive"] = self._keep_alive

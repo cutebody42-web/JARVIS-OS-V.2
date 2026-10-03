@@ -13,9 +13,13 @@ import json
 import threading
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
-from core.nexus.pairing import PairingRequest
-from core.nexus.peer_auth import MAX_ENVELOPE_BYTES
+from core.jarvis_brain import JarvisBrain
+from core.nexus.brain_rpc import SignedBrainEndpoint
+from core.nexus.owner_approval import OwnerApprovalManager
+from core.nexus.pairing import PAIRING_VERSION, PairingRequest
+from core.nexus.peer_auth import MAX_ENVELOPE_BYTES, PeerRole
 from core.nexus.signed_transport import MEDIA_TYPE, SignedSyncEndpoint
 from core.nexus.sync_node import NexusSyncNode
 
@@ -36,12 +40,19 @@ async def _bounded_body(request: Request, *, limit: int = MAX_ENVELOPE_BYTES) ->
 def create_sync_app(
     node: NexusSyncNode,
     *,
+    brain: JarvisBrain | None = None,
+    approvals: OwnerApprovalManager | None = None,
     run_scheduler: bool = True,
     scheduler_poll_seconds: float = 0.25,
 ) -> FastAPI:
     if not isinstance(node, NexusSyncNode):
         raise TypeError("node must be NexusSyncNode")
+    if brain is not None and not isinstance(brain, JarvisBrain):
+        raise TypeError("brain must be JarvisBrain or None")
+    if approvals is not None and not isinstance(approvals, OwnerApprovalManager):
+        raise TypeError("approvals must be OwnerApprovalManager or None")
 
+    brain_endpoint = SignedBrainEndpoint(brain, node.authenticator) if brain is not None else None
     stop_event = threading.Event()
     scheduler_thread: threading.Thread | None = None
 
@@ -72,6 +83,16 @@ def create_sync_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^(tauri://localhost|https?://tauri\.localhost)$",
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Accept"],
+        expose_headers=["Content-Type"],
+        max_age=600,
     )
 
     @app.get("/nexus/sync/v1/health")
@@ -112,6 +133,207 @@ def create_sync_app(
             "candidate_device": pending.candidate_device,
             "owner_approval_required": True,
         }
+
+    @app.post("/nexus/companion/v1/ping")
+    async def companion_ping(request: Request) -> Response:
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != MEDIA_TYPE:
+            raise HTTPException(status_code=415, detail="Unsupported JARVIS companion media type")
+        body = await _bounded_body(request, limit=64 * 1024)
+        try:
+            peer, payload, message_id = await asyncio.to_thread(
+                node.authenticator.verify,
+                body,
+                expected_kind="companion.ping",
+            )
+            if set(payload) != {"version", "nonce"} or payload["version"] != 1:
+                raise ValueError("invalid companion ping payload")
+            nonce = payload["nonce"]
+            if not isinstance(nonce, str) or not nonce or len(nonce) > 128:
+                raise ValueError("invalid companion ping nonce")
+            if message_id != "ping:" + nonce:
+                raise PermissionError("companion ping message id mismatch")
+            signed = node.authenticator.sign(
+                "companion.pong",
+                peer.peer_id,
+                {
+                    "version": 1,
+                    "nonce": nonce,
+                    "identity": "JARVIS",
+                    "approved": True,
+                },
+                message_id="pong:" + nonce,
+            )
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Companion is not approved") from None
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid companion ping") from None
+        return Response(content=signed, media_type=MEDIA_TYPE)
+
+    if approvals is not None:
+        @app.post("/nexus/approval/v1/pending")
+        async def approval_pending(request: Request) -> Response:
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != MEDIA_TYPE:
+                raise HTTPException(status_code=415, detail="Unsupported JARVIS approval media type")
+            body = await _bounded_body(request, limit=64 * 1024)
+            try:
+                peer, payload, message_id = await asyncio.to_thread(
+                    node.authenticator.verify,
+                    body,
+                    expected_kind="approval.list",
+                )
+                if peer.role is not PeerRole.COMPANION:
+                    raise PermissionError("approval requests require a trusted companion")
+                if set(payload) != {"version", "request_id"} or payload["version"] != 1:
+                    raise ValueError("invalid approval list payload")
+                request_id = payload["request_id"]
+                if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+                    raise ValueError("invalid approval request id")
+                if message_id != "approval-list:" + request_id:
+                    raise PermissionError("approval list message id mismatch")
+                pending = await asyncio.to_thread(approvals.pending)
+                signed = node.authenticator.sign(
+                    "approval.pending",
+                    peer.peer_id,
+                    {
+                        "version": 1,
+                        "request_id": request_id,
+                        "pending": [
+                            {
+                                "approval_id": item.approval_id,
+                                "summary": item.summary,
+                                "action_digest": item.action_digest,
+                                "expires_at": item.expires_at,
+                            }
+                            for item in pending
+                        ],
+                    },
+                    message_id="approval-pending:" + request_id,
+                )
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Companion approval authentication failed") from None
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="Invalid approval list request") from None
+            return Response(content=signed, media_type=MEDIA_TYPE)
+
+        @app.post("/nexus/approval/v1/decision")
+        async def approval_decision(request: Request) -> Response:
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != MEDIA_TYPE:
+                raise HTTPException(status_code=415, detail="Unsupported JARVIS approval media type")
+            body = await _bounded_body(request, limit=64 * 1024)
+            try:
+                peer, payload, message_id = await asyncio.to_thread(
+                    node.authenticator.verify,
+                    body,
+                    expected_kind="approval.decision",
+                )
+                if peer.role is not PeerRole.COMPANION:
+                    raise PermissionError("approval decisions require a trusted companion")
+                if set(payload) != {
+                    "version", "request_id", "approval_id", "approved",
+                    "user_verified", "biometry_type",
+                }:
+                    raise ValueError("invalid approval decision payload")
+                if (
+                    payload["version"] != 1
+                    or payload["user_verified"] is not True
+                    or payload["biometry_type"] != "fingerprint"
+                ):
+                    raise PermissionError("fingerprint verification is required")
+                request_id = payload["request_id"]
+                approval_id = payload["approval_id"]
+                approved = payload["approved"]
+                if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+                    raise ValueError("invalid approval decision request id")
+                if not isinstance(approval_id, str) or not approval_id or len(approval_id) > 128:
+                    raise ValueError("invalid approval id")
+                if not isinstance(approved, bool):
+                    raise ValueError("approved must be boolean")
+                if message_id != "approval-decision:" + request_id:
+                    raise PermissionError("approval decision message id mismatch")
+                value = await asyncio.to_thread(
+                    approvals.decide,
+                    approval_id,
+                    peer_id=peer.peer_id,
+                    approved=approved,
+                    user_verified=True,
+                )
+                signed = node.authenticator.sign(
+                    "approval.receipt",
+                    peer.peer_id,
+                    {
+                        "version": 1,
+                        "request_id": request_id,
+                        "approval_id": value.approval_id,
+                        "state": value.state,
+                        "action_digest": value.action_digest,
+                    },
+                    message_id="approval-receipt:" + request_id,
+                )
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Approval request not found") from None
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Approval decision was rejected") from None
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="Invalid approval decision") from None
+            return Response(content=signed, media_type=MEDIA_TYPE)
+
+    if brain_endpoint is not None:
+        @app.post("/nexus/brain/v1/message")
+        async def brain_message(request: Request) -> Response:
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != MEDIA_TYPE:
+                raise HTTPException(status_code=415, detail="Unsupported JARVIS Brain media type")
+            body = await _bounded_body(request, limit=256 * 1024)
+            try:
+                signed_response = await asyncio.to_thread(brain_endpoint.handle, body)
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Paired-device authentication failed") from None
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="Invalid JARVIS Brain request") from None
+            except Exception:
+                raise HTTPException(status_code=503, detail="JARVIS Brain could not complete the request") from None
+            return Response(content=signed_response, media_type=MEDIA_TYPE)
+
+    @app.post("/nexus/pair/v1/status")
+    async def pairing_status(request: Request):
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise HTTPException(status_code=415, detail="Pairing status request must be JSON")
+        body = await _bounded_body(request, limit=16 * 1024)
+        try:
+            value = json.loads(body)
+            candidate = PairingRequest.from_dict(value)
+            state = await asyncio.to_thread(node.pairing.status_for_request, candidate)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Pairing status proof was rejected") from None
+        except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="Invalid pairing status request") from None
+
+        if state != "approved":
+            return {
+                "pairing_id": candidate.pairing_id,
+                "state": state,
+            }
+
+        try:
+            signed = node.authenticator.sign(
+                "pair.approved",
+                candidate.candidate_device,
+                {
+                    "version": PAIRING_VERSION,
+                    "pairing_id": candidate.pairing_id,
+                    "state": "approved",
+                    "desktop_device": node.identity.device_id,
+                    "desktop_public_key": node.identity.public_key,
+                },
+                message_id="pair-approved:" + candidate.pairing_id,
+            )
+        except Exception:
+            raise HTTPException(status_code=503, detail="Pairing approval could not be signed") from None
+        return Response(content=signed, media_type=MEDIA_TYPE)
 
     @app.post("/nexus/sync/v1/batch")
     async def receive_batch(request: Request) -> Response:

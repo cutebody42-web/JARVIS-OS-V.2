@@ -43,6 +43,13 @@ from .signed_transport import (
 )
 from .sync_node import NexusSyncNode, SyncIdentity
 from .sync_scheduler import PeerSchedule, SyncScheduler
+from .worker_pool import (
+    BoundedWorkerPool,
+    WorkerLease,
+    WorkerPoolBusy,
+    WorkerPoolClosed,
+    WorkerSnapshot,
+)
 from .merge_policy import (
     MergePolicyKind,
     MergePolicyRegistry,
@@ -53,6 +60,7 @@ from .merge_policy import (
 __all__ = [
     "AUTH_VERSION",
     "ApplyResult",
+    "BoundedWorkerPool",
     "ApplyStatus",
     "ClockRelation",
     "ConflictResolver",
@@ -89,6 +97,10 @@ __all__ = [
     "SyncIdentity",
     "SyncScheduler",
     "TrustedPeer",
+    "WorkerLease",
+    "WorkerPoolBusy",
+    "WorkerPoolClosed",
+    "WorkerSnapshot",
     "PROTOCOL_VERSION",
     "UnknownMergePolicyError",
     "compare_vector_clocks",
