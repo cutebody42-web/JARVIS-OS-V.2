@@ -9,6 +9,7 @@ from core.model_runtime import (
     ModelRuntime,
     ModelRuntimeError,
     ModelState,
+    canonical_model_name,
 )
 
 
@@ -40,10 +41,11 @@ def snapshot(pressure):
 
 
 class FakeOllama:
-    def __init__(self):
+    def __init__(self, *, default_tags=False):
         self.loaded = {}
         self.get_calls = []
         self.post_calls = []
+        self.default_tags = default_tags
 
     def get(self, url, timeout):
         self.get_calls.append((url, timeout))
@@ -65,6 +67,8 @@ class FakeOllama:
     def post(self, url, json, timeout):
         self.post_calls.append((url, dict(json), timeout))
         model = json["model"]
+        if self.default_tags and ":" not in model.rsplit("/", 1)[-1]:
+            model += ":latest"
         keep_alive = json.get("keep_alive")
         if keep_alive == 0:
             self.loaded.pop(model, None)
@@ -237,6 +241,53 @@ class ModelRuntimeTests(unittest.TestCase):
             self.runtime.ensure("model", priority=1, keep_alive=0)
         with self.assertRaises(ValueError):
             self.runtime.relieve_pressure(snapshot(0.5), threshold=1.1)
+
+    def test_real_ollama_latest_names_preserve_residency_size_priority_and_management(self):
+        fake = FakeOllama(default_tags=True)
+        runtime = ModelRuntime(http_get=fake.get, http_post=fake.post, clock=lambda: self.now)
+        handle = runtime.ensure("jarvis-core-1b", priority=100)
+        self.assertEqual(handle.reported_size_gb, 4.0)
+        self.assertIn("jarvis-core-1b:latest", fake.loaded)
+        status = runtime.get_status()
+        self.assertEqual(set(status.models), {"jarvis-core-1b"})
+        self.assertEqual(status.models["jarvis-core-1b"].state, ModelState.WARM)
+        self.assertTrue(status.models["jarvis-core-1b"].managed)
+        self.assertEqual(status.models["jarvis-core-1b"].priority, 100)
+        self.assertEqual(status.models["jarvis-core-1b"].last_used, self.now)
+
+    def test_explicit_latest_and_untagged_release_target_the_same_loaded_model(self):
+        fake = FakeOllama(default_tags=True)
+        runtime = ModelRuntime(http_get=fake.get, http_post=fake.post, clock=lambda: self.now)
+        runtime.ensure("jarvis-brain-fast:latest", priority=10)
+        handle = runtime.release("jarvis-brain-fast", ttl=0)
+        self.assertEqual(handle.state, ModelState.COLD)
+        self.assertNotIn("jarvis-brain-fast:latest", fake.loaded)
+        self.assertEqual(set(runtime.get_status().models), {"jarvis-brain-fast"})
+        self.assertEqual(fake.post_calls[-1][1]["model"], "jarvis-brain-fast")
+
+    def test_latest_protection_applies_to_untagged_owned_model_and_external_model_stays_safe(self):
+        fake = FakeOllama(default_tags=True)
+        fake.loaded["owners-model:latest"] = {"size": GIB}
+        runtime = ModelRuntime(http_get=fake.get, http_post=fake.post, clock=lambda: self.now)
+        runtime.ensure("jarvis-core-1b", priority=100)
+        runtime.ensure("jarvis-brain-fast", priority=10)
+        victim = runtime.evict_lowest_priority(protected={"jarvis-core-1b:latest"})
+        self.assertEqual(victim.model, "jarvis-brain-fast")
+        self.assertIn("jarvis-core-1b:latest", fake.loaded)
+        self.assertIn("owners-model:latest", fake.loaded)
+
+    def test_named_quantization_tags_are_distinct_from_latest(self):
+        self.runtime.ensure("owners-model:latest", priority=1)
+        self.runtime.ensure("owners-model:q4", priority=2)
+        status = self.runtime.get_status()
+        self.assertEqual(set(status.models), {"owners-model", "owners-model:q4"})
+        self.runtime.release("owners-model:latest", ttl=0)
+        self.assertEqual(self.runtime.get_status().models["owners-model:q4"].state, ModelState.WARM)
+
+    def test_canonicalization_preserves_registry_ports_namespaces_and_other_tags(self):
+        self.assertEqual(canonical_model_name("localhost:5000/team/model:latest"), "localhost:5000/team/model")
+        self.assertEqual(canonical_model_name("team/model:q4_K_M"), "team/model:q4_K_M")
+        self.assertEqual(canonical_model_name("model:LATEST"), "model:LATEST")
 
 
 if __name__ == "__main__":

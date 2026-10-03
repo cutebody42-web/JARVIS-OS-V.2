@@ -25,6 +25,20 @@ from core.ollama_endpoint import normalize_local_ollama_url
 _GIB = 1024 ** 3
 
 
+def canonical_model_name(model: str) -> str:
+    """Treat Ollama's implicit and explicit latest tag as the same model.
+
+    Other tags and registry/namespace components remain distinct. Ollama's
+    /api/ps reports :latest even when the load request used an untagged alias.
+    """
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("model must be a non-empty string")
+    name = model.strip().removesuffix(":latest")
+    if not name:
+        raise ValueError("model must have a name before its tag")
+    return name
+
+
 class ModelRuntimeError(RuntimeError):
     """Safe Ollama lifecycle failure."""
 
@@ -164,6 +178,10 @@ class ModelRuntime:
             name = item.get("name") or item.get("model")
             if not isinstance(name, str) or not name.strip():
                 continue
+            try:
+                name = canonical_model_name(name)
+            except ValueError:
+                continue
 
             size = item.get("size")
             size_vram = item.get("size_vram")
@@ -251,6 +269,7 @@ class ModelRuntime:
         """Ensure a model is loaded and owned by NEXUS runtime management."""
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-empty string")
+        model = canonical_model_name(model)
         if isinstance(priority, bool) or not isinstance(priority, int):
             raise TypeError("priority must be an integer")
 
@@ -290,6 +309,7 @@ class ModelRuntime:
         """
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-empty string")
+        model = canonical_model_name(model)
         if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 0:
             raise ValueError("ttl must be a non-negative integer")
 
@@ -330,7 +350,7 @@ class ModelRuntime:
         protected: set[str] | frozenset[str] | tuple[str, ...] = (),
     ) -> ModelHandle | None:
         """Immediately unload the lowest-priority NEXUS-managed resident model."""
-        protected_set = set(protected)
+        protected_set = {canonical_model_name(model) for model in protected}
         loaded = self._list_loaded_raw()
 
         candidates = [

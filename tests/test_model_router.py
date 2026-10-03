@@ -261,6 +261,62 @@ class ModelRouterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RouterPolicy(low_memory_total_gb=24, high_memory_total_gb=10)
 
+    @staticmethod
+    def alias_profile(*names):
+        return PersonaRoutingProfile(
+            name="aliases",
+            local_candidates=tuple(LocalModelCandidate(
+                model=name, min_available_ram_gb=4, priority=10, keep_alive=300,
+                tiers=frozenset({ModelTier.FAST}), tasks=frozenset({TaskKind.GENERAL}),
+            ) for name in names),
+            cloud_fast_model="cloud-fast", cloud_standard_model="cloud-standard",
+        )
+
+    def test_real_ollama_latest_status_avoids_false_cold_load_on_low_memory_laptop(self):
+        plan = self.router.route(
+            ModelRequest("hello", tier=ModelTier.FAST),
+            hw(total=8, available=1.0, pressure=0.75),
+            status("jarvis-brain-fast:latest"),
+            self.alias_profile("jarvis-brain-fast"),
+        )
+        self.assertEqual(plan.primary.provider, ProviderKind.OLLAMA)
+        self.assertEqual(plan.primary.model, "jarvis-brain-fast")
+        self.assertFalse(plan.primary.requires_ensure)
+        self.assertEqual(plan.primary.reason, "compatible_model_already_warm")
+
+    def test_explicit_latest_candidate_can_reuse_untagged_status(self):
+        plan = self.router.route(
+            ModelRequest("hello", tier=ModelTier.FAST), hw(total=8, available=1),
+            status("jarvis-brain-fast"), self.alias_profile("jarvis-brain-fast:latest"),
+        )
+        self.assertEqual(plan.primary.model, "jarvis-brain-fast:latest")
+        self.assertFalse(plan.primary.requires_ensure)
+
+    def test_latest_alias_duplicates_do_not_consume_extra_residency_capacity(self):
+        plan = self.router.route(
+            ModelRequest("hello", tier=ModelTier.FAST), hw(total=16, available=8),
+            status("owners-model", "owners-model:latest"), self.alias_profile("jarvis-brain-fast"),
+        )
+        self.assertEqual(plan.primary.provider, ProviderKind.OLLAMA)
+        self.assertTrue(plan.primary.requires_ensure)
+
+    def test_distinct_tags_do_not_reuse_latest_residency(self):
+        plan = self.router.route(
+            ModelRequest("hello", tier=ModelTier.FAST), hw(total=8, available=8),
+            status("owners-model:latest"), self.alias_profile("owners-model:q4"),
+        )
+        self.assertEqual(plan.primary.provider, ProviderKind.GEMINI)
+        self.assertEqual(plan.primary.reason, "local_resource_policy_cloud_fallback")
+
+    def test_same_latest_model_is_not_retried_as_two_different_local_choices(self):
+        plan = self.router.route(
+            ModelRequest("hello", tier=ModelTier.FAST), hw(), status(),
+            self.alias_profile("jarvis-brain-fast", "jarvis-brain-fast:latest"),
+        )
+        local = [choice for choice in plan.choices if choice.provider is ProviderKind.OLLAMA]
+        self.assertEqual(len(local), 1)
+        self.assertEqual(local[0].model, "jarvis-brain-fast")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,25 @@ PROMPT = (
 )
 
 
+def observed_routes(route_attempts) -> list[dict]:
+    return [{
+        "provider": getattr(attempt.provider, "value", attempt.provider),
+        "model": attempt.model,
+        "reason": attempt.reason,
+        "outcome": attempt.outcome,
+    } for attempt in route_attempts]
+
+
+def observed_councils(council_results) -> list[dict]:
+    return [{
+        "completed": result is not None,
+        "core_brief": result.core_brief if result is not None else None,
+        "models": list(result.models) if result is not None else [],
+        "notes": [{"model": note.model, "text": note.text} for note in result.notes]
+        if result is not None else [],
+    } for result in council_results]
+
+
 def validate_inference(response_text, council_results, route_attempts) -> dict:
     """Reject fallback-only evidence even if the final response is nonempty."""
     if not isinstance(response_text, str) or not response_text.strip():
@@ -49,15 +68,7 @@ def validate_inference(response_text, council_results, route_attempts) -> dict:
     ]
     if EXPERT_MODEL not in result.models or not any(note["model"] == EXPERT_MODEL for note in notes):
         raise RuntimeError("The real fast expert did not contribute a council note.")
-    attempts = [
-        {
-            "provider": getattr(attempt.provider, "value", attempt.provider),
-            "model": attempt.model,
-            "reason": attempt.reason,
-            "outcome": attempt.outcome,
-        }
-        for attempt in route_attempts
-    ]
+    attempts = observed_routes(route_attempts)
     successful = [attempt for attempt in attempts if attempt["outcome"] == "succeeded"]
     if not successful or any(attempt["provider"] != "ollama" for attempt in successful):
         raise RuntimeError("The final response did not complete through a local Ollama route.")
@@ -127,9 +138,13 @@ def run_inference(base_url: str, report: dict) -> None:
     finally:
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)
         report["council_calls"] = council.calls
+        # Preserve partial evidence when synthesis/routing fails after a real
+        # council completed. Success validation must not hide that failure path.
+        report["council_results"] = observed_councils(council.results)
+        report["route_attempts"] = observed_routes(brain.last_attempts)
+        report["identity"] = brain.identity
+        report["lane"] = brain.lane.value
     report.update(validate_inference(response, council.results, brain.last_attempts))
-    report["identity"] = brain.identity
-    report["lane"] = brain.lane.value
 
 
 def main(argv=None) -> int:

@@ -8,7 +8,9 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from core.jarvis_council import CORE_MODEL, CouncilNote, CouncilResult
 from core.model_router import ProviderKind
@@ -108,6 +110,40 @@ class InferenceEvidenceTests(unittest.TestCase):
         for routes in ([cloud], [route_attempt(), cloud], [cloud, route_attempt()]):
             with self.subTest(routes=routes), self.assertRaises(RuntimeError):
                 self.validate(routes=routes)
+
+    def test_failed_final_route_preserves_completed_council_and_failed_attempts(self):
+        result = council_result()
+        attempts = [route_attempt(outcome="failed:LocalProviderError"),
+                    route_attempt(ProviderKind.GEMINI, outcome="skipped:cloud_disabled")]
+
+        class FailingBrain:
+            identity = "JARVIS"
+            lane = SimpleNamespace(value="general")
+            last_attempts = attempts
+
+            def __init__(self, **kwargs):
+                self.council = kwargs["council"]
+
+            def respond(self, prompt, *, task):
+                self.council.consult(prompt, task)
+                raise RuntimeError("final local route unavailable")
+
+        snapshot = SimpleNamespace(total_ram_gb=16.0, available_ram_gb=8.0,
+                                   system_pressure=0.2, cpu_count=4, gpu_vram_gb=None, warnings=())
+        report = {}
+        with patch("core.hardware_profile.HardwareProfiler.capture", return_value=snapshot), \
+             patch("core.jarvis_brain.JarvisBrain", FailingBrain), \
+             patch("core.jarvis_council.JarvisCouncil.consult", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "final local route unavailable"):
+                _SMOKE.run_inference("http://127.0.0.1:11435", report)
+        self.assertTrue(report["council_calls"][0]["completed"])
+        self.assertEqual(report["council_results"][0]["core_brief"], result.core_brief)
+        self.assertEqual(report["council_results"][0]["notes"][0]["model"], "jarvis-brain-fast")
+        self.assertEqual([item["outcome"] for item in report["route_attempts"]],
+                         ["failed:LocalProviderError", "skipped:cloud_disabled"])
+        self.assertEqual(report["identity"], "JARVIS")
+        self.assertNotIn("core_and_expert_completed", report)
+        json.dumps(report)
 
 
 if __name__ == "__main__":
