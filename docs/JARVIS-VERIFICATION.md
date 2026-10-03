@@ -15,7 +15,7 @@ checks.
 
 ## Local verification
 
-- Full Python discovery: **782 passed**, zero failures/errors/skips.
+- Full Python discovery: **795 passed**, zero failures/errors/skips.
 - Actual running Brain HTTP service: **28/28 checks passed**, including
   authentication, malformed input, unavailable hardware, missing model setup,
   stale pairing approval, and setup error recovery.
@@ -126,6 +126,14 @@ Core Ultra 5/Intel graphics), and Honor X9D Android phone. Hardware adaptation
 prioritizes Core and limits expert loading under pressure; it cannot guarantee
 zero latency or turn these inference devices into full-weight training hardware.
 None of these physical devices has been accessed or installed from this workspace.
+
+Linux container profiling now respects cgroup v1/v2 hard limits, ancestor limits
+and remaining memory headroom. Actual capture in this environment reports
+8 GiB total rather than the host's 9.73 GiB, and about 2.19 GiB available rather
+than 6.89 GiB. Cache is counted conservatively as used; unreadable constrained
+usage cannot authorize a new model allocation. Thirteen added regressions
+exercise these resource constraints without importing the test runner's own
+ambient cgroup into simulated device fixtures.
 
 See [installation instructions](JARVIS-INSTALL.md). Keep PR #25 draft until the
 fresh published-revision build/runtime gates pass; keep physical acceptance

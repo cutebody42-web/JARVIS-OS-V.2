@@ -7,9 +7,11 @@ from unittest.mock import Mock, patch
 
 from core.hardware_profile import (
     GPUMemoryKind,
+    CgroupMemoryBudget,
     HardwareProfiler,
     HardwareSnapshot,
     PowerSource,
+    _probe_cgroup_memory,
 )
 
 
@@ -251,6 +253,142 @@ class HardwareProfilerTests(unittest.TestCase):
             ).capture()
         self.assertTrue(snapshot.device_id.startswith("node-"))
         self.assertNotIn("SUPER-SECRET", snapshot.device_id)
+
+    def test_container_limit_and_current_usage_clamp_routing_budget(self):
+        response = Mock()
+        response.json.return_value = {"models": []}
+        snapshot = HardwareProfiler(
+            device_id="container", psutil_module=self._psutil(total=10 * GIB, available=7 * GIB, cpu=20),
+            memory_probe=lambda: CgroupMemoryBudget(8 * GIB, int(1.5 * GIB)),
+            gpu_probe=lambda: (None, GPUMemoryKind.UNKNOWN), http_get=Mock(return_value=response),
+        ).capture()
+        self.assertEqual(snapshot.total_ram_gb, 8.0)
+        self.assertEqual(snapshot.available_ram_gb, 1.5)
+        self.assertEqual(snapshot.memory_pressure, 0.8125)
+        self.assertEqual(snapshot.system_pressure, 0.8125)
+        self.assertIn("cgroup_memory_limit_applied", snapshot.warnings)
+
+    def test_host_available_memory_remains_the_upper_bound(self):
+        response = Mock()
+        response.json.return_value = {"models": []}
+        snapshot = HardwareProfiler(
+            device_id="container", psutil_module=self._psutil(total=10 * GIB, available=2 * GIB),
+            memory_probe=lambda: CgroupMemoryBudget(8 * GIB, 6 * GIB),
+            gpu_probe=lambda: (None, GPUMemoryKind.UNKNOWN), http_get=Mock(return_value=response),
+        ).capture()
+        self.assertEqual(snapshot.total_ram_gb, 8.0)
+        self.assertEqual(snapshot.available_ram_gb, 2.0)
+
+    def test_injected_psutil_does_not_implicitly_read_the_real_host_cgroup(self):
+        response = Mock()
+        response.json.return_value = {"models": []}
+        with patch("core.hardware_profile._probe_cgroup_memory", side_effect=AssertionError("ambient probe")) as probe:
+            snapshot = HardwareProfiler(
+                device_id="fixture", psutil_module=self._psutil(),
+                gpu_probe=lambda: (None, GPUMemoryKind.UNKNOWN), http_get=Mock(return_value=response),
+            ).capture()
+        probe.assert_not_called()
+        self.assertEqual(snapshot.total_ram_gb, 16.0)
+        self.assertEqual(snapshot.available_ram_gb, 8.0)
+
+    def test_resource_probe_failure_preserves_snapshot_with_zero_allocation_headroom(self):
+        response = Mock()
+        response.json.return_value = {"models": []}
+        snapshot = HardwareProfiler(
+            device_id="container", psutil_module=self._psutil(),
+            memory_probe=Mock(side_effect=PermissionError("denied")),
+            gpu_probe=lambda: (None, GPUMemoryKind.UNKNOWN), http_get=Mock(return_value=response),
+        ).capture()
+        self.assertEqual(snapshot.available_ram_gb, 0.0)
+        self.assertEqual(snapshot.system_pressure, 1.0)
+        self.assertIn("cgroup_memory_probe_failed", snapshot.warnings)
+
+
+class CgroupMemoryTests(unittest.TestCase):
+    @staticmethod
+    def probe(files, *, platform="Linux"):
+        def read(path):
+            value = files.get(str(path), FileNotFoundError(str(path)))
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return _probe_cgroup_memory(read_text=read, platform_name=platform)
+
+    def test_v2_clamps_to_hard_limit_minus_all_current_usage_including_cache(self):
+        budget = self.probe({
+            "/proc/self/cgroup": "0::/\n",
+            "/sys/fs/cgroup/memory.max": str(8 * GIB),
+            "/sys/fs/cgroup/memory.current": str(int(6.5 * GIB)),
+            # Cache is deliberately not assumed reclaimable for allocations.
+            "/sys/fs/cgroup/memory.stat": f"file {5 * GIB}\n",
+        })
+        self.assertEqual(budget.limit_bytes, 8 * GIB)
+        self.assertEqual(budget.available_bytes, int(1.5 * GIB))
+        self.assertEqual(budget.warnings, ())
+
+    def test_v1_memory_controller_uses_current_usage(self):
+        budget = self.probe({
+            "/proc/self/cgroup": "4:cpu,cpuacct:/\n5:memory:/\n",
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": str(4 * GIB),
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes": str(3 * GIB),
+        })
+        self.assertEqual(budget.limit_bytes, 4 * GIB)
+        self.assertEqual(budget.available_bytes, GIB)
+
+    def test_parent_sibling_usage_can_constrain_child_with_more_local_headroom(self):
+        budget = self.probe({
+            "/proc/self/cgroup": "0::/sessions/job\n",
+            "/sys/fs/cgroup/sessions/job/memory.max": str(8 * GIB),
+            "/sys/fs/cgroup/sessions/job/memory.current": str(2 * GIB),
+            "/sys/fs/cgroup/sessions/memory.max": str(10 * GIB),
+            "/sys/fs/cgroup/sessions/memory.current": str(7 * GIB),
+            "/sys/fs/cgroup/memory.max": "max",
+        })
+        self.assertEqual(budget.limit_bytes, 8 * GIB)
+        self.assertEqual(budget.available_bytes, 3 * GIB)
+
+    def test_nested_v1_limit_is_not_hidden_by_unlimited_mount_root(self):
+        budget = self.probe({
+            "/proc/self/cgroup": "5:memory:/docker/job\n",
+            "/sys/fs/cgroup/memory/docker/job/memory.limit_in_bytes": str(2 * GIB),
+            "/sys/fs/cgroup/memory/docker/job/memory.usage_in_bytes": str(GIB),
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": "9223372036854771712",
+        })
+        self.assertEqual(budget.limit_bytes, 2 * GIB)
+        self.assertEqual(budget.available_bytes, GIB)
+
+    def test_unlimited_or_missing_cgroup_does_not_invent_a_limit(self):
+        for files in ({}, {"/sys/fs/cgroup/memory.max": "max"},
+                      {"/sys/fs/cgroup/memory/memory.limit_in_bytes": "9223372036854771712"}):
+            with self.subTest(files=files):
+                self.assertEqual(self.probe(files), CgroupMemoryBudget())
+
+    def test_known_limit_with_unreadable_or_invalid_usage_has_zero_safe_headroom(self):
+        for usage in (PermissionError("denied"), "-1", "bad", FileNotFoundError("gone")):
+            with self.subTest(usage=usage):
+                budget = self.probe({"/sys/fs/cgroup/memory.max": str(8 * GIB),
+                                     "/sys/fs/cgroup/memory.current": usage})
+                self.assertEqual(budget.limit_bytes, 8 * GIB)
+                self.assertEqual(budget.available_bytes, 0)
+                self.assertIn("cgroup_memory_usage_unavailable", budget.warnings)
+
+    def test_unreadable_or_invalid_limit_is_not_assumed_unlimited(self):
+        for value in (PermissionError("denied"), "0", "bad"):
+            with self.subTest(value=value):
+                budget = self.probe({"/sys/fs/cgroup/memory.max": value})
+                self.assertIsNone(budget.limit_bytes)
+                self.assertEqual(budget.available_bytes, 0)
+                self.assertIn("cgroup_memory_limit_unavailable", budget.warnings)
+
+    def test_usage_above_limit_never_reports_negative_memory(self):
+        budget = self.probe({"/sys/fs/cgroup/memory.max": str(8 * GIB),
+                             "/sys/fs/cgroup/memory.current": str(9 * GIB)})
+        self.assertEqual(budget.available_bytes, 0)
+
+    def test_non_linux_platform_never_reads_container_files(self):
+        read = Mock(side_effect=AssertionError("unexpected file read"))
+        self.assertEqual(_probe_cgroup_memory(read_text=read, platform_name="Windows"), CgroupMemoryBudget())
+        read.assert_not_called()
 
 
 if __name__ == "__main__":
