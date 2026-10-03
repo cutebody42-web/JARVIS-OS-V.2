@@ -21,6 +21,24 @@ from pathlib import Path
 from typing import Callable, Mapping, Protocol
 from uuid import uuid4
 
+from core.nexus.owner_approval import OwnerApprovalManager
+
+
+def repository_path(value: str) -> str:
+    """Require one portable, canonical path, including on Windows installs."""
+    if not isinstance(value, str) or not value or "\\" in value or ":" in value:
+        raise ValueError("path must be a canonical repository-relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or str(path) != value:
+        raise ValueError("path must be a canonical repository-relative path")
+    reserved = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+    for part in path.parts:
+        if part in {".", ".."} or part.rstrip(" .") != part or any(ord(c) < 32 for c in part):
+            raise ValueError("path must stay inside the repository")
+        if part.split(".", 1)[0].casefold() in reserved:
+            raise ValueError("path is reserved on Windows")
+    return value
+
 
 class IncidentKind(str, Enum):
     RUNTIME_CRASH = "runtime_crash"
@@ -95,9 +113,7 @@ class FileEdit:
     replacement: str
 
     def __post_init__(self) -> None:
-        path = PurePosixPath(self.path)
-        if path.is_absolute() or ".." in path.parts or not path.parts:
-            raise ValueError("repair edit path must stay inside the repository")
+        repository_path(self.path)
         if not isinstance(self.expected_sha256, str) or len(self.expected_sha256) != 64:
             raise ValueError("expected_sha256 must be a hex SHA-256 digest")
         int(self.expected_sha256, 16)
@@ -117,8 +133,24 @@ class RepairPatch:
         object.__setattr__(self, "requested_tests", tuple(self.requested_tests))
         if not self.edits:
             raise ValueError("repair patch must contain at least one edit")
+        if any(not isinstance(edit, FileEdit) for edit in self.edits):
+            raise TypeError("repair edits must be FileEdit values")
+        if len({edit.path.casefold() for edit in self.edits}) != len(self.edits):
+            raise ValueError("repair patch contains duplicate or case-colliding paths")
         if not self.rationale.strip():
             raise ValueError("repair rationale must be non-empty")
+
+    def digest(self) -> str:
+        """Bind an owner decision to content, base hashes, checks and incident."""
+        payload = {
+            "incident_id": self.incident_id,
+            "edits": [{"path": edit.path, "expected_sha256": edit.expected_sha256,
+                       "replacement": edit.replacement} for edit in self.edits],
+            "rationale": self.rationale,
+            "requested_tests": self.requested_tests,
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                                         ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -135,6 +167,7 @@ class RepairOutcome:
     disposition: RepairDisposition
     message: str
     checkpoint_id: str | None = None
+    approval_id: str | None = None
 
 
 class RepairEngine(Protocol):
@@ -172,12 +205,18 @@ class SelfHealPolicy:
         "core/authority_contracts.py",
         "core/capability_registry.py",
         "core/windows_broker.py",
-        "core/nexus/peer_auth.py",
-        "core/nexus/pairing.py",
-        "core/nexus/signed_transport.py",
+        "core/nexus/",
+        "core/github_repair.py",
+        "core/local_update_service.py",
+        "core/build_info.py",
+        "brain_sidecar.py",
+        "core/secret_store.py",
+        "core/owner_face.py",
         "core/self_heal.py",
         "core/update_",
+        "api/",
         "packaging/",
+        "web/src-tauri/",
         "models/",
         ".github/workflows/",
     )
@@ -211,9 +250,9 @@ class SelfHealPolicy:
             if any(token.casefold() in path for token in self.FORBIDDEN_PATTERNS):
                 return RepairRisk.FORBIDDEN
 
-        for path in paths:
+        for path in lowered:
             if any(
-                path == prefix or path.startswith(prefix)
+                path == prefix.casefold() or path.startswith(prefix.casefold())
                 for prefix in self.MAJOR_PREFIXES
             ):
                 return RepairRisk.MAJOR
@@ -306,9 +345,11 @@ class SelfHealController:
         *,
         policy: SelfHealPolicy | None = None,
         journal: RepairJournal | None = None,
+        owner_approvals: OwnerApprovalManager | None = None,
     ):
         self.policy = policy or SelfHealPolicy()
         self.journal = journal
+        self.owner_approvals = owner_approvals
         self._runtime_handlers: dict[IncidentKind, Callable[[Incident], bool]] = {}
 
     def register_runtime_healer(
@@ -374,6 +415,7 @@ class SelfHealController:
         sandbox: RepairSandbox,
         repository_context: str,
         owner_approved: bool = False,
+        approval_id: str | None = None,
     ) -> RepairOutcome:
         patch = engine.propose(incident, repository_context)
         if patch.incident_id != incident.id:
@@ -391,16 +433,29 @@ class SelfHealController:
                 self.journal.record(incident.id, outcome.state, outcome.message)
             return outcome
 
-        if disposition is RepairDisposition.REQUIRE_OWNER and not owner_approved:
+        # A caller/model supplied boolean is not proof of an owner decision.
+        if disposition is RepairDisposition.REQUIRE_OWNER and approval_id is None:
+            request_id = None
+            if self.owner_approvals is not None:
+                request_id = self.owner_approvals.create(
+                    f"Apply JARVIS repair: {patch.rationale[:350]}", patch.digest(),
+                    ttl_seconds=300,
+                ).approval_id
             outcome = RepairOutcome(
                 incident.id,
                 RepairState.AWAITING_OWNER,
                 disposition,
                 "Major repair passed policy classification but requires owner approval.",
+                approval_id=request_id,
             )
             if self.journal:
                 self.journal.record(incident.id, outcome.state, outcome.message)
             return outcome
+
+        if disposition is RepairDisposition.REQUIRE_OWNER:
+            if self.owner_approvals is None:
+                raise PermissionError("Major repair requires the paired owner approval queue")
+            self.owner_approvals.consume(approval_id, action_digest=patch.digest())
 
         checkpoint = sandbox.create_checkpoint(incident)
         if self.journal:

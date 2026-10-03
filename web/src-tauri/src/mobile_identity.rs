@@ -12,9 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
-#[cfg(target_os = "ios")]
-use tauri_plugin_biometric::{AuthOptions, BiometricExt, BiometryType};
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri_plugin_jarvis_fingerprint::FingerprintExt;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
@@ -128,32 +126,43 @@ fn restrict_permissions(_path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn signing_key(_app: &AppHandle) -> Result<SigningKey, String> {
+    // Pairing and signed requests can run concurrently. Serialize first key
+    // creation so two requests cannot acquire different device identities.
+    static IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = IDENTITY_LOCK.lock()
+        .map_err(|_| "JARVIS mobile identity storage is unavailable.".to_string())?;
     const SERVICE: &str = "ai.jarvis.app";
     const USER: &str = "mobile-ed25519";
+    #[cfg(target_os = "android")]
     let entry = keyring_core::Entry::new(SERVICE, USER)
-        .map_err(|error| format!("Android Keystore entry could not be opened ({error})."))?;
+        .map_err(|error| format!("JARVIS mobile secure-store entry could not be opened ({error})."))?;
+    #[cfg(target_os = "ios")]
+    let entry = keyring_core::Entry::new_with_modifiers(
+        SERVICE, USER,
+        &std::collections::HashMap::from([("access-policy", "WhenUnlockedThisDeviceOnly")]),
+    ).map_err(|error| format!("JARVIS iOS Keychain entry could not be opened ({error})."))?;
     match entry.get_secret() {
         Ok(bytes) => {
             let seed: [u8; 32] = bytes
                 .as_slice()
                 .try_into()
-                .map_err(|_| "Android Keystore JARVIS identity has invalid length.".to_string())?;
+                .map_err(|_| "JARVIS mobile secure-store identity has invalid length.".to_string())?;
             Ok(SigningKey::from_bytes(&seed))
         }
         Err(keyring_core::Error::NoEntry) => {
             let key = SigningKey::generate(&mut OsRng);
             entry
                 .set_secret(&key.to_bytes())
-                .map_err(|error| format!("JARVIS identity could not be stored in Android Keystore ({error})."))?;
+                .map_err(|error| format!("JARVIS identity could not be stored in the mobile secure store ({error})."))?;
             Ok(key)
         }
-        Err(error) => Err(format!("Android Keystore JARVIS identity could not be read ({error}).")),
+        Err(error) => Err(format!("JARVIS mobile secure-store identity could not be read ({error}).")),
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn signing_key(app: &AppHandle) -> Result<SigningKey, String> {
     ensure_private_dir(app)?;
     let path = seed_path(app)?;
@@ -176,6 +185,8 @@ fn signing_key(app: &AppHandle) -> Result<SigningKey, String> {
 fn key_protection() -> &'static str {
     if cfg!(target_os = "android") {
         "android_keystore"
+    } else if cfg!(target_os = "ios") {
+        "ios_keychain_this_device_only"
     } else {
         "native_app_sandbox"
     }
@@ -370,7 +381,7 @@ pub async fn mobile_fingerprint_status(app: AppHandle) -> Result<MobileFingerpri
 }
 
 fn read_fingerprint_status(app: AppHandle) -> Result<MobileFingerprintStatus, String> {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         let status = app.fingerprint().status()?;
         let available = status.is_available && status.biometry_type == 1;
@@ -379,17 +390,6 @@ fn read_fingerprint_status(app: AppHandle) -> Result<MobileFingerprintStatus, St
             fingerprint: available,
             biometry_type: status.biometry_type,
             error: status.error,
-        });
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let status = app.biometric().status().map_err(|_| "JARVIS could not read Touch ID availability.".to_string())?;
-        let available = status.is_available && matches!(status.biometry_type, BiometryType::TouchID);
-        return Ok(MobileFingerprintStatus {
-            available,
-            fingerprint: available,
-            biometry_type: if available { 1 } else { 0 },
-            error: if available { None } else { Some("JARVIS owner approvals require enrolled Touch ID.".into()) },
         });
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -403,24 +403,9 @@ fn read_fingerprint_status(app: AppHandle) -> Result<MobileFingerprintStatus, St
 }
 
 fn authenticate_owner_fingerprint(app: &AppHandle, reason: &str) -> Result<(), String> {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         return app.fingerprint().authenticate(reason.to_string());
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let status = app.biometric().status().map_err(|_| "JARVIS could not verify Touch ID availability.".to_string())?;
-        if !status.is_available || !matches!(status.biometry_type, BiometryType::TouchID) {
-            return Err("Sensitive JARVIS approvals require an enrolled fingerprint.".into());
-        }
-        return app.biometric().authenticate(reason.to_string(), AuthOptions {
-            allow_device_credential: false,
-            cancel_title: Some("Cancel".into()),
-            fallback_title: None,
-            title: Some("JARVIS owner approval".into()),
-            subtitle: Some("Use your fingerprint to continue".into()),
-            confirmation_required: Some(true),
-        }).map_err(|_| "JARVIS fingerprint verification failed or was cancelled.".to_string());
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {

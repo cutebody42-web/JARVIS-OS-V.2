@@ -1,0 +1,143 @@
+name: Build JARVIS iOS companion
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/build-ios.yml"
+  push:
+    branches: ["product/**"]
+    paths:
+      - "web/**"
+      - ".github/workflows/build-ios.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios-simulator:
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      CI: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Prepare Xcode and matching simulator target
+        shell: bash
+        run: |
+          xcodebuild -version
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          rustup update stable
+          rustup default stable
+          if [ "$(uname -m)" = "arm64" ]; then
+            echo "IOS_TARGET=aarch64-sim" >> "$GITHUB_ENV"
+            rustup target add aarch64-apple-ios-sim
+          else
+            echo "IOS_TARGET=x86_64" >> "$GITHUB_ENV"
+            rustup target add x86_64-apple-ios
+          fi
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Initialize generated Xcode project
+        working-directory: web
+        run: npm run tauri -- ios init --ci
+
+      - name: Build unsigned simulator companion
+        working-directory: web
+        # --no-sign supports the simulator without inventing an Apple team ID.
+        # This output cannot be installed on a physical iPhone or iPad.
+        run: npm run tauri -- ios build --debug --no-sign --target "$IOS_TARGET" --ci
+
+      - name: Install and launch on an iOS simulator
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p artifacts/ios
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import plistlib
+          import re
+          import subprocess
+          import tarfile
+          import time
+
+          def run(*args):
+              return subprocess.run(args, check=True, capture_output=True, text=True).stdout
+
+          app = None
+          for candidate in pathlib.Path("web/src-tauri/gen/apple").rglob("*.app"):
+              if ".xcarchive" in str(candidate):
+                  continue
+              info = candidate / "Info.plist"
+              if info.is_file() and plistlib.loads(info.read_bytes()).get("CFBundleIdentifier") == "ai.jarvis.app":
+                  app = candidate
+                  break
+          if app is None:
+              raise SystemExit("Tauri did not export the iOS simulator application.")
+
+          devices = json.loads(run("xcrun", "simctl", "list", "devices", "available", "--json"))
+          choices = [device for runtime, items in devices["devices"].items() if ".iOS-" in runtime
+                     for device in items if "iPhone" in device["name"] and device.get("isAvailable")]
+          if not choices:
+              raise SystemExit("No available iPhone simulator exists on this runner.")
+          device = next((item for item in choices if item["state"] == "Booted"), choices[0])
+          udid = device["udid"]
+          if device["state"] != "Booted":
+              run("xcrun", "simctl", "boot", udid)
+          run("xcrun", "simctl", "bootstatus", udid, "-b")
+          run("xcrun", "simctl", "install", udid, str(app))
+          launch = run("xcrun", "simctl", "launch", udid, "ai.jarvis.app")
+          match = re.search(r"ai\.jarvis\.app:\s*(\d+)", launch)
+          if not match:
+              raise SystemExit(f"Simulator launch did not return a process ID: {launch}")
+          pid = int(match.group(1))
+          time.sleep(5)
+          # Simulator app PIDs belong to the macOS host. A successful launch
+          # followed by an exited process must not be reported as a healthy app.
+          os.kill(pid, 0)
+          output = pathlib.Path("artifacts/ios")
+          run("xcrun", "simctl", "io", udid, "screenshot", str(output / "companion.png"))
+          run("xcrun", "simctl", "openurl", udid, "jarvis://")
+          archive = output / "JARVIS-iOS-Simulator.tar.gz"
+          with tarfile.open(archive, "w:gz") as tar:
+              tar.add(app, arcname="JARVIS.app")
+          evidence = {
+              "source_commit": os.environ["SOURCE_SHA"], "simulator": device["name"],
+              "architecture": os.environ["IOS_TARGET"], "bundle_id": "ai.jarvis.app",
+              "launch_pid": pid, "alive_after_seconds": 5, "deep_link_opened": True,
+              "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+              "physical_device_installable": False, "apple_distribution_signed": False,
+              "touch_id_verified": False, "laptop_connection_verified": False,
+          }
+          (output / "build-info.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          print(json.dumps(evidence, indent=2))
+          PY
+
+      - name: Upload simulator application and launch evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-iOS-Simulator-not-for-phones
+          path: artifacts/ios/
+          if-no-files-found: error

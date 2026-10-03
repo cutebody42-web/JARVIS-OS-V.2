@@ -1,10 +1,13 @@
-#![cfg(target_os = "android")]
+#![cfg(any(target_os = "android", target_os = "ios"))]
 
 use serde::{Deserialize, Serialize};
 use tauri::{
     plugin::{Builder, PluginHandle, TauriPlugin},
     Manager, Runtime,
 };
+
+#[cfg(target_os = "ios")]
+tauri::ios_plugin_binding!(init_plugin_jarvis_fingerprint);
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,8 +63,11 @@ impl<R: Runtime, T: Manager<R>> FingerprintExt<R> for T {
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("jarvis-fingerprint")
         .setup(|app, api| {
+            #[cfg(target_os = "android")]
             let handle =
                 api.register_android_plugin("ai.jarvis.fingerprint", "FingerprintPlugin")?;
+            #[cfg(target_os = "ios")]
+            let handle = api.register_ios_plugin(init_plugin_jarvis_fingerprint)?;
             app.manage(Fingerprint(handle));
             Ok(())
         })

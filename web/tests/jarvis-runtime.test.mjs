@@ -10,7 +10,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const mediaType = "application/vnd.nexus-sync+json";
 
-function runtime(invoke, biometric) {
+function runtime(invoke, biometric, fetchImplementation = () => { throw new Error("Mobile transport must stay native"); }) {
   const exports = {};
   const context = {
     exports,
@@ -19,7 +19,7 @@ function runtime(invoke, biometric) {
     TextEncoder,
     atob,
     btoa,
-    fetch: () => { throw new Error("Mobile transport must stay native"); },
+    fetch: fetchImplementation,
     window: { __TAURI__: { core: { invoke }, biometric }, setTimeout },
   };
   vm.runInNewContext(compiled, context, { filename: "jarvis-runtime.ts" });
@@ -153,4 +153,40 @@ test("a cancelled native fingerprint approval sends no decision to the desktop",
   });
   await assert.rejects(api.mobileDecideApproval("approval-1", true), /Fingerprint verification failed/);
   assert.deepEqual(commands, ["mobile_sign_approval_decision"]);
+});
+
+test("desktop updates use authenticated explicit steps and bind installation to checkpoint and approval", async () => {
+  const requests = [];
+  const status = {
+    supported: true, phase: "awaiting_approval", message: "Verify on your phone",
+    plan: null, checkpoint_id: "checkpoint-1", approval_id: "approval-1",
+    approval_state: "pending", history: [],
+  };
+  const api = runtime(async () => { throw new Error("Checking or preparing cannot close JARVIS"); }, undefined,
+    async (url, init) => {
+      requests.push({ url, init });
+      return new Response(JSON.stringify(status), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+  const client = new api.LocalBrainClient({ endpoint: "http://127.0.0.1:8765", token: "ui-token" });
+  assert.equal((await client.getUpdateStatus()).approval_state, "pending");
+  await client.checkUpdates();
+  await client.prepareUpdate();
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every(({ url }) => !url.endsWith("/apply")));
+  await client.applyUpdate("checkpoint-1", "approval-1");
+  assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), [
+    "/v1/update/status", "/v1/update/check", "/v1/update/prepare", "/v1/update/apply",
+  ]);
+  for (const { init } of requests) assert.equal(init.headers.Authorization, "Bearer ui-token");
+  assert.equal(requests[1].init.method, "POST");
+  assert.equal(requests[2].init.method, "POST");
+  assert.deepEqual(JSON.parse(requests[3].init.body), { checkpoint_id: "checkpoint-1", approval_id: "approval-1" });
+});
+
+test("desktop update shutdown is an explicit native command", async () => {
+  const commands = [];
+  const api = runtime(async (command) => { commands.push(command); });
+  assert.deepEqual(commands, []);
+  await api.shutdownForUpdate();
+  assert.deepEqual(commands, ["shutdown_for_update"]);
 });

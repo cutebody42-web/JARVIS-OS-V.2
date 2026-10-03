@@ -20,10 +20,12 @@ import {
   mobilePendingApprovals,
   pairMobileCompanion,
   platformMode,
+  shutdownForUpdate,
   type MobileBiometricStatus,
   type MobileIdentity,
   type PendingApproval,
   type PlatformMode,
+  type UpdateStatus,
 } from "@/lib/jarvis-runtime";
 
 type LocalMessage = {
@@ -380,6 +382,10 @@ export function JarvisProductShell() {
   const [pairEndpoint, setPairEndpoint] = useState("");
   const [pairOffer, setPairOffer] = useState<Record<string, unknown> | null>(null);
   const [pendingPairings, setPendingPairings] = useState<Array<Record<string, unknown>>>([]);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState("");
+  const updateRevision = useRef(0);
   const logEnd = useRef<HTMLDivElement>(null);
   const voiceStopRequested = useRef(false);
   const visual = useVisualProfile(status?.device.system_pressure);
@@ -431,6 +437,34 @@ export function JarvisProductShell() {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [client]);
+
+  useEffect(() => {
+    if (!client || updateBusy) return;
+    const activeClient = client;
+    let cancelled = false;
+    let refreshing = false;
+    async function refreshUpdates() {
+      if (refreshing) return;
+      refreshing = true;
+      const revision = updateRevision.current;
+      try {
+        const next = await activeClient.getUpdateStatus();
+        if (!cancelled && revision === updateRevision.current) {
+          setUpdateStatus(next);
+        }
+      } catch {
+        // A temporary local connection failure must not trigger installation.
+      } finally {
+        refreshing = false;
+      }
+    }
+    void refreshUpdates();
+    const timer = window.setInterval(refreshUpdates, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [client, updateBusy]);
 
   useEffect(() => {
     if (!client) return;
@@ -667,6 +701,75 @@ export function JarvisProductShell() {
     }
   }
 
+  async function checkUpdates() {
+    if (!client || updateBusy) return;
+    updateRevision.current += 1;
+    setUpdateBusy(true);
+    setUpdateError("");
+    try {
+      setUpdateStatus(await client.checkUpdates());
+    } catch (reason) {
+      setUpdateError(reason instanceof Error ? reason.message : "Could not check for JARVIS updates.");
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function prepareUpdate() {
+    if (!client || updateBusy) return;
+    updateRevision.current += 1;
+    setUpdateBusy(true);
+    setUpdateError("");
+    try {
+      setUpdateStatus(await client.prepareUpdate());
+    } catch (reason) {
+      setUpdateError(reason instanceof Error ? reason.message : "Could not prepare the JARVIS update.");
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function installUpdate() {
+    if (!client || updateBusy || busy || updateStatus?.approval_state !== "approved"
+      || !updateStatus.checkpoint_id || !updateStatus.approval_id) return;
+    updateRevision.current += 1;
+    setUpdateBusy(true);
+    setUpdateError("");
+    try {
+      const next = await client.applyUpdate(updateStatus.checkpoint_id, updateStatus.approval_id);
+      setUpdateStatus(next);
+      if (next.phase !== "applying") {
+        throw new Error(next.message || "The update is not authorized for installation.");
+      }
+      await shutdownForUpdate();
+    } catch (reason) {
+      setUpdateError(reason instanceof Error ? reason.message : "Could not start the JARVIS update.");
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function closeForUpdate() {
+    if (updateStatus?.phase !== "applying" || updateBusy || busy) return;
+    setUpdateBusy(true);
+    setUpdateError("");
+    try {
+      await shutdownForUpdate();
+    } catch (reason) {
+      setUpdateError(reason instanceof Error ? reason.message : "Close JARVIS to continue installation.");
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  const updateInProgress = Boolean(updateStatus?.busy)
+    || ["checking", "staging", "preparing", "applying"].includes(updateStatus?.phase ?? "");
+  const approvalExpired = updateStatus?.approval_state === "expired" || updateStatus?.approval_state === "rejected";
+  const canPrepareUpdate = Boolean(updateStatus?.supported && updateStatus.plan && !updateInProgress
+    && updateStatus.phase === "available" && !updateStatus.checkpoint_id);
+  const canInstallUpdate = Boolean(updateStatus?.supported && updateStatus.checkpoint_id
+    && updateStatus.approval_id && updateStatus.approval_state === "approved" && !updateInProgress);
+
   const pressure = status?.device.system_pressure;
   const voiceState = status?.voice.state ?? "idle";
   const voiceActive = voiceState === "listening" || voiceState === "speaking";
@@ -864,6 +967,51 @@ export function JarvisProductShell() {
                 <option key={model} value={model}>{model}</option>
               ))}
             </select>
+          </section>
+
+          <section className="device-link-card">
+            <div className="capability-heading"><span>JARVIS updates</span><b>{updateStatus?.plan?.version ?? ""}</b></div>
+            <p aria-live="polite">{updateStatus?.message ?? "Checking update availability."}</p>
+            {updateStatus?.plan?.notes && (
+              <details>
+                <summary>Release notes</summary>
+                <p>{updateStatus.plan.notes}</p>
+              </details>
+            )}
+            {updateStatus?.approval_state === "pending" && (
+              <p>Open your paired phone and approve this update with your fingerprint. Installation starts only when you choose Install and restart here.</p>
+            )}
+            {approvalExpired && <p>Check updates again, then prepare the release to request a fresh fingerprint approval.</p>}
+            {canInstallUpdate && <p>Fingerprint approval received. JARVIS will close while the verified installer runs, then restart. A verified recovery installer is ready if installation fails.</p>}
+            <div className="pair-actions">
+              <Button
+                variant="secondary"
+                onClick={() => void checkUpdates()}
+                disabled={!client || !updateStatus?.supported || updateBusy || updateInProgress
+                  || updateStatus?.approval_state === "pending" || updateStatus?.approval_state === "approved"}
+              >Check updates</Button>
+              {canPrepareUpdate && (
+                <Button variant="secondary" onClick={() => void prepareUpdate()} disabled={updateBusy}>
+                  Prepare update
+                </Button>
+              )}
+              {canInstallUpdate && (
+                <Button onClick={() => void installUpdate()} disabled={updateBusy || busy}>Install and restart</Button>
+              )}
+              {updateStatus?.phase === "applying" && (
+                <Button onClick={() => void closeForUpdate()} disabled={updateBusy || busy}>Close to install</Button>
+              )}
+            </div>
+            {updateBusy && <p aria-live="polite">Preparing the next update step.</p>}
+            {updateError && <p className="console-error">{updateError}</p>}
+            {!!updateStatus?.history.length && (
+              <details>
+                <summary>Recent installations</summary>
+                {updateStatus.history.slice(-3).reverse().map((item) => (
+                  <p key={item.checkpoint_id}>{item.version}: {item.message}</p>
+                ))}
+              </details>
+            )}
           </section>
 
           <section className="device-link-card">

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import threading
 import time
+import sys
 
 import psutil
 import uvicorn
@@ -46,7 +48,39 @@ def _serve_companion(app, host: str, port: int) -> None:
 
 
 def main(argv=None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "--update-self-test":
+        if len(arguments) != 2:
+            return 2
+        try:
+            from core.build_info import read_build_info
+            from core.ollama_bootstrap import load_brain_manifest
+            info = read_build_info()
+            load_brain_manifest()
+            output = Path(arguments[1])
+            if not output.is_absolute() or output.is_symlink():
+                return 2
+            with output.open("x", encoding="utf-8") as handle:
+                json.dump({"ok": True, **info}, handle)
+            return 0
+        except Exception:
+            return 1
+    if arguments and arguments[0] == "--install-update":
+        if len(arguments) != 4:
+            return 2
+        try:
+            parent_pid = int(arguments[3])
+            if parent_pid <= 0 or not Path(arguments[1]).is_absolute():
+                return 2
+        except (TypeError, ValueError):
+            return 2
+        try:
+            from core.update_manager import run_windows_update_helper, UpdateState
+            outcome = run_windows_update_helper(arguments[1], arguments[2], parent_pid)
+            return 0 if outcome.state is UpdateState.APPLIED else 1
+        except Exception:
+            return 1
+    args = _parser().parse_args(arguments)
     if not 1024 <= args.port <= 65535:
         raise ValueError("--port must be between 1024 and 65535")
     if len(args.ui_token) < 32:
@@ -58,6 +92,7 @@ def main(argv=None) -> int:
         state_dir=Path(args.state_dir) if args.state_dir else None,
         allow_cloud=args.cloud_boost,
         companion_endpoint=gateway.endpoint if gateway is not None else None,
+        parent_pid=args.parent_pid,
     )
 
     threading.Thread(

@@ -33,6 +33,7 @@ from core.jarvis_memory import JarvisMemory
 from core.model_router import TaskKind
 from core.model_runtime import ModelRuntime, ModelRuntimeError
 from core.mobile_approval_bridge import MobileApprovalBridge
+from core.local_update_service import LocalUpdateService
 from core.owner_face import FaceIdentityError, OwnerFaceRecognizer
 from core.nexus.owner_approval import OwnerApprovalManager
 from core.nexus.sync_node import NexusSyncNode
@@ -76,6 +77,11 @@ class ModelSelectionRequest(BaseModel):
 
 class ModelImportRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
+
+
+class UpdateApplyRequest(BaseModel):
+    checkpoint_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    approval_id: str = Field(min_length=1, max_length=128)
 
 
 class FaceCameraRequest(BaseModel):
@@ -122,6 +128,7 @@ class LocalBrainHost:
         state_dir: str | Path | None = None,
         allow_cloud: bool = False,
         companion_endpoint: str | None = None,
+        parent_pid: int | None = None,
     ):
         if not isinstance(ui_token, str) or len(ui_token) < 32:
             raise ValueError("ui_token must contain at least 32 characters")
@@ -143,6 +150,7 @@ class LocalBrainHost:
 
         self.node = NexusSyncNode(self.state_dir / "nexus", device_id)
         self.approvals = OwnerApprovalManager(self.node.store)
+        self.updates = LocalUpdateService(state_dir=self.state_dir, approvals=self.approvals, parent_pid=parent_pid)
         self.memory = JarvisMemory(self.node.store, self.node.applier)
         self.memory.recover()
 
@@ -564,6 +572,30 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
     @app.get("/v1/status", dependencies=[Depends(require_ui)])
     def status() -> dict[str, Any]:
         return host.status()
+
+    @app.get("/v1/update/status", dependencies=[Depends(require_ui)])
+    def update_status() -> dict[str, Any]:
+        return host.updates.status()
+
+    def update_operation(operation) -> dict[str, Any]:
+        try:
+            return operation()
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from None
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    @app.post("/v1/update/check", dependencies=[Depends(require_ui)])
+    def check_update() -> dict[str, Any]:
+        return update_operation(host.updates.check)
+
+    @app.post("/v1/update/prepare", dependencies=[Depends(require_ui)])
+    def prepare_update() -> dict[str, Any]:
+        return update_operation(host.updates.prepare)
+
+    @app.post("/v1/update/apply", dependencies=[Depends(require_ui)])
+    def apply_update(request: UpdateApplyRequest) -> dict[str, Any]:
+        return update_operation(lambda: host.updates.apply(checkpoint_id=request.checkpoint_id, approval_id=request.approval_id))
 
     @app.post("/v1/setup/local-brain", dependencies=[Depends(require_ui)])
     def setup_local_brain(request: SetupRequest) -> dict[str, Any]:

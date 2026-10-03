@@ -15,6 +15,7 @@ FINGERPRINT_PLUGIN = ROOT / "web" / "src-tauri" / "plugins" / "tauri-plugin-jarv
 FINGERPRINT_RUST = FINGERPRINT_PLUGIN / "src" / "lib.rs"
 FINGERPRINT_ANDROID = FINGERPRINT_PLUGIN / "android" / "src" / "main" / "java" / "FingerprintPlugin.kt"
 FINGERPRINT_MANIFEST = FINGERPRINT_PLUGIN / "android" / "src" / "main" / "AndroidManifest.xml"
+FINGERPRINT_IOS = FINGERPRINT_PLUGIN / "ios" / "Sources" / "FingerprintPlugin.swift"
 
 
 def rust_function(source: str, name: str) -> str:
@@ -49,14 +50,34 @@ class ProductShellBiometricContractTests(unittest.TestCase):
         self.assertIn("})?;", signing[authenticate:payload])
 
         authentication = rust_function(native, "authenticate_owner_fingerprint")
-        android = authentication.split('#[cfg(target_os = "android")]', 1)[1].split(
-            '#[cfg(target_os = "ios")]', 1
-        )[0]
-        self.assertIn("app.fingerprint().authenticate", android)
-        self.assertNotIn(".biometric()", android)
-        ios = authentication.split('#[cfg(target_os = "ios")]', 1)[1]
-        self.assertIn("BiometryType::TouchID", ios)
-        self.assertIn("allow_device_credential: false", ios)
+        self.assertIn('#[cfg(any(target_os = "android", target_os = "ios"))]', authentication)
+        self.assertIn("app.fingerprint().authenticate", authentication)
+        self.assertNotIn(".biometric()", authentication)
+
+    def test_ios_success_requires_fresh_touch_id_without_passcode_or_face_id(self):
+        ios = FINGERPRINT_IOS.read_text(encoding="utf-8")
+        self.assertIn("context.biometryType == .touchID", ios)
+        self.assertIn("context.touchIDAuthenticationAllowableReuseDuration = 0", ios)
+        self.assertIn('context.localizedFallbackTitle = ""', ios)
+        self.assertIn("context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics", ios)
+        self.assertNotIn("evaluatePolicy(.deviceOwnerAuthentication,", ios)
+        self.assertIn("success && context.biometryType == .touchID", ios)
+        self.assertEqual(ios.count('session.invoke.resolve(["userVerified": true'), 1)
+        self.assertIn("guard active?.id == session.id else { return }", ios)
+        self.assertIn("UIApplication.didEnterBackgroundNotification", ios)
+        self.assertIn(".now() + 30", ios)
+        self.assertIn("session.context.invalidate()", ios)
+
+    def test_ios_key_is_device_only_keychain_and_failures_do_not_regenerate_it(self):
+        native = MOBILE_NATIVE.read_text(encoding="utf-8")
+        app = NATIVE_APP.read_text(encoding="utf-8")
+        signing = rust_function(native, "signing_key")
+        self.assertIn("apple_native_keyring_store::protected::Store::new()", app)
+        self.assertIn('("access-policy", "WhenUnlockedThisDeviceOnly")', signing)
+        self.assertIn("Err(keyring_core::Error::NoEntry)", signing)
+        self.assertIn("Err(error) => Err(", signing)
+        self.assertIn("IDENTITY_LOCK.lock()", signing)
+        self.assertIn('"ios_keychain_this_device_only"', native)
 
     def test_android_success_requires_the_fingerprint_sensor_callback(self):
         rust = FINGERPRINT_RUST.read_text(encoding="utf-8")
@@ -112,8 +133,8 @@ class ProductShellBiometricContractTests(unittest.TestCase):
         cargo = CARGO.read_text(encoding="utf-8")
         native = NATIVE_APP.read_text(encoding="utf-8")
         manifest = FINGERPRINT_MANIFEST.read_text(encoding="utf-8")
-        # iOS Touch ID still uses the generic platform plugin. Android-sensitive
-        # authorization is routed through the separate native-only sensor path.
+        # Generic UI biometric permission grants no signing authority. Sensitive
+        # authentication goes through each platform's native-only sensor path.
         self.assertIn("biometric:default", capability["permissions"])
         self.assertIn('tauri-plugin-biometric = "2.4.0"', cargo)
         self.assertIn('tauri-plugin-jarvis-fingerprint = { path = "plugins/tauri-plugin-jarvis-fingerprint" }', cargo)

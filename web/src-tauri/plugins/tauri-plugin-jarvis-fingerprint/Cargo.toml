@@ -3,7 +3,7 @@ name = "tauri-plugin-jarvis-fingerprint"
 version = "0.1.0"
 edition = "2021"
 links = "tauri-plugin-jarvis-fingerprint"
-description = "Fingerprint-only owner authentication for the JARVIS Android companion"
+description = "Fingerprint-only owner authentication for the JARVIS Android and iOS companions"
 
 [dependencies]
 tauri = { version = "2.12", default-features = false }

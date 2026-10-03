@@ -32,6 +32,7 @@
   },
   "bundle": {
     "active": true,
+    "windows": {"nsis": {"installMode": "currentUser"}},
     "targets": "all",
     "category": "Productivity",
     "shortDescription": "One continuous local-first JARVIS",

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "model_name": "JARVIS-Scratch-1.5B",
+  "initialization": "random; all neural weights trainable; no pretrained language weights",
+  "model_type": "qwen2",
+  "architecture": {
+    "model_type": "qwen2",
+    "vocab_size": 151936,
+    "hidden_size": 1536,
+    "intermediate_size": 8960,
+    "num_hidden_layers": 28,
+    "num_attention_heads": 12,
+    "num_key_value_heads": 2,
+    "max_position_embeddings": 4096,
+    "tie_word_embeddings": true,
+    "attention_bias": true,
+    "rope_theta": 1000000.0,
+    "rms_norm_eps": 1e-06,
+    "bos_token_id": 151643,
+    "eos_token_id": 151645,
+    "use_cache": false
+  },
+  "expected_parameters": 1543714304,
+  "tokenizer": {
+    "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+    "vocab_size": 151665,
+    "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+    "license": "apache-2.0",
+    "license_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/blob/989aa7980e4cf806f80c7fef2b1adb7bc71aa306/LICENSE",
+    "license_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+    "reuse": "Pretrained text tokenizer only; not pretrained model weights."
+  },
+  "architecture_reference": "Qwen2 architecture via transformers; upstream geometry checked against pinned Qwen2.5-1.5B-Instruct config.",
+  "verified_upstream_date": "2026-10-03",
+  "reference_parameter_count": 1543714304,
+  "planning_tokens_per_parameter": 20,
+  "minimum_gpu_memory_gib": 48,
+  "quality_status": "Architecture and tokenizer provenance only. No trained JARVIS checkpoint supplied."
+}

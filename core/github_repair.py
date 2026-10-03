@@ -25,6 +25,7 @@ from urllib.parse import quote
 import requests
 
 from core.self_heal import RepairDisposition, RepairPatch, SelfHealPolicy
+from core.nexus.owner_approval import OwnerApprovalManager
 from core.secret_store import SecretStore, get_secret_store
 
 
@@ -45,6 +46,7 @@ class GitHubRepairPublication:
     head_sha: str
     disposition: RepairDisposition
     required_workflows: tuple[str, ...]
+    patch_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class GitHubCheckSummary:
     pending: tuple[str, ...]
     failed: tuple[str, ...]
     missing: tuple[str, ...] = ()
+    head_sha: str | None = None
 
 
 class GitHubRepairClient:
@@ -230,6 +233,8 @@ class GitHubRepairClient:
         for run in runs:
             if not isinstance(run, dict):
                 continue
+            if run.get("head_sha") != head_sha:
+                continue
             name = str(run.get("name") or "workflow")
             observed_names.add(name)
             status = run.get("status")
@@ -237,7 +242,7 @@ class GitHubRepairClient:
             observed += 1
             if status != "completed":
                 pending.append(name)
-            elif conclusion not in {"success", "neutral", "skipped"}:
+            elif conclusion != "success":
                 failed.append(name)
 
         missing = tuple(
@@ -249,6 +254,7 @@ class GitHubRepairClient:
             pending=tuple(sorted(set(pending))),
             failed=tuple(sorted(set(failed))),
             missing=missing,
+            head_sha=head_sha,
         )
 
     def merge_pull_request(
@@ -271,6 +277,21 @@ class GitHubRepairClient:
         if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha):
             raise GitHubRepairError("GitHub returned an invalid merge commit.")
         return sha
+
+    def mark_ready_for_review(self, pull_number: int) -> None:
+        pull = self._request("GET", self._repo_path + f"/pulls/{pull_number}")
+        if pull.get("draft") is not True:
+            return
+        node_id = pull.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            raise GitHubRepairError("GitHub returned an invalid pull request node")
+        result = self._request("POST", "/graphql", json_body={
+            "query": "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }",
+            "variables": {"id": node_id},
+        })
+        ready = result.get("data", {}).get("markPullRequestReadyForReview", {}).get("pullRequest", {})
+        if result.get("errors") or ready.get("isDraft") is not False:
+            raise GitHubRepairError("GitHub did not mark the owner-approved repair ready for review")
 
 
 class GitHubRepairCoordinator:
@@ -353,17 +374,20 @@ class GitHubRepairCoordinator:
         if disposition is RepairDisposition.REJECT:
             raise PermissionError("Repair touches a forbidden self-modification surface.")
 
-        branch = self._branch_name(patch.incident_id)
-        self.client.create_branch(branch, base_sha)
-
-        head_sha = base_sha
+        # Verify all expected base blobs before making any GitHub mutation.
+        validated = []
         for edit in patch.edits:
-            blob_sha, current = self.client.file(edit.path, branch)
+            blob_sha, current = self.client.file(edit.path, base_sha)
             digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
             if digest != edit.expected_sha256:
                 raise GitHubRepairError(
                     f"Repair precondition changed for {edit.path}; refusing stale patch."
                 )
+            validated.append((edit, blob_sha))
+        branch = self._branch_name(patch.incident_id)
+        self.client.create_branch(branch, base_sha)
+        head_sha = base_sha
+        for edit, blob_sha in validated:
             head_sha = self.client.update_file(
                 branch=branch,
                 path=edit.path,
@@ -393,6 +417,7 @@ class GitHubRepairCoordinator:
             head_sha,
             disposition,
             self._required_for_patch(patch),
+            patch.digest(),
         )
 
     def wait_for_ci(
@@ -402,6 +427,8 @@ class GitHubRepairCoordinator:
         timeout_seconds: float = 1800,
         poll_seconds: float = 10.0,
     ) -> GitHubCheckSummary:
+        if timeout_seconds <= 0 or not 0 < poll_seconds <= 60:
+            raise ValueError("CI wait requires a positive timeout and 0..60 second polling interval")
         deadline = time.monotonic() + timeout_seconds
         latest = GitHubCheckSummary(
             False,
@@ -427,9 +454,36 @@ class GitHubRepairCoordinator:
     ) -> str | None:
         if publication.disposition is not RepairDisposition.AUTO_APPLY:
             return None
-        if not checks.successful:
+        if (not checks.completed or not checks.successful
+                or checks.pending or checks.failed or checks.missing
+                or checks.head_sha != publication.head_sha):
+            return None
+        # Check the exact commit again at the mutation boundary. A cached green
+        # summary, a skipped check, or checks for another repair cannot merge it.
+        latest = self.client.workflow_checks(
+            publication.head_sha, required_workflows=publication.required_workflows,
+        )
+        if not latest.completed or not latest.successful or latest.head_sha != publication.head_sha:
             return None
         return self.client.merge_pull_request(
             publication.pull_number,
             publication.head_sha,
         )
+
+    def merge_with_owner_approval(
+        self, publication: GitHubRepairPublication, patch: RepairPatch, *,
+        approvals: OwnerApprovalManager, approval_id: str,
+    ) -> str:
+        """An exact fingerprint-approved major repair still requires green CI."""
+        if publication.disposition is not RepairDisposition.REQUIRE_OWNER:
+            raise ValueError("Owner-approved merge is for major repair publications")
+        if patch.digest() != publication.patch_digest:
+            raise PermissionError("Owner approval is not bound to this published patch")
+        latest = self.client.workflow_checks(
+            publication.head_sha, required_workflows=publication.required_workflows,
+        )
+        if not latest.completed or not latest.successful or latest.head_sha != publication.head_sha:
+            raise GitHubRepairError("Major repair CI has not passed for this exact commit")
+        approvals.consume(approval_id, action_digest=patch.digest())
+        self.client.mark_ready_for_review(publication.pull_number)
+        return self.client.merge_pull_request(publication.pull_number, publication.head_sha)

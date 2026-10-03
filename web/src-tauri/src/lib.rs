@@ -20,6 +20,21 @@ use mobile_identity::{
 use tauri::Manager;
 use mobile_transport::mobile_companion_post;
 
+#[tauri::command]
+fn shutdown_for_update(app: tauri::AppHandle, state: tauri::State<'_, BrainState>) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        state.stop_recovery()?;
+        app.exit(0);
+        Ok(())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = (app, state);
+        Err("Install JARVIS desktop updates on your laptop.".into())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -32,6 +47,12 @@ pub fn run() {
             {
                 let store = android_native_keyring_store::Store::new()
                     .map_err(|error| format!("Android JARVIS Keystore initialization failed: {error}"))?;
+                keyring_core::set_default_store(store);
+            }
+            #[cfg(target_os = "ios")]
+            {
+                let store = apple_native_keyring_store::protected::Store::new()
+                    .map_err(|error| format!("iOS JARVIS Keychain initialization failed: {error}"))?;
                 keyring_core::set_default_store(store);
             }
             let salt_dir = app
@@ -49,7 +70,7 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_shell::init());
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     let builder = builder.plugin(tauri_plugin_jarvis_fingerprint::init());
 
     #[cfg(mobile)]
@@ -64,6 +85,7 @@ pub fn run() {
             choose_model_store,
             choose_model_file,
             ensure_brain_sidecar,
+            shutdown_for_update,
             mobile_identity,
             mobile_companion_status,
             mobile_fingerprint_status,

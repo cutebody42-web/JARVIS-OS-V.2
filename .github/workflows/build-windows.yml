@@ -12,7 +12,8 @@ on:
       - "memory/**"
       - "models/**"
       - "requirements.txt"
-      - "packaging/windows/JARVIS-Brain.spec"
+      - "packaging/**"
+      - "scripts/generate_build_info.py"
       - "web/**"
       - ".github/workflows/build-windows.yml"
   push:
@@ -26,7 +27,8 @@ on:
       - "memory/**"
       - "models/**"
       - "requirements.txt"
-      - "packaging/windows/JARVIS-Brain.spec"
+      - "packaging/**"
+      - "scripts/generate_build_info.py"
       - "web/**"
       - ".github/workflows/build-windows.yml"
 
@@ -58,11 +60,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install "pyinstaller>=6.10,<7"
+          python scripts/generate_build_info.py
           python scripts/fetch_face_models.py models/vision
           pyinstaller --clean --noconfirm packaging/windows/JARVIS-Brain.spec
           if (!(Test-Path "dist/jarvis-brain.exe")) {
             throw "Headless JARVIS Brain sidecar was not produced"
           }
+          python packaging/smoke/binary_update_self_test.py dist/jarvis-brain.exe "${{ github.event.pull_request.head.sha || github.sha }}"
           New-Item -ItemType Directory -Force "web/src-tauri/binaries" | Out-Null
           Copy-Item "dist/jarvis-brain.exe" "web/src-tauri/binaries/jarvis-brain-x86_64-pc-windows-msvc.exe" -Force
 

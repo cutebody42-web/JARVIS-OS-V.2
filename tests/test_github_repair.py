@@ -1,6 +1,8 @@
 """Offline contracts for GitHub-native bounded JARVIS self-healing."""
 
 import hashlib
+from pathlib import Path
+import tempfile
 import unittest
 
 from core.github_repair import (
@@ -9,6 +11,8 @@ from core.github_repair import (
     GitHubRepairCoordinator,
 )
 from core.self_heal import FileEdit, RepairDisposition, RepairPatch
+from core.nexus.event_store import EventStore
+from core.nexus.owner_approval import OwnerApprovalManager
 
 
 def make_patch(path: str, replacement: str = "new") -> RepairPatch:
@@ -36,6 +40,7 @@ class FakeRepairClient(GitHubRepairClient):
         self.created_branch = None
         self.created_pr = None
         self.merged = []
+        self.ready = []
         self.head_sha = "b" * 40
 
     def create_branch(self, branch, base_sha):
@@ -56,6 +61,12 @@ class FakeRepairClient(GitHubRepairClient):
         self.merged.append((pull_number, expected_head_sha))
         return "c" * 40
 
+    def workflow_checks(self, head_sha, *, required_workflows=()):
+        return GitHubCheckSummary(True, True, (), (), (), head_sha)
+
+    def mark_ready_for_review(self, pull_number):
+        self.ready.append(pull_number)
+
 
 class StaticRunClient(GitHubRepairClient):
     def __init__(self, runs):
@@ -63,7 +74,7 @@ class StaticRunClient(GitHubRepairClient):
             "cutebody42-web/JARVIS-OS-V.2",
             token="offline-test-placeholder-value",
         )
-        self.runs = runs
+        self.runs = [{"head_sha": "a" * 40, **run} for run in runs]
 
     def _request(self, method, path, *, json_body=None, params=None):
         return {"workflow_runs": self.runs}
@@ -218,7 +229,7 @@ class GitHubRepairGateTests(unittest.TestCase):
             coordinator.auto_merge_if_safe(publication, blocked)
         )
 
-        green = GitHubCheckSummary(True, True, (), (), ())
+        green = GitHubCheckSummary(True, True, (), (), (), publication.head_sha)
         merged = coordinator.auto_merge_if_safe(publication, green)
 
         self.assertEqual(merged, "c" * 40)
@@ -226,6 +237,49 @@ class GitHubRepairGateTests(unittest.TestCase):
             client.merged,
             [(77, publication.head_sha)],
         )
+
+    def test_skipped_required_ci_is_not_verification(self):
+        client = StaticRunClient([{"name": "CI", "status": "completed", "conclusion": "skipped"}])
+        summary = client.workflow_checks("a" * 40, required_workflows=("CI",))
+        self.assertFalse(summary.successful)
+        self.assertEqual(summary.failed, ("CI",))
+
+    def test_green_checks_from_another_commit_do_not_merge(self):
+        client = FakeRepairClient()
+        coordinator = GitHubRepairCoordinator(client)
+        publication = coordinator.publish(make_patch("docs/runtime.md"), base_branch="main", base_sha="a" * 40)
+        stale = GitHubCheckSummary(True, True, (), (), (), "f" * 40)
+        self.assertIsNone(coordinator.auto_merge_if_safe(publication, stale))
+        self.assertEqual(client.merged, [])
+
+    def test_api_runs_for_another_sha_cannot_satisfy_required_ci(self):
+        client = StaticRunClient([{"head_sha": "f" * 40, "name": "CI", "status": "completed", "conclusion": "success"}])
+        summary = client.workflow_checks("a" * 40, required_workflows=("CI",))
+        self.assertFalse(summary.successful)
+        self.assertEqual(summary.missing, ("CI",))
+
+    def test_self_heal_policy_code_is_a_major_repair_surface(self):
+        coordinator = GitHubRepairCoordinator(FakeRepairClient())
+        publication = coordinator.publish(make_patch("core/github_repair.py"), base_branch="main", base_sha="a" * 40)
+        self.assertEqual(publication.disposition, RepairDisposition.REQUIRE_OWNER)
+
+    def test_major_repair_can_merge_only_with_exact_owner_approval_and_fresh_ci(self):
+        with tempfile.TemporaryDirectory() as temp:
+            client = FakeRepairClient()
+            coordinator = GitHubRepairCoordinator(client)
+            patch = make_patch("core/update_manager.py")
+            publication = coordinator.publish(patch, base_branch="main", base_sha="a" * 40)
+            approvals = OwnerApprovalManager(EventStore(Path(temp) / "state", "desktop"))
+            grant = approvals.create("Approve tested major repair", patch.digest())
+            approvals.decide(grant.approval_id, peer_id="phone", approved=True, user_verified=True)
+            altered = make_patch("core/update_manager.py", "different")
+            with self.assertRaises(PermissionError):
+                coordinator.merge_with_owner_approval(publication, altered, approvals=approvals, approval_id=grant.approval_id)
+            self.assertFalse(approvals.get(grant.approval_id).consumed)
+            result = coordinator.merge_with_owner_approval(publication, patch, approvals=approvals, approval_id=grant.approval_id)
+            self.assertEqual(result, "c" * 40)
+            self.assertEqual(client.ready, [77])
+            self.assertEqual(client.merged, [(77, publication.head_sha)])
 
 
 if __name__ == "__main__":

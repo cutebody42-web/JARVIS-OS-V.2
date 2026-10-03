@@ -25,7 +25,10 @@ for package in (
     except Exception:
         pass
 
-datas = [(os.path.join(PROJECT_ROOT, "models"), "models")]
+build_info = os.path.join(PROJECT_ROOT, "build-info.json")
+if not os.path.isfile(build_info):
+    raise RuntimeError("Run scripts/generate_build_info.py before packaging")
+datas = [(os.path.join(PROJECT_ROOT, "models"), "models"), (build_info, ".")]
 for source, target in (
     ("assets", "assets"),
     ("core/prompt.txt", "core"),

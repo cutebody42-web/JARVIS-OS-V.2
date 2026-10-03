@@ -5,6 +5,35 @@ export type BrainConnection = {
   token: string;
 };
 
+export type UpdatePlan = {
+  version: string;
+  commit_sha: string;
+  artifact_sha256: string;
+  changed_paths: string[];
+  notes: string;
+  update_class: "patch" | "minor" | "major";
+  release_tag: string;
+  artifact_name: string;
+};
+
+export type UpdateStatus = {
+  supported: boolean;
+  busy?: boolean;
+  phase: string;
+  message: string;
+  plan: UpdatePlan | null;
+  checkpoint_id: string | null;
+  approval_id: string | null;
+  approval_state: "pending" | "approved" | "rejected" | "expired" | "consumed" | null;
+  history: Array<{
+    state: string;
+    message: string;
+    checkpoint_id: string;
+    version: string;
+    previous_version?: string;
+  }>;
+};
+
 export type BrainStatus = {
   identity: "JARVIS";
   mode: string;
@@ -186,21 +215,80 @@ export async function chooseModelFile(): Promise<string | null> {
   return core().invoke<string | null>("choose_model_file");
 }
 
-export class LocalBrainClient {
-  constructor(readonly connection: BrainConnection) {}
+export async function shutdownForUpdate(): Promise<void> {
+  return core().invoke<void>("shutdown_for_update");
+}
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(this.connection.endpoint + path, {
+class BrainHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+export class LocalBrainClient {
+  private reconnecting: Promise<void> | null = null;
+  private recoverySuspended = false;
+
+  constructor(public connection: BrainConnection) {}
+
+  private safeToRetry(init: RequestInit) {
+    return ["GET", "HEAD"].includes((init.method || "GET").toUpperCase());
+  }
+
+  private async reconnect(observed: BrainConnection) {
+    if (!this.reconnecting && (this.connection.token !== observed.token || this.connection.endpoint !== observed.endpoint)) return;
+    if (this.recoverySuspended) throw new Error("Brain recovery is paused while the desktop update shuts down.");
+    if (!this.reconnecting) {
+      this.reconnecting = (async () => {
+        this.connection = await ensureDesktopBrain();
+        await this.waitUntilReachable(10000);
+      })();
+    }
+    const pending = this.reconnecting;
+    try {
+      await pending;
+    } finally {
+      if (this.reconnecting === pending) this.reconnecting = null;
+    }
+  }
+
+  private fetchOnce(path: string, init: RequestInit = {}) {
+    const signal = init.signal || (this.safeToRetry(init)
+      && typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+      ? AbortSignal.timeout(5000) : undefined);
+    return fetch(this.connection.endpoint + path, {
       ...init,
+      signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.connection.token}`,
         ...init.headers,
       },
     });
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const observed = this.connection;
+    const canRecover = this.safeToRetry(init) && isNativeJarvis() && !this.recoverySuspended;
+    let response: Response;
+    let retried = false;
+    try {
+      response = await this.fetchOnce(path, init);
+    } catch (error) {
+      if (!canRecover || init.signal?.aborted) throw error;
+      await this.reconnect(observed);
+      response = await this.fetchOnce(path, init);
+      retried = true;
+    }
+    // A concurrent request may still hold the token of an exited child. Only
+    // read requests get one fresh-connection retry; effectful POSTs never do.
+    if (response.status === 401 && canRecover && !retried && !init.signal?.aborted) {
+      await this.reconnect(observed);
+      response = await this.fetchOnce(path, init);
+    }
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      throw new Error(body.detail || `JARVIS Brain request failed (${response.status})`);
+      throw new BrainHttpError(body.detail || `JARVIS Brain request failed (${response.status})`, response.status);
     }
     return response.json() as Promise<T>;
   }
@@ -208,14 +296,28 @@ export class LocalBrainClient {
   async waitUntilReachable(timeoutMs = 30000) {
     const started = Date.now();
     let lastError: unknown = null;
+    let nextEnsure = started;
     while (Date.now() - started < timeoutMs) {
       try {
-        const response = await fetch(this.connection.endpoint + "/v1/health");
-        if (response.ok) return;
+        const remaining = timeoutMs - (Date.now() - started);
+        const signal = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+          ? AbortSignal.timeout(Math.max(1, Math.min(1000, remaining))) : undefined;
+        const response = await fetch(this.connection.endpoint + "/v1/health", { signal });
+        if (response.ok) {
+          const health = await response.json();
+          if (health.ok === true && health.identity === "JARVIS") return;
+        }
       } catch (error) {
         lastError = error;
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      if (isNativeJarvis() && !this.recoverySuspended && Date.now() >= nextEnsure) {
+        // Native lifecycle events decide whether the child has exited. An alive
+        // but slow sidecar retains its token/process and is never killed here.
+        this.connection = await ensureDesktopBrain();
+        nextEnsure = Date.now() + 1000;
+      }
+      const remaining = timeoutMs - (Date.now() - started);
+      if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, Math.min(250, remaining)));
     }
     throw lastError instanceof Error
       ? lastError
@@ -224,6 +326,37 @@ export class LocalBrainClient {
 
   status() {
     return this.request<BrainStatus>("/v1/status");
+  }
+
+  async getUpdateStatus() {
+    const status = await this.request<UpdateStatus>("/v1/update/status");
+    if (status.phase === "applying") this.recoverySuspended = true;
+    return status;
+  }
+
+  checkUpdates() {
+    return this.request<UpdateStatus>("/v1/update/check", { method: "POST", body: "{}" });
+  }
+
+  prepareUpdate() {
+    return this.request<UpdateStatus>("/v1/update/prepare", { method: "POST", body: "{}" });
+  }
+
+  async applyUpdate(checkpointId: string, approvalId: string) {
+    this.recoverySuspended = true;
+    try {
+      const result = await this.request<UpdateStatus>("/v1/update/apply", {
+        method: "POST",
+        body: JSON.stringify({ checkpoint_id: checkpointId, approval_id: approvalId }),
+      });
+      if (result.phase !== "applying") this.recoverySuspended = false;
+      return result;
+    } catch (error) {
+      // A lost response may follow an accepted handoff; reconnecting could start
+      // another sidecar while the installer waits for the original to exit.
+      if (error instanceof BrainHttpError) this.recoverySuspended = false;
+      throw error;
+    }
   }
 
   setupLocalBrain(modelStore?: string) {
@@ -349,7 +482,7 @@ export class LocalBrainClient {
 export async function bootstrapDesktopBrain() {
   const connection = await ensureDesktopBrain();
   const client = new LocalBrainClient(connection);
-  await client.waitUntilReachable();
+  await client.waitUntilReachable(60000);
   return client;
 }
 

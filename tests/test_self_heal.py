@@ -17,6 +17,8 @@ from core.self_heal import (
     SelfHealPolicy,
     VerificationResult,
 )
+from core.nexus.event_store import EventStore
+from core.nexus.owner_approval import OwnerApprovalManager
 
 
 class Engine:
@@ -203,6 +205,42 @@ class SelfHealTests(unittest.TestCase):
             journal.record(incident.id, RepairState.DETECTED, "seen")
             reopened = RepairJournal(Path(tmp) / "repair.db")
             self.assertEqual(reopened.history(incident.id)[0]["state"], "detected")
+
+    def test_model_supplied_owner_boolean_cannot_approve_a_major_repair(self):
+        incident = Incident.create(IncidentKind.CODE_FAILURE, "update bug", "core/update_manager.py")
+        patch = RepairPatch(incident.id, (edit("core/update_manager.py", "old", "new"),), "repair update", ("unit",))
+        sandbox = Sandbox({"core/update_manager.py": "old"})
+        outcome = SelfHealController().repair_code(incident, engine=Engine(patch), sandbox=sandbox,
+                                                   repository_context="", owner_approved=True)
+        self.assertEqual(outcome.state, RepairState.AWAITING_OWNER)
+        self.assertFalse(sandbox.applied)
+
+    def test_major_repair_requires_an_exact_single_use_owner_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            approvals = OwnerApprovalManager(EventStore(Path(tmp) / "state", "desktop"))
+            controller = SelfHealController(owner_approvals=approvals)
+            incident = Incident.create(IncidentKind.CODE_FAILURE, "gateway bug", "core/action_gateway.py")
+            patch = RepairPatch(incident.id, (edit("core/action_gateway.py", "old", "new"),), "fix gateway", ("unit",))
+            sandbox = Sandbox({"core/action_gateway.py": "old"})
+            waiting = controller.repair_code(incident, engine=Engine(patch), sandbox=sandbox, repository_context="")
+            approvals.decide(waiting.approval_id, peer_id="phone", approved=True, user_verified=True)
+            modified = RepairPatch(incident.id, (edit("core/action_gateway.py", "old", "different"),), "fix gateway", ("unit",))
+            with self.assertRaises(PermissionError):
+                controller.repair_code(incident, engine=Engine(modified), sandbox=sandbox,
+                                       repository_context="", approval_id=waiting.approval_id)
+            self.assertFalse(sandbox.applied)
+            applied = controller.repair_code(incident, engine=Engine(patch), sandbox=sandbox,
+                                             repository_context="", approval_id=waiting.approval_id)
+            self.assertEqual(applied.state, RepairState.APPLIED)
+            with self.assertRaises(PermissionError):
+                controller.repair_code(incident, engine=Engine(patch), sandbox=sandbox,
+                                       repository_context="", approval_id=waiting.approval_id)
+
+    def test_case_and_new_approval_endpoints_cannot_bypass_major_policy(self):
+        for path in ("CORE/OWNER_KERNEL.PY", "core/nexus/owner_approval.py", "api/new_authorization.py", "core/github_repair.py", "core/local_update_service.py", "core/build_info.py", "web/src-tauri/src/mobile_identity.rs"):
+            with self.subTest(path=path):
+                patch = RepairPatch("incident", (edit(path, "old", "new"),), "repair", ("unit",))
+                self.assertEqual(SelfHealPolicy().disposition(patch), RepairDisposition.REQUIRE_OWNER)
 
 
 if __name__ == "__main__":

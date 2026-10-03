@@ -5,6 +5,28 @@ The Windows installer includes its Python Brain runtime; **you do not need Pytho
 pip, a Gemini key, or a source checkout** to use this version. The Android app is
 a companion to the laptop Brain, so the laptop must stay running for phone chat.
 
+## Download a validated public preview
+
+When all nine checks pass for the current source commit, the preview publisher
+creates a prerelease on the repository's [Releases page](https://github.com/cutebody42-web/JARVIS-OS-V.2/releases).
+Choose the newest **JARVIS preview**, expand **Assets**, and download
+`JARVIS-Setup.exe` for the Windows laptop and `JARVIS-Companion.apk` for the
+Android phone. These public release files do not require signing in to GitHub
+or extracting an Actions artifact ZIP.
+
+The tag has the form `jarvis-preview-<commit-prefix>`. Its `jarvis-update.json`
+pins the full source commit, Windows installer SHA-256, changed paths, and major
+update classification. The release notes link the successful checks for that
+same commit. A published preview still requires acceptance on your physical
+devices and does not contain independently trained JARVIS weights. If no
+validated preview is available yet, the older candidate downloads below remain
+available with the stated version limits.
+
+The nine checks include the existing product/build/runtime and regression gates,
+an unsigned iOS simulator compile/install/launch check, and CPU contract checks
+for the scratch-model architecture and training guards. The public preview
+assets are Windows and Android only.
+
 ## Download the existing candidate
 
 These builds were produced from commit
@@ -104,8 +126,13 @@ coordinator instructions and parameters. Its base weights belong to the Llama
 This repository does **not** contain an independently trained one-billion-
 parameter JARVIS model. The authority, memory, routing, and tool code are
 application logic; they do not themselves have a neural parameter count.
-Creating and validating separate trained JARVIS weights remains a separate
-deliverable. A parameter count alone does not establish answer quality.
+The [scratch-model training pipeline](../training/README.md) defines a
+**1,543,714,304-parameter architecture** with random model-weight initialization,
+preparation, training, evaluation, and export stages. Its CPU contract checks
+validate architecture/configuration and training guards; they do not train a
+1.5B model. Training and validating useful separate JARVIS weights still require
+an appropriate GPU run and a sufficient licensed corpus. A parameter count
+alone does not establish answer quality.
 
 ## Teach JARVIS your face
 
@@ -157,6 +184,20 @@ If **Gateway offline** persists, confirm both Tailscale connections and restart
 the laptop app. Check that your Tailscale access rules and Windows firewall
 allow the phone to reach the laptop on port `8765`. A QR cannot repair a missing
 network route. Keep JARVIS open and the laptop awake while using the companion.
+
+## iPhone and iPad status
+
+The [iOS build workflow](https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/workflows/build-ios.yml)
+builds an unsigned simulator companion, installs it on an iPhone simulator, and
+checks launch. Its `JARVIS-iOS-Simulator-not-for-phones` artifact is a simulator
+application, not an installer for your iPhone or iPad. There is no physical iOS
+installation asset in the Windows/Android preview release.
+
+Physical iOS installation requires an Apple signing identity/team and device
+provisioning or an appropriate signed distribution build. Actual pairing and
+biometric approval must then be tested on that device. Simulator startup does
+not certify Touch ID or fingerprint availability, and an iPhone with only Face
+ID cannot meet a fingerprint-only approval requirement.
 
 ## Verify on your real devices
 

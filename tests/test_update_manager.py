@@ -80,7 +80,8 @@ class UpdateTests(unittest.TestCase):
         manager = UpdateManager(installer, approval_gate=self.gate)
         result = manager.apply(plan())
         self.assertEqual(result.state, UpdateState.AWAITING_APPROVAL)
-        self.assertFalse(installer.staged)
+        self.assertTrue(installer.staged)
+        self.assertFalse(installer.applied)
 
     def test_valid_biometric_approval_is_one_time_and_applies_major_update(self):
         update = plan()
@@ -110,7 +111,7 @@ class UpdateTests(unittest.TestCase):
         waiting = manager.apply(update)
         self.assertEqual(waiting.state, UpdateState.AWAITING_APPROVAL)
         self.assertIsNotNone(waiting.approval_id)
-        self.assertFalse(installer.staged)
+        self.assertTrue(installer.staged)
 
         approvals.decide(
             waiting.approval_id,
@@ -179,6 +180,38 @@ class UpdateTests(unittest.TestCase):
         result = UpdateManager(installer).apply(update)
         self.assertEqual(result.state, UpdateState.ROLLED_BACK)
         self.assertTrue(installer.rolled_back)
+
+    def test_major_candidate_stage_failure_creates_no_approval(self):
+        class BrokenInstaller(Installer):
+            def stage(self, plan):
+                raise RuntimeError("candidate integrity failed")
+        approvals = OwnerApprovalManager(self.store, clock=lambda: NOW)
+        installer = BrokenInstaller()
+        result = UpdateManager(installer, owner_approvals=approvals).apply(plan())
+        self.assertEqual(result.state, UpdateState.FAILED)
+        self.assertFalse(installer.applied)
+        self.assertEqual(approvals.pending(), ())
+
+    def test_noncanonical_cross_platform_paths_are_rejected(self):
+        for path in ("core/../docs/readme.md", "core\\owner_kernel.py", "C:/jarvis.py", ".", "docs//a.md", "docs/CON.txt"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                plan(UpdateClass.MAJOR, (path,))
+
+    def test_security_classification_cannot_be_bypassed_by_case(self):
+        self.assertEqual(UpdatePolicy().classify_paths(("CORE/UPDATE_MANAGER.PY",)), UpdateClass.MAJOR)
+
+    def test_release_metadata_is_bound_to_approval_digest(self):
+        original = plan()
+        modified = UpdatePlan.from_dict({**original.to_dict(), "release_tag": "v2.1.0"})
+        self.assertNotEqual(original.digest(), modified.digest())
+
+    def test_exact_expiration_boundary_is_not_a_valid_approval(self):
+        update = plan()
+        challenge = self.gate.create_challenge(update, ttl_seconds=10)
+        approval = UpdateApprovalGate.sign_on_companion("phone", challenge, self.phone_signer, user_verified=True)
+        boundary = UpdateApprovalGate(self.registry, clock=lambda: NOW + timedelta(seconds=10))
+        with self.assertRaises(PermissionError):
+            boundary.verify_and_consume(update, approval)
 
 
 if __name__ == "__main__":
