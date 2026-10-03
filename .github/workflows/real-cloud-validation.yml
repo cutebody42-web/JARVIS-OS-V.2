@@ -12,6 +12,7 @@ on:
       - "memory/**"
       - "models/**"
       - "packaging/**"
+      - "scripts/generate_build_info.py"
       - "web/**"
       - ".github/workflows/real-cloud-validation.yml"
   push:
@@ -25,6 +26,7 @@ on:
       - "memory/**"
       - "models/**"
       - "packaging/**"
+      - "scripts/generate_build_info.py"
       - "web/**"
       - ".github/workflows/real-cloud-validation.yml"
 

@@ -15,7 +15,7 @@ checks.
 
 ## Local verification
 
-- Full Python discovery: **779 passed**, zero failures/errors/skips.
+- Full Python discovery: **782 passed**, zero failures/errors/skips.
 - Actual running Brain HTTP service: **28/28 checks passed**, including
   authentication, malformed input, unavailable hardware, missing model setup,
   stale pairing approval, and setup error recovery.
@@ -39,7 +39,7 @@ The packaged Windows updater now stages a pinned GitHub release installer and
 an exact previous-build recovery installer, verifies hashes/PE headers, binds
 phone approval to the update digest, waits for desktop and Brain shutdown,
 and checks the installed binary's embedded version and commit. Failed checks
-attempt verified application recovery. Fifty-eight focused repair/update tests
+attempt verified application recovery. Sixty focused repair/update tests
 and 26 additional local-control/early-entry tests passed with substitute OS
 installer adapters. These establish code behavior, not a physical NSIS upgrade
 or complete recovery of unrelated Windows settings.

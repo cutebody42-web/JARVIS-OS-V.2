@@ -99,6 +99,7 @@ class GitHubRepairGateTests(unittest.TestCase):
                 "NEXUS architecture contracts",
                 "JARVIS product shell",
                 "Build JARVIS Android companion",
+                "Build JARVIS iOS companion",
                 "Build JARVIS Windows installer",
                 "Real JARVIS cloud validation",
             },
@@ -116,6 +117,21 @@ class GitHubRepairGateTests(unittest.TestCase):
             set(publication.required_workflows),
             {"CI", "NEXUS architecture contracts"},
         )
+
+    def test_scratch_training_repairs_require_real_architecture_contracts(self):
+        coordinator = GitHubRepairCoordinator(FakeRepairClient())
+        for path in ("training/train.py", "tests/test_scratch_training.py"):
+            with self.subTest(path=path):
+                publication = coordinator.publish(make_patch(path), base_branch="main", base_sha="a" * 40)
+                self.assertEqual(set(publication.required_workflows),
+                                 {"CI", "NEXUS architecture contracts", "Scratch model contracts"})
+
+    def test_build_provenance_generator_requires_packaged_and_live_runtime_checks(self):
+        coordinator = GitHubRepairCoordinator(FakeRepairClient())
+        publication = coordinator.publish(make_patch("scripts/generate_build_info.py"),
+                                          base_branch="main", base_sha="a" * 40)
+        self.assertEqual(set(publication.required_workflows),
+                         {"CI", "NEXUS architecture contracts", "Build JARVIS Windows installer", "Real JARVIS cloud validation"})
 
     def test_major_repair_is_draft_and_never_auto_merges(self):
         client = FakeRepairClient()

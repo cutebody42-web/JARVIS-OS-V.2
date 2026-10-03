@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,19 @@ def rust_function(source: str, name: str) -> str:
 
 
 class ProductShellBiometricContractTests(unittest.TestCase):
+    def test_ios_manifest_tools_support_the_declared_deployment_target(self):
+        manifest = (FINGERPRINT_PLUGIN / "ios" / "Package.swift").read_text(encoding="utf-8")
+        tools = re.search(r"swift-tools-version:(\d+)\.(\d+)", manifest)
+        deployment = re.search(r"\.iOS\(\.v(\d+)\)", manifest)
+        self.assertIsNotNone(tools)
+        self.assertIsNotNone(deployment)
+        # PackageDescription introduced the iOS 15 enum in Swift tools 5.5.
+        # A current Xcode compiler still checks the manifest's declared API.
+        if int(deployment[1]) >= 15:
+            self.assertGreaterEqual((int(tools[1]), int(tools[2])), (5, 5))
+        config = json.loads((ROOT / "web" / "src-tauri" / "tauri.ios.conf.json").read_text())
+        self.assertEqual(int(deployment[1]), int(config["bundle"]["iOS"]["minimumSystemVersion"].split(".")[0]))
+
     def test_sensitive_approval_requires_native_fingerprint_without_pin_fallback(self):
         source = RUNTIME.read_text(encoding="utf-8")
         native = MOBILE_NATIVE.read_text(encoding="utf-8")

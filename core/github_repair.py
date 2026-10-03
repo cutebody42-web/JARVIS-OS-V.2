@@ -318,6 +318,10 @@ class GitHubRepairCoordinator:
         if any(path.startswith("web/") for path in paths):
             required.add("JARVIS product shell")
             required.add("Build JARVIS Android companion")
+            required.add("Build JARVIS iOS companion")
+
+        if any(path.startswith("training/") or path == "tests/test_scratch_training.py" for path in paths):
+            required.add("Scratch model contracts")
 
         windows_relevant_prefixes = (
             "brain_sidecar.py",
@@ -330,6 +334,7 @@ class GitHubRepairCoordinator:
             "packaging/windows/",
             "web/",
             "requirements.txt",
+            "scripts/generate_build_info.py",
         )
         if any(
             any(path == prefix or path.startswith(prefix) for prefix in windows_relevant_prefixes)
@@ -339,6 +344,7 @@ class GitHubRepairCoordinator:
 
         real_runtime_prefixes = (
             "brain_sidecar.py",
+            "scripts/generate_build_info.py",
             "api/jarvis_local_server.py",
             "core/",
             "agent/",

@@ -1,3 +1,4 @@
+import Foundation
 import LocalAuthentication
 import Tauri
 import UIKit
@@ -55,7 +56,7 @@ final class FingerprintPlugin: Plugin {
 
   @objc func status(_ invoke: Invoke) {
     let error = touchIDError(LAContext())
-    var result: [String: Any] = ["isAvailable": error == nil, "biometryType": error == nil ? 1 : 0]
+    var result: JsonObject = ["isAvailable": error == nil, "biometryType": error == nil ? 1 : 0]
     if let error = error { result["error"] = error }
     invoke.resolve(result)
   }
