@@ -464,7 +464,18 @@ jobs:
           fi
           stat -c 'KVM device: %n mode=%a owner=%U group=%G' /dev/kvm | tee artifacts/real-cloud/android/kvm-access.txt
           if [ ! -x "$ANDROID_HOME/emulator/emulator" ]; then
-            sdkmanager "emulator"
+            sdkmanager_path=""
+            for candidate in "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$ANDROID_HOME/cmdline-tools/12.0/bin/sdkmanager" "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager "$ANDROID_HOME/tools/bin/sdkmanager"; do
+              if [ -x "$candidate" ]; then
+                sdkmanager_path="$candidate"
+                break
+              fi
+            done
+            if [ -z "$sdkmanager_path" ]; then
+              echo "Android SDK manager is unavailable under $ANDROID_HOME; the emulator cannot be installed." >&2
+              exit 1
+            fi
+            "$sdkmanager_path" --sdk_root="$ANDROID_HOME" "emulator"
           fi
           "$ANDROID_HOME/emulator/emulator" -accel-check | tee artifacts/real-cloud/android/emulator-accel-check.txt
           cores="$(nproc)"
