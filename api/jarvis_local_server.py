@@ -18,7 +18,7 @@ import base64
 import hmac
 import json
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -141,6 +141,8 @@ class LocalBrainHost:
         self.model_store = self._load_model_store()
         self.manual_model = self._load_manual_model()
         self._guard = threading.RLock()
+        self._companion_listener: Callable[[], bool] | None = None
+        self._companion_closed = False
         self._setup_guard = threading.Lock()
         self.setup = SetupState()
 
@@ -327,10 +329,27 @@ class LocalBrainHost:
 
     def close(self) -> None:
         """Release only runtime resources owned by this desktop process."""
+        self._companion_closed = True
+        self.set_companion_listener(None)
         self._approval_stop.set()
         self._approval_thread.join(timeout=3)
         self.voice.stop()
         stop_owned_ollama_service(base_url=self.ollama_base_url)
+
+    def set_companion_listener(self, listener: Callable[[], bool] | None) -> None:
+        """Attach the owned server's local readiness observation, not a network probe."""
+        self._companion_listener = None if getattr(self, "_companion_closed", False) else listener
+
+    def companion_available(self) -> bool:
+        if self.companion_endpoint is None or getattr(self, "_companion_closed", False):
+            return False
+        listener = getattr(self, "_companion_listener", None)
+        if listener is None:
+            return False
+        try:
+            return bool(listener())
+        except Exception:
+            return False
 
     def status(self) -> dict[str, Any]:
         with self._guard:
@@ -379,7 +398,7 @@ class LocalBrainHost:
                 "battery_pct": snapshot.battery_pct if snapshot else None,
             },
             "companion": {
-                "available": self.companion_endpoint is not None,
+                "available": self.companion_available(),
                 "endpoint": self.companion_endpoint,
             },
             "paired_devices": [
@@ -759,7 +778,7 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
         # A custom advertised hostname is only valid when the companion server
         # is already bound to a real non-loopback interface. Never create a
         # dead QR that points at an endpoint while no signed gateway is running.
-        if host.companion_endpoint is None:
+        if not host.companion_available():
             raise HTTPException(
                 status_code=409,
                 detail=(

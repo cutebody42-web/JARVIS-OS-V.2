@@ -111,6 +111,7 @@ export type MobileCompanionStatus = {
   paired: boolean;
   desktop_device: string | null;
   key_protection: string;
+  pairing_error?: string | null;
 };
 
 export type MobileBiometricStatus = {
@@ -188,6 +189,13 @@ export async function platformMode(): Promise<PlatformMode> {
 
 export async function mobileCompanionStatus(): Promise<MobileCompanionStatus> {
   return core().invoke<MobileCompanionStatus>("mobile_companion_status");
+}
+
+export async function disconnectMobileCompanion(expectedDesktopDevice: string | null): Promise<MobileCompanionStatus> {
+  return core().invoke<MobileCompanionStatus>("mobile_disconnect_companion", {
+    expectedDesktopDevice,
+    confirmed: true,
+  });
 }
 
 export async function mobileBiometricStatus(): Promise<MobileBiometricStatus> {

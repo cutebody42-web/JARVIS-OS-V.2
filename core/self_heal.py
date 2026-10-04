@@ -209,6 +209,8 @@ class SelfHealPolicy:
         "core/github_repair.py",
         "core/local_update_service.py",
         "core/build_info.py",
+        "core/scratch_activation.py",
+        "core/ollama_bootstrap.py",
         "brain_sidecar.py",
         "core/secret_store.py",
         "core/owner_face.py",
@@ -218,6 +220,7 @@ class SelfHealPolicy:
         "packaging/",
         "web/src-tauri/",
         "models/",
+        "training/",
         ".github/workflows/",
     )
 

@@ -200,6 +200,11 @@ class UpdateTests(unittest.TestCase):
     def test_security_classification_cannot_be_bypassed_by_case(self):
         self.assertEqual(UpdatePolicy().classify_paths(("CORE/UPDATE_MANAGER.PY",)), UpdateClass.MAJOR)
 
+    def test_scratch_core_receipts_and_training_are_major_updates(self):
+        for path in ("core/scratch_activation.py", "core/ollama_bootstrap.py", "training/activate.py"):
+            with self.subTest(path=path):
+                self.assertEqual(UpdatePolicy().classify_paths((path,)), UpdateClass.MAJOR)
+
     def test_release_metadata_is_bound_to_approval_digest(self):
         original = plan()
         modified = UpdatePlan.from_dict({**original.to_dict(), "release_tag": "v2.1.0"})

@@ -16,6 +16,7 @@ import {
   mobileBiometricStatus,
   mobileBrainMessage,
   mobileCompanionStatus,
+  disconnectMobileCompanion,
   mobileDecideApproval,
   mobilePendingApprovals,
   pairMobileCompanion,
@@ -84,12 +85,18 @@ function MobileShell() {
   const [scanned, setScanned] = useState<Record<string, unknown> | null>(null);
   const [pairState, setPairState] = useState("unpaired");
   const [identity, setIdentity] = useState<MobileIdentity | null>(null);
+  const [desktopDevice, setDesktopDevice] = useState<string | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
   const [biometric, setBiometric] = useState<MobileBiometricStatus | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
+  const activeDesktop = useRef<string | null>(null);
+  const connectionRevision = useRef(0);
+  const operationBusy = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -117,9 +124,15 @@ function MobileShell() {
 
   useEffect(() => {
     let cancelled = false;
+    const revision = connectionRevision.current;
     mobileCompanionStatus()
       .then((status) => {
-        if (cancelled || !status.paired) return;
+        if (cancelled || revision !== connectionRevision.current) return;
+        setPairingError(status.pairing_error ?? null);
+        if (status.pairing_error) setError(status.pairing_error);
+        if (!status.paired) return;
+        activeDesktop.current = status.desktop_device;
+        setDesktopDevice(status.desktop_device);
         setIdentity(status.identity);
         setPairState("paired");
       })
@@ -128,23 +141,63 @@ function MobileShell() {
   }, []);
 
   const connectOffer = useCallback(async (offer: Record<string, unknown>) => {
+    if (operationBusy.current) return;
+    if (activeDesktop.current) {
+      setError("Disconnect your current laptop before pairing another JARVIS Brain.");
+      return;
+    }
+    operationBusy.current = true;
+    const revision = ++connectionRevision.current;
     setScanned(offer);
     setError("");
     setBusy(true);
     try {
+      // Read native trust before pairing, even when a cold-launch deep link
+      // arrives before the initial status request has completed.
+      const current = await mobileCompanionStatus();
+      if (!mounted.current || revision !== connectionRevision.current) return;
+      setPairingError(current.pairing_error ?? null);
+      if (current.paired) {
+        activeDesktop.current = current.desktop_device;
+        setDesktopDevice(current.desktop_device);
+        setIdentity(current.identity);
+        setPairState("paired");
+        setScanned(null);
+        setError("Disconnect your current laptop before pairing another JARVIS Brain.");
+        return;
+      }
+      if (current.pairing_error) {
+        setPairState("unpaired");
+        setError(current.pairing_error);
+        return;
+      }
       const nextIdentity = await pairMobileCompanion(offer, (state) => {
-        if (mounted.current) setPairState(state);
+        if (mounted.current && revision === connectionRevision.current) setPairState(state);
       });
-      if (!mounted.current) return;
+      if (!mounted.current || revision !== connectionRevision.current) return;
+      const desktop = typeof offer.inviter_device === "string" ? offer.inviter_device : null;
+      activeDesktop.current = desktop;
+      setDesktopDevice(desktop);
       setIdentity(nextIdentity);
       setPairState("paired");
       await window.__TAURI__?.haptics?.vibrate({ duration: 80 }).catch(() => undefined);
     } catch (reason) {
-      if (!mounted.current) return;
-      setPairState("unpaired");
+      const current = await mobileCompanionStatus().catch(() => null);
+      if (!mounted.current || revision !== connectionRevision.current) return;
+      setPairingError(current?.pairing_error ?? null);
+      if (current?.paired) {
+        activeDesktop.current = current.desktop_device;
+        setDesktopDevice(current.desktop_device);
+        setIdentity(current.identity);
+        setScanned(null);
+      }
+      setPairState(current?.paired ? "paired" : "unpaired");
       setError(reason instanceof Error ? reason.message : "JARVIS pairing failed.");
     } finally {
-      if (mounted.current) setBusy(false);
+      if (revision === connectionRevision.current) {
+        operationBusy.current = false;
+        if (mounted.current) setBusy(false);
+      }
     }
   }, []);
 
@@ -171,6 +224,7 @@ function MobileShell() {
   }, [connectOffer]);
 
   async function scanPairingCode() {
+    if (operationBusy.current || activeDesktop.current || pairingError) return;
     setError("");
     try {
       if (!biometric?.fingerprint) {
@@ -211,9 +265,10 @@ function MobileShell() {
     if (!identity) return;
     let cancelled = false;
     async function refreshApprovals() {
+      const revision = connectionRevision.current;
       try {
         const pending = await mobilePendingApprovals();
-        if (!cancelled) setPendingApprovals(pending);
+        if (!cancelled && revision === connectionRevision.current) setPendingApprovals(pending);
       } catch {
         // The secure desktop link may be temporarily unavailable.
       }
@@ -227,24 +282,35 @@ function MobileShell() {
   }, [identity]);
 
   async function decideApproval(approvalId: string, approved: boolean) {
-    if (busy) return;
+    if (operationBusy.current || !identity) return;
+    operationBusy.current = true;
+    const revision = connectionRevision.current;
     setBusy(true);
     setError("");
     try {
       await mobileDecideApproval(approvalId, approved);
-      setPendingApprovals(await mobilePendingApprovals());
+      const next = await mobilePendingApprovals();
+      if (!mounted.current || revision !== connectionRevision.current) return;
+      setPendingApprovals(next);
       await window.__TAURI__?.haptics?.vibrate({ duration: approved ? 120 : 60 }).catch(() => undefined);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "JARVIS biometric approval failed.");
+      if (mounted.current && revision === connectionRevision.current) {
+        setError(reason instanceof Error ? reason.message : "JARVIS biometric approval failed.");
+      }
     } finally {
-      setBusy(false);
+      if (revision === connectionRevision.current) {
+        operationBusy.current = false;
+        if (mounted.current) setBusy(false);
+      }
     }
   }
 
   async function submitMobile(event: FormEvent) {
     event.preventDefault();
     const content = draft.trim();
-    if (!identity || !content || busy) return;
+    if (!identity || !content || operationBusy.current) return;
+    operationBusy.current = true;
+    const revision = connectionRevision.current;
     setDraft("");
     setError("");
     setMessages((items) => [...items, {
@@ -256,6 +322,7 @@ function MobileShell() {
     setBusy(true);
     try {
       const reply = await mobileBrainMessage(content);
+      if (!mounted.current || revision !== connectionRevision.current) return;
       setMessages((items) => [...items, {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -263,9 +330,47 @@ function MobileShell() {
         at: new Date().toISOString(),
       }]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "JARVIS could not reach the desktop Brain.");
+      if (mounted.current && revision === connectionRevision.current) {
+        setError(reason instanceof Error ? reason.message : "JARVIS could not reach the desktop Brain.");
+      }
     } finally {
-      setBusy(false);
+      if (revision === connectionRevision.current) {
+        operationBusy.current = false;
+        if (mounted.current) setBusy(false);
+      }
+    }
+  }
+
+  async function disconnectCompanion() {
+    if (!confirmDisconnect || (!desktopDevice && !pairingError) || operationBusy.current) return;
+    operationBusy.current = true;
+    const revision = ++connectionRevision.current;
+    setBusy(true);
+    setError("");
+    try {
+      await disconnectMobileCompanion(desktopDevice);
+      if (!mounted.current || revision !== connectionRevision.current) return;
+      activeDesktop.current = null;
+      setDesktopDevice(null);
+      setIdentity(null);
+      setPairingError(null);
+      setPendingApprovals([]);
+      setMessages([]);
+      setDraft("");
+      setScanned(null);
+      setPairState("unpaired");
+      setConfirmDisconnect(false);
+      const readiness = await mobileBiometricStatus();
+      if (mounted.current && revision === connectionRevision.current) setBiometric(readiness);
+    } catch (reason) {
+      if (mounted.current && revision === connectionRevision.current) {
+        setError(reason instanceof Error ? reason.message : "Could not disconnect the laptop.");
+      }
+    } finally {
+      if (revision === connectionRevision.current) {
+        operationBusy.current = false;
+        if (mounted.current) setBusy(false);
+      }
     }
   }
 
@@ -292,13 +397,28 @@ function MobileShell() {
               {pairState === "awaiting-owner"
                 ? "Pairing proof accepted. Approve this phone on the desktop JARVIS app."
                 : biometric && !biometric.fingerprint
-                  ? "Enroll a fingerprint in Android settings first. JARVIS does not fall back to a phone PIN for sensitive approvals."
-                  : "Scan the desktop QR. Your phone becomes another authenticated face of the same JARVIS — with the same memory and Brain."}
+                  ? biometric.error || "Enroll a fingerprint in your phone's security settings first. JARVIS does not fall back to a phone PIN for sensitive approvals."
+                  : "Scan the laptop's QR and approve pairing on that laptop. Each laptop keeps its own JARVIS Brain and memory; this phone connects to one laptop at a time."}
             </p>
-            <Button onClick={scanPairingCode} disabled={busy || biometric?.fingerprint !== true}>
+            <Button onClick={scanPairingCode} disabled={busy || !!pairingError || biometric?.fingerprint !== true}>
               {busy ? <LoaderCircle className="spin" size={16} /> : <Smartphone size={16} />}
               {busy ? "Securing device link" : "Scan desktop QR"}
             </Button>
+            {pairingError && (
+              <section className="device-link-card">
+                {confirmDisconnect ? (
+                  <div role="alertdialog" aria-label="Reset saved laptop pairing">
+                    <p>Remove the unreadable saved pairing from this phone? Your phone identity and laptop data stay in place. Reconnecting requires QR pairing and fingerprint verification.</p>
+                    <div className="pair-actions">
+                      <Button onClick={() => void disconnectCompanion()} disabled={busy}>Reset pairing</Button>
+                      <Button variant="secondary" onClick={() => setConfirmDisconnect(false)} disabled={busy}>Cancel reset</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button variant="secondary" onClick={() => setConfirmDisconnect(true)} disabled={busy}>Reset saved pairing</Button>
+                )}
+              </section>
+            )}
             {scanned && (
               <pre className="pair-preview">{JSON.stringify({
                 desktop: scanned.inviter_device,
@@ -309,7 +429,22 @@ function MobileShell() {
           </>
         ) : (
           <>
-            <p>Authenticated as {identity.device_id}. Messages and approvals are signed locally with the companion key protected by Android Keystore.</p>
+            <p>Connected to {desktopDevice ?? "your laptop"} as {identity.device_id}. Messages and approvals are signed with the companion key protected by this phone&apos;s secure storage.</p>
+            <section className="device-link-card">
+              {confirmDisconnect ? (
+                <div role="alertdialog" aria-label="Disconnect current laptop">
+                  <p>Disconnect from {desktopDevice ?? "this laptop"}? This clears chat and pending approvals from this phone. Your phone identity and the laptop&apos;s stored data remain available. A new laptop requires fresh QR pairing, fingerprint verification and desktop approval.</p>
+                  <div className="pair-actions">
+                    <Button onClick={() => void disconnectCompanion()} disabled={busy || !desktopDevice}>Disconnect laptop</Button>
+                    <Button variant="secondary" onClick={() => setConfirmDisconnect(false)} disabled={busy}>Keep connection</Button>
+                  </div>
+                </div>
+              ) : (
+                <Button variant="secondary" onClick={() => setConfirmDisconnect(true)} disabled={busy || !desktopDevice}>
+                  Connect another laptop
+                </Button>
+              )}
+            </section>
             {pendingApprovals.length > 0 && (
               <section className="pair-pending-list">
                 <span className="section-index">BIOMETRIC APPROVAL REQUIRED</span>

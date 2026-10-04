@@ -242,6 +242,12 @@ class SelfHealTests(unittest.TestCase):
                 patch = RepairPatch("incident", (edit(path, "old", "new"),), "repair", ("unit",))
                 self.assertEqual(SelfHealPolicy().disposition(patch), RepairDisposition.REQUIRE_OWNER)
 
+    def test_scratch_core_receipts_and_training_always_require_owner_approval(self):
+        for path in ("core/scratch_activation.py", "core/ollama_bootstrap.py", "training/activate.py"):
+            with self.subTest(path=path):
+                patch = RepairPatch("incident", (edit(path, "old", "new"),), "repair", ("unit",))
+                self.assertEqual(SelfHealPolicy().disposition(patch), RepairDisposition.REQUIRE_OWNER)
+
 
 if __name__ == "__main__":
     unittest.main()

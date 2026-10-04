@@ -64,6 +64,19 @@ fi
 adb shell am start -W -a android.intent.action.VIEW -d "jarvis://pair?smoke=cloud-validation" ai.jarvis.app > artifacts/real-cloud/android/deep-link.txt
 sleep 4
 
+adb shell pidof ai.jarvis.app > artifacts/real-cloud/android/app-pid.txt || true
+if ! grep -Eq '^[0-9]+([[:space:]]+[0-9]+)*[[:space:]]*$' artifacts/real-cloud/android/app-pid.txt; then
+  echo "JARVIS Android process is not alive after the deep link" >&2
+  adb logcat -d > artifacts/real-cloud/android/logcat.txt || true
+  exit 1
+fi
+adb shell dumpsys activity activities > artifacts/real-cloud/android/activity-after-deep-link.txt
+if ! grep -E 'mResumedActivity:|topResumedActivity=' artifacts/real-cloud/android/activity-after-deep-link.txt | grep -q 'ai.jarvis.app'; then
+  echo "JARVIS Android activity is not resumed after the deep link" >&2
+  adb logcat -d > artifacts/real-cloud/android/logcat.txt || true
+  exit 1
+fi
+
 adb exec-out screencap -p > artifacts/real-cloud/android/android-screen.png
 adb shell uiautomator dump /sdcard/jarvis-window.xml >/dev/null || true
 adb pull /sdcard/jarvis-window.xml artifacts/real-cloud/android/jarvis-window.xml >/dev/null 2>&1 || true

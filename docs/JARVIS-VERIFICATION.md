@@ -1,6 +1,6 @@
 # JARVIS validation and remaining installation gates
 
-Reviewed on 3 October 2026 against the `product/jarvis-brain` development line.
+Reviewed on 4 October 2026 against the `product/jarvis-brain` development line.
 
 The current changes repair model-store switching, premature readiness during
 setup, Core parameter/inference verification, stale face presence, enrollment
@@ -15,12 +15,12 @@ checks.
 
 ## Local verification
 
-- Full Python discovery: **795 passed**, zero failures/errors/skips.
+- Full Python discovery: **840 passed**, zero failures/errors/skips.
 - Actual running Brain HTTP service: **28/28 checks passed**, including
   authentication, malformed input, unavailable hardware, missing model setup,
   stale pairing approval, and setup error recovery.
 - TypeScript checking, ESLint, static web production build: passed.
-- Native-bridge JavaScript tests: **17 passed**; mobile pairing, chat, pending
+- Native-bridge JavaScript tests: **19 passed**; mobile pairing, chat, pending
   approvals and decisions use the Rust transport and retain signed-response
   verification.
 - `npm audit --audit-level=high`: **zero vulnerabilities**.
@@ -28,6 +28,14 @@ checks.
   overflow. Desktop UI used the running HTTP Brain; tests exercised invalid
   model-path recovery and unavailable-camera feedback. Mobile showed the
   unpaired state and disabled pairing without available fingerprint support.
+- Five native filesystem tests verify explicit laptop disconnect, identity
+  preservation, stale-host rejection and confirmed recovery of damaged trust.
+  The production UI passed Chromium checks for switching laptops, delayed
+  old-host responses, a cold-launch deep link racing saved trust, and damaged
+  pairing reset. Native sensors and transport were explicit browser fixtures.
+- Five live loopback gateway tests verify actual listener startup, port binding
+  failure, socket closure and host shutdown. Offline gateways cannot create QR
+  invitations merely because an endpoint is configured.
 
 The local HTTP/browser probes explicitly inject temporary test secret storage
 and a substitute native bridge. They do not establish functioning OS keychains,
@@ -46,7 +54,7 @@ or complete recovery of unrelated Windows settings.
 
 Confirmed sidecar termination clears its cached connection and allows at most
 three replacement starts. UI read recovery is shared and retries once; effectful
-POST requests are never replayed. Update handoff pauses recovery. The 17 web
+POST requests are never replayed. Update handoff pauses recovery. The 19 web
 tests include nine recovery cases, and two isolated Rust lifecycle tests passed;
 the full native compilation gate remains required.
 
@@ -54,6 +62,29 @@ The public preview publisher requires nine successful checks for the exact
 commit, including iOS simulator and scratch architecture checks. It verifies
 Windows/Android payload hashes and publishes their installer/APK plus a pinned
 update manifest. It does not publish an unsigned simulator build as a phone IPA.
+
+## Published preview and subsequent changes
+
+The [fe9c907 preview](https://github.com/cutebody42-web/JARVIS-OS-V.2/releases/tag/jarvis-preview-fe9c907ee268)
+passed all nine workflows. Its Windows installer, Android ARM64 APK and update
+manifest were downloaded publicly and their complete SHA-256 hashes verified.
+Windows installation and launch, real production Core/council inference,
+Android emulator install/launch and iOS simulator install/launch passed.
+The Android runners required explicit KVM access and an absolute SDK-manager
+path; after those fixes their API 36 guests booted in 48 and 58 seconds.
+
+Later source changes add actual-listener gateway readiness, explicit phone
+laptop switching, recovery of damaged pairing, stronger Android process/activity
+checks and the scratch-Core activation bridge. They require a fresh complete
+validation and release before being present in a downloaded installer.
+
+The activation bridge has 37 offline tests using tiny files and a substituted
+Ollama service. It checks production corpus/checkpoint/evaluation/export evidence,
+stages a model before promotion, binds the selected Core to an exact digest,
+and preserves a matching receipt/model through rollback and interruptions.
+Damaged evidence blocks pretrained replacement. These tests do not establish
+actual trained-model activation, inference or learning quality; no checkpoint
+has been trained. The recipe is documented in [training](../training/README.md).
 
 ## Real inference after the warm-model fix
 

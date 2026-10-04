@@ -320,7 +320,11 @@ class GitHubRepairCoordinator:
             required.add("Build JARVIS Android companion")
             required.add("Build JARVIS iOS companion")
 
-        if any(path.startswith("training/") or path == "tests/test_scratch_training.py" for path in paths):
+        scratch_surfaces = {
+            "core/scratch_activation.py", "core/ollama_bootstrap.py",
+            "tests/test_scratch_training.py", "tests/test_scratch_core_activation.py",
+        }
+        if any(path.startswith("training/") or path in scratch_surfaces for path in paths):
             required.add("Scratch model contracts")
 
         windows_relevant_prefixes = (

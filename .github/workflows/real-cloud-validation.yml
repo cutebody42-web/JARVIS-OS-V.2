@@ -14,6 +14,7 @@ on:
       - "packaging/**"
       - "scripts/generate_build_info.py"
       - "web/**"
+      - ".github/scripts/android-emulator-smoke.sh"
       - ".github/workflows/real-cloud-validation.yml"
   push:
     branches: ["product/**"]
@@ -28,6 +29,7 @@ on:
       - "packaging/**"
       - "scripts/generate_build_info.py"
       - "web/**"
+      - ".github/scripts/android-emulator-smoke.sh"
       - ".github/workflows/real-cloud-validation.yml"
 
 concurrency:

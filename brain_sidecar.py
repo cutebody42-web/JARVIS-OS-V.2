@@ -36,7 +36,16 @@ def _watch_parent(parent_pid: int, host: LocalBrainHost) -> None:
         time.sleep(2.0)
 
 
-def _serve_companion(app, host: str, port: int) -> None:
+def _companion_server_listening(server: uvicorn.Server) -> bool:
+    return bool(
+        server.started
+        and not server.should_exit
+        and any(listener.is_serving() for listener in getattr(server, "servers", ()))
+    )
+
+
+def _serve_companion(app, host: str, port: int, brain_host: LocalBrainHost) -> None:
+    brain_host.set_companion_listener(None)
     config = uvicorn.Config(
         app,
         host=host,
@@ -44,7 +53,12 @@ def _serve_companion(app, host: str, port: int) -> None:
         log_level="warning",
         access_log=False,
     )
-    uvicorn.Server(config).run()
+    server = uvicorn.Server(config)
+    brain_host.set_companion_listener(lambda: _companion_server_listening(server))
+    try:
+        server.run()
+    finally:
+        brain_host.set_companion_listener(None)
 
 
 def main(argv=None) -> int:
@@ -111,7 +125,7 @@ def main(argv=None) -> int:
         )
         threading.Thread(
             target=_serve_companion,
-            args=(companion_app, gateway.bind_host, gateway.port),
+            args=(companion_app, gateway.bind_host, gateway.port, host),
             name="jarvis-companion-gateway",
             daemon=True,
         ).start()

@@ -31,6 +31,10 @@ import requests
 
 from core.app_paths import resource_path
 from core.hardware_profile import HardwareSnapshot
+from core.scratch_activation import (
+    CORE_ALIAS, ScratchActivationError, assert_activation_unlocked,
+    read_receipt, verify_receipt_runtime,
+)
 
 
 Progress = Callable[[str, float, str], None]
@@ -330,7 +334,18 @@ def model_matches_manifest(
     *,
     base_url: str = DEFAULT_OLLAMA_URL,
     request_post=requests.post,
+    request_get=requests.get,
 ) -> bool:
+    if model.removesuffix(":latest") == CORE_ALIAS:
+        try:
+            assert_activation_unlocked(base_url)
+            receipt = read_receipt(base_url)
+            if receipt is not None:
+                verify_receipt_runtime(receipt, base_url,
+                    request_get=request_get, request_post=request_post)
+                return True
+        except (ScratchActivationError, OSError):
+            return False
     try:
         response = request_post(
             base_url + "/api/show",
@@ -551,6 +566,16 @@ def provision_brain_models(
     model_store: str | Path | None = None,
     runner=subprocess.run,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    # A deliberate scratch activation is never silently replaced with baseline
+    # weights, even when its evidence is damaged or its daemon/store changed.
+    try:
+        assert_activation_unlocked(base_url)
+        activation = read_receipt(base_url)
+        if activation is not None:
+            verify_receipt_runtime(activation, base_url,
+                request_get=requests.get, request_post=requests.post)
+    except (ScratchActivationError, OSError) as error:
+        raise OllamaBootstrapError(f"Scratch Core activation requires inspection: {error}") from error
     specs = load_brain_manifest()
     selected = select_brain_models(specs, snapshot)
     selected_aliases = {spec.alias for spec in selected}
@@ -567,6 +592,20 @@ def provision_brain_models(
 
     for index, spec in enumerate(selected):
         base_percent = index / total * 100
+        if spec.alias == CORE_ALIAS:
+            try:
+                assert_activation_unlocked(base_url)
+                current_activation = read_receipt(base_url)
+                if activation is not None and current_activation is None:
+                    raise ScratchActivationError("The active scratch Core receipt disappeared; refusing baseline replacement.")
+                if current_activation is not None:
+                    verify_receipt_runtime(current_activation, base_url,
+                        request_get=requests.get, request_post=requests.post)
+                    completed_aliases.append(spec.alias)
+                    _emit(progress, "models", base_percent, f"{spec.alias} verified scratch activation ready")
+                    continue
+            except (ScratchActivationError, OSError) as error:
+                raise OllamaBootstrapError(f"Scratch Core activation requires inspection: {error}") from error
         if spec.alias in existing and model_matches_manifest(
             spec.alias,
             spec.parameters_b,
@@ -584,6 +623,14 @@ def provision_brain_models(
             model_store=model_store,
             runner=runner,
         )
+        if spec.alias == CORE_ALIAS:
+            # Recheck after a potentially long pull, before changing the alias.
+            try:
+                assert_activation_unlocked(base_url)
+                if read_receipt(base_url) is not None:
+                    raise ScratchActivationError("Core activation changed while provisioning; retry without replacing it.")
+            except (ScratchActivationError, OSError) as error:
+                raise OllamaBootstrapError(f"Scratch Core activation requires inspection: {error}") from error
         _run_ollama(
             executable,
             ["create", spec.alias, "-f", str(spec.modelfile)],

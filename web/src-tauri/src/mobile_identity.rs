@@ -71,6 +71,7 @@ pub struct MobileCompanionStatus {
     pub paired: bool,
     pub desktop_device: Option<String>,
     pub key_protection: String,
+    pub pairing_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,12 +83,7 @@ pub struct MobileFingerprintStatus {
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct DesktopTrust {
-    desktop_device: String,
-    desktop_public_key: String,
-    desktop_endpoint: String,
-}
+use super::companion_storage::{DesktopTrust, disconnect_desktop_trust, inspect_desktop_trust, load_desktop_trust, store_desktop_trust};
 
 fn local_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
@@ -335,18 +331,12 @@ fn verify_signed_envelope(
 fn save_trust(app: &AppHandle, trust: &DesktopTrust) -> Result<(), String> {
     ensure_private_dir(app)?;
     let path = trust_path(app)?;
-    let encoded = serde_json::to_vec(trust)
-        .map_err(|error| format!("JARVIS desktop trust could not be encoded ({error})."))?;
-    fs::write(&path, encoded)
-        .map_err(|error| format!("JARVIS desktop trust could not be stored ({error})."))?;
+    store_desktop_trust(&path, trust)?;
     restrict_permissions(&path)
 }
 
 fn load_trust(app: &AppHandle) -> Result<DesktopTrust, String> {
-    let data = fs::read(trust_path(app)?)
-        .map_err(|_| "This mobile JARVIS is not paired with a desktop Brain.".to_string())?;
-    serde_json::from_slice(&data)
-        .map_err(|_| "Stored JARVIS desktop trust is invalid.".to_string())
+    load_desktop_trust(&trust_path(app)?)
 }
 
 pub(crate) fn trusted_desktop_endpoint(app: &AppHandle) -> Result<String, String> {
@@ -364,12 +354,34 @@ pub fn mobile_identity(app: AppHandle) -> Result<MobileIdentity, String> {
 pub fn mobile_companion_status(app: AppHandle) -> Result<MobileCompanionStatus, String> {
     let key = signing_key(&app)?;
     let identity = identity_for(&key);
-    let trust = load_trust(&app).ok();
+    let (trust, pairing_error) = match inspect_desktop_trust(&trust_path(&app)?) {
+        Ok(trust) => (trust, None),
+        Err(error) => (None, Some(error)),
+    };
     Ok(MobileCompanionStatus {
         key_protection: identity.key_protection.clone(),
         identity,
         paired: trust.is_some(),
         desktop_device: trust.map(|value| value.desktop_device),
+        pairing_error,
+    })
+}
+
+#[tauri::command]
+pub fn mobile_disconnect_companion(
+    app: AppHandle,
+    expected_desktop_device: Option<String>,
+    confirmed: bool,
+) -> Result<MobileCompanionStatus, String> {
+    let key = signing_key(&app)?;
+    let identity = identity_for(&key);
+    disconnect_desktop_trust(&trust_path(&app)?, expected_desktop_device.as_deref(), confirmed)?;
+    Ok(MobileCompanionStatus {
+        key_protection: identity.key_protection.clone(),
+        identity,
+        paired: false,
+        desktop_device: None,
+        pairing_error: None,
     })
 }
 
@@ -432,6 +444,9 @@ pub fn mobile_prepare_pairing(
     app: AppHandle,
     offer: PairingOffer,
 ) -> Result<MobilePairingBundle, String> {
+    if inspect_desktop_trust(&trust_path(&app)?)?.is_some() {
+        return Err("Disconnect the current laptop before pairing another JARVIS Brain.".into());
+    }
     let key = signing_key(&app)?;
     let identity = identity_for(&key);
     let endpoint = offer_endpoint(&offer)?;

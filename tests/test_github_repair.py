@@ -120,11 +120,21 @@ class GitHubRepairGateTests(unittest.TestCase):
 
     def test_scratch_training_repairs_require_real_architecture_contracts(self):
         coordinator = GitHubRepairCoordinator(FakeRepairClient())
-        for path in ("training/train.py", "tests/test_scratch_training.py"):
+        for path in ("training/train.py", "tests/test_scratch_training.py", "tests/test_scratch_core_activation.py"):
             with self.subTest(path=path):
                 publication = coordinator.publish(make_patch(path), base_branch="main", base_sha="a" * 40)
                 self.assertEqual(set(publication.required_workflows),
                                  {"CI", "NEXUS architecture contracts", "Scratch model contracts"})
+
+    def test_scratch_core_changes_require_architecture_and_actual_runtime_checks(self):
+        coordinator = GitHubRepairCoordinator(FakeRepairClient())
+        for path in ("core/scratch_activation.py", "core/ollama_bootstrap.py"):
+            with self.subTest(path=path):
+                publication = coordinator.publish(make_patch(path), base_branch="main", base_sha="a" * 40)
+                self.assertEqual(publication.disposition, RepairDisposition.REQUIRE_OWNER)
+                self.assertEqual(set(publication.required_workflows),
+                                 {"CI", "NEXUS architecture contracts", "Scratch model contracts",
+                                  "Build JARVIS Windows installer", "Real JARVIS cloud validation"})
 
     def test_build_provenance_generator_requires_packaged_and_live_runtime_checks(self):
         coordinator = GitHubRepairCoordinator(FakeRepairClient())

@@ -190,3 +190,39 @@ test("desktop update shutdown is an explicit native command", async () => {
   await api.shutdownForUpdate();
   assert.deepEqual(commands, ["shutdown_for_update"]);
 });
+
+test("disconnect is bound to the reviewed laptop and preserves the phone identity", async () => {
+  const commands = [];
+  const identity = { device_id: "phone-1", public_key: "same-public-key", fingerprint: "same-key-fingerprint", key_protection: "android_keystore" };
+  const api = runtime(async (command, args) => {
+    commands.push({ command, args });
+    assert.equal(command, "mobile_disconnect_companion");
+    return { identity, paired: false, desktop_device: null, key_protection: identity.key_protection };
+  });
+  const status = await api.disconnectMobileCompanion("laptop-a");
+  assert.equal(status.identity, identity);
+  assert.equal(status.paired, false);
+  assert.equal(status.desktop_device, null);
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].args.expectedDesktopDevice, "laptop-a");
+  assert.equal(commands[0].args.confirmed, true);
+});
+
+test("disconnected phone cannot send old chat or approval requests", async () => {
+  let paired = true;
+  let posts = 0;
+  const api = runtime(async (command) => {
+    if (command === "mobile_disconnect_companion") {
+      paired = false;
+      return { paired: false, desktop_device: null };
+    }
+    if (!paired && command.startsWith("mobile_sign_")) throw new Error("This mobile JARVIS is not paired");
+    if (command === "mobile_companion_post") posts += 1;
+    throw new Error(command);
+  });
+  await api.disconnectMobileCompanion("laptop-a");
+  await assert.rejects(api.mobileBrainMessage("old draft"), /not paired/);
+  await assert.rejects(api.mobilePendingApprovals(), /not paired/);
+  await assert.rejects(api.mobileDecideApproval("old-approval", true), /not paired/);
+  assert.equal(posts, 0);
+});

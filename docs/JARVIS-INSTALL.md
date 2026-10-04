@@ -18,47 +18,16 @@ The tag has the form `jarvis-preview-<commit-prefix>`. Its `jarvis-update.json`
 pins the full source commit, Windows installer SHA-256, changed paths, and major
 update classification. The release notes link the successful checks for that
 same commit. A published preview still requires acceptance on your physical
-devices and does not contain independently trained JARVIS weights. If no
-validated preview is available yet, the older candidate downloads below remain
-available with the stated version limits.
+devices and does not contain independently trained JARVIS weights.
 
 The nine checks include the existing product/build/runtime and regression gates,
 an unsigned iOS simulator compile/install/launch check, and CPU contract checks
 for the scratch-model architecture and training guards. The public preview
 assets are Windows and Android only.
 
-## Download the existing candidate
-
-These builds were produced from commit
-[`1506249`](https://github.com/cutebody42-web/JARVIS-OS-V.2/commit/1506249ab113297f117d4f15259e2c4e1a860717).
-They are a candidate build, not certification of your own laptop or phone.
-Subsequent source fixes need fresh installer/APK builds before they are present
-in your installed copy.
-
-The first repair patch is published as `fd28c8f`; its replacement builds are
-being prepared. The GGUF import controls and dedicated Android fingerprint
-sensor implementation described below are further source changes and require
-their own successful replacement builds. The `1506249` downloads below do not
-include those later changes.
-
-| Device | GitHub Actions download page | Artifact to download | File inside the ZIP |
-| --- | --- | --- | --- |
-| Windows x64 laptop | [Windows installer build](https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36863469039) | `JARVIS-Windows-Installer` | `JARVIS-Setup.exe` |
-| Android ARM64 phone, Android 9 or later | [Android companion build](https://github.com/cutebody42-web/JARVIS-OS-V.2/actions/runs/36863468961) | `JARVIS-Android-Companion` | `JARVIS-Companion.apk` |
-
-Sign in to GitHub, open the build page, scroll to **Artifacts**, download the
-named artifact, and extract the ZIP. Each download also contains `build-info.txt`
-with its source commit and SHA-256. The APK is a debug-signed installation
-candidate, not a Play Store release.
-
-For newer builds, open the repository's [Actions page](https://github.com/cutebody42-web/JARVIS-OS-V.2/actions),
-select the matching successful Windows and Android builds on
-`product/jarvis-brain`, and check that their `build-info.txt` files identify the
-source revision you intend to install.
-
 ## Laptop: install and initialize
 
-1. Run the extracted `JARVIS-Setup.exe`, finish the installer, and open **JARVIS**
+1. Run the downloaded `JARVIS-Setup.exe`, finish the installer, and open **JARVIS**
    from the Start menu.
 2. On the **Initialize local intelligence** screen, choose your model folder
    using **Choose folder**, or leave it blank to use Ollama's default storage.
@@ -75,6 +44,26 @@ source revision you intend to install.
    weights.
 5. Type a short request and verify that you receive a useful reply. Then close
    and reopen JARVIS and verify that the Brain becomes ready again.
+
+### Your HP and Dell installations
+
+Use the **HP with 16 GB RAM as the primary laptop Brain** for the Honor companion.
+Install the same Windows x64 preview on the Dell with 8 GB RAM if you also want
+local JARVIS there. Leave automatic model selection enabled: the Dell skips the
+7B engineering download by default, while the HP can prepare more experts when
+memory permits. Actual response speed depends on free RAM and the processor;
+close heavy applications before testing on the Dell.
+
+These are independent local installations. Installing JARVIS on both PCs does
+not automatically merge their memory. The current phone companion stores one
+paired desktop at a time and does not switch automatically between HP and Dell.
+Pair the Honor with the primary HP and keep that laptop awake while using it.
+To switch, tap **Connect another laptop** on the phone, review the current
+laptop, and confirm **Disconnect laptop**. This clears the phone's displayed
+conversation and pending approvals while preserving its signing identity and
+the laptop's stored data. Scan the other laptop's new QR and complete its
+fingerprint and desktop-approval flow. Disconnecting locally does not revoke
+the phone's existing entry on the former laptop.
 
 ### Reuse local model storage correctly
 
@@ -94,7 +83,7 @@ files or directories of Hugging Face weights.
 
 ### Import a local GGUF expert
 
-In a replacement build containing this feature, first finish local Brain setup.
+First finish local Brain setup.
 Then click **Import GGUF expert** in **Local models** and select your existing
 `.gguf` file in the native file picker. JARVIS imports that selected file into
 the active Ollama store, creates a `jarvis-import-…` alias, and selects it as
@@ -160,7 +149,7 @@ perform these checks.
    Link** panel should report that the secure companion gateway is online.
    JARVIS automatically binds its signed gateway to the laptop's Tailscale IPv4
    address on port `8765`. Leave the advanced endpoint override blank.
-3. Extract the Android download and open `JARVIS-Companion.apk` on the phone.
+3. Open the downloaded `JARVIS-Companion.apk` on the phone.
    Allow installation from the app you used to open that file when Android asks.
 4. Enroll and enable a fingerprint in Android's security settings. Open the
    JARVIS companion and check that it displays **FINGERPRINT READY**.
@@ -170,10 +159,18 @@ perform these checks.
 6. Approve the pending phone in the laptop's **Device Link** panel. Wait for the
    phone to show the connected chat interface, then send a short message.
 
+The preview APK is debug-signed. Candidate builds do not currently share a
+configured permanent Android signing key, so Android may reject an APK upgrade
+over an older candidate because its signing certificate differs. In that case,
+uninstall the older JARVIS companion before installing the new APK, then pair it
+again. Uninstalling removes the companion's local signing identity and desktop
+pairing; retain the running laptop's memory rather than treating the phone as a
+backup of it.
+
 The phone sends signed requests to the running laptop Brain; Tailscale supplies
 the private network connection. Sensitive approval uses the enrolled phone
 fingerprint. A phone PIN or facial recognition does not substitute for it.
-The replacement companion uses a dedicated Android fingerprint-sensor path
+The companion uses a dedicated Android fingerprint-sensor path
 rather than a generic biometric prompt; this behavior must still be checked on
 your physical phone.
 For an action that requests approval, read the exact pending action on the
@@ -183,7 +180,9 @@ biometric prompt must leave the action unapproved.
 If **Gateway offline** persists, confirm both Tailscale connections and restart
 the laptop app. Check that your Tailscale access rules and Windows firewall
 allow the phone to reach the laptop on port `8765`. A QR cannot repair a missing
-network route. Keep JARVIS open and the laptop awake while using the companion.
+network route. Gateway availability now requires a running local listener; a
+QR still does not establish phone-to-laptop reachability. Keep JARVIS open and
+the laptop awake while using the companion.
 
 ## iPhone and iPad status
 

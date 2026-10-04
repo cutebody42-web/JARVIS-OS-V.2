@@ -1,11 +1,13 @@
 mod brain;
 mod mobile_identity;
 mod mobile_transport;
+mod companion_storage;
 
 use brain::{choose_model_file, choose_model_store, ensure_brain_sidecar, platform_mode, BrainState};
 use mobile_identity::{
     mobile_accept_pairing_approval,
     mobile_companion_status,
+    mobile_disconnect_companion,
     mobile_fingerprint_status,
     mobile_identity,
     mobile_prepare_pairing,
@@ -88,6 +90,7 @@ pub fn run() {
             shutdown_for_update,
             mobile_identity,
             mobile_companion_status,
+            mobile_disconnect_companion,
             mobile_fingerprint_status,
             mobile_verify_owner_presence,
             mobile_prepare_pairing,

@@ -5,3 +5,4 @@ transformers==5.18.0
 accelerate==1.4.0
 safetensors==0.8.0
 sentencepiece==0.2.0
+requests==2.34.2

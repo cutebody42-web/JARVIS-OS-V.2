@@ -88,7 +88,9 @@ must stay outside this Git repository. Default paths are
 `~/.local/share/jarvis/training` on Linux (or `$XDG_DATA_HOME/jarvis/training`) and
 `%LOCALAPPDATA%\JARVIS\training` on Windows. Output directories inside the
 repository are rejected even when reached through a symlink. Use a new directory
-for corpus preparation and a new run directory unless explicitly resuming.
+for corpus preparation and a new output directory for every training run,
+including a resumed run. `--resume` reads the previous run; `--output` names
+a separate new directory and never overwrites the previous checkpoint.
 
 ## Development workflow
 
@@ -157,10 +159,77 @@ and verifies the resulting GGUF tensor parameter count. Available output choices
 are `Q4_K_M`, `Q5_K_M`, `Q8_0`, and `F16`. A resulting GGUF is a model
 artifact, not proof of good answers, owner recognition, mobile biometric approval,
 or laptop readiness. Development exports retain their development status.
-After a suitable model has been evaluated, import its GGUF through JARVIS's
-explicit local-model workflow and verify actual Ollama inference on the target
-laptop. No training stage grants device-action authority or replaces JARVIS's
-owner approval, face-enrollment, or companion-phone checks.
+The desktop's **Import GGUF expert** workflow selects an optional expert; it does
+not replace the JARVIS coordinator. Verify actual Ollama inference on the target
+laptop after importing an expert. No training stage grants device-action
+authority or replaces JARVIS's owner approval, face-enrollment, or companion-phone
+checks.
+
+## Activate a future independently trained Core
+
+There are no independently trained JARVIS weights to activate in this repository,
+and no Core replacement was performed here. After a production checkpoint has
+been trained, evaluated, exported, and independently reviewed, the explicit
+activation bridge can promote its verified GGUF to the coordinator alias.
+Development checkpoints and exports are not eligible.
+
+First upgrade to a JARVIS build that understands the scratch activation receipt.
+Older frozen builds check the legacy pretrained model size and do not recognize
+the independent 1.5B Core; their setup path can recreate the pretrained alias.
+Keep the receipt-aware build installed and do not run an older build's setup
+against the activated model store.
+
+Close the entire JARVIS desktop application and its Brain sidecar before running
+the command, and keep them closed throughout staging and promotion. An existing
+Ollama service must already be running at JARVIS's loopback endpoint with the
+intended model store. This command never starts Ollama or changes its storage
+directory; the store is a server setting. A mandatory local process scan checks
+for the desktop and Python Brain sidecar. `--brain-url` is an optional supplemental
+guard: pass the known endpoint or omit it if unknown. The packaged desktop
+allocates its sidecar port dynamically; an illustrative
+`--brain-url http://127.0.0.1:8000` or a probe of the wrong port cannot establish
+that JARVIS is closed.
+
+```bash
+python -m training.activate --run /absolute/private/path/production-run --export /absolute/private/path/production-export --ollama-url http://127.0.0.1:11435 --acknowledge-quality-review --acknowledge-jarvis-closed
+```
+
+If Ollama is not on `PATH`, add `--ollama-executable /absolute/path/to/ollama`.
+The acknowledgments confirm that the owner inspected generated responses and
+wider independent benchmarks, and that JARVIS will remain closed. They do not
+close the application, certify learning quality, or eliminate a race if another
+process starts JARVIS during activation.
+
+The bridge rechecks the production checkpoint, corpus, evaluation, and export
+hashes. It preserves the Core template's `SYSTEM`, temperature, and `top_p`
+settings, while bounding `num_ctx` to the scratch architecture's 4096-token
+context. It verifies a staging alias with actual Ollama inference before
+promotion, preserves a backup of the previous Core, and performs rollback on
+failed promotion checks. It writes an activation receipt atomically before
+reporting success.
+
+A cooperative lock for the Ollama endpoint blocks JARVIS readiness and model
+provisioning during activation. A stale lock after a crash is never removed
+automatically; inspect the runtime, receipt, and backup before removing it. If
+rollback cannot be verified, a persistent recovery marker keeps JARVIS not ready.
+An interruption such as Ctrl+C after the full receipt commit can leave a successful
+new Core and receipt; inspect that receipt before restarting or attempting recovery.
+
+If JARVIS uses a selected model folder, gracefully stop the external Ollama
+service used for activation after success and before reopening the desktop.
+JARVIS can then start its own runtime in the remembered folder. A newly opened
+desktop does not attach to an external service while a custom folder is selected.
+
+The coordinator alias keeps the legacy name `jarvis-core-1b`; its name does not
+change the weights or parameter count. A valid receipt identifies the genuine
+1,543,714,304-parameter scratch Core. Receipt-aware readiness and setup reject
+an invalid receipt rather than overwriting the independent Core with pretrained
+weights. The receipt records activation evidence; it does not certify general
+intelligence, physical laptop readiness, or biometric features. Verify the
+activated model's responses and resource use on the target laptop after reopening
+the upgraded JARVIS build. The receipt pins the loopback endpoint and Core model
+digest; a model-store change that loses that Core blocks readiness instead of
+installing a pretrained replacement.
 
 ## Offline regression checks
 
@@ -172,6 +241,15 @@ These tests use tiny synthetic files and standard-library mocks to check
 provenance, split leakage, the locked parameter count, output boundaries, and
 checkpoint evidence. They allocate no real model and perform no training,
 weight download, GPU inference, or physical laptop/phone verification.
+
+With the application dependencies installed, run the activation guards separately:
+
+```bash
+python -m unittest tests.test_scratch_core_activation -v
+```
+
+These checks simulate Ollama with tiny files. They perform no real inference,
+Core replacement, or physical device verification.
 
 After installing the pinned model libraries in an isolated CPU environment,
 optionally check the actual Transformers API and model geometry:
