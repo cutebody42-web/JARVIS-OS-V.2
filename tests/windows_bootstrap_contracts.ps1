@@ -1,9 +1,11 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $source = [IO.File]::ReadAllText((Join-Path $root 'Install-JARVIS.cmd'))
-$match = [regex]::Match($source, '(?ms)^powershell\.exe[^\r\n]*-Command \^\r?\n\s+"(?<code>.*?)"\r?\nset "JARVIS_SETUP_EXIT=')
+# cmd.exe does not join caret/newline pairs inside an open double quote.
+# Require one physical command line, then exercise that line in Windows CI.
+$match = [regex]::Match($source, '(?m)^powershell\.exe[^\r\n]*-Command "(?<code>[^\r\n]*)"\r?$')
 if (-not $match.Success) { throw 'Cannot locate the executable PowerShell command in Install-JARVIS.cmd.' }
-$code = [regex]::Replace($match.Groups['code'].Value, '\^\r?\n\s*', '')
+$code = $match.Groups['code'].Value
 if (($code.Length + 80) -ge 8191) { throw 'The bootstrap exceeds the Windows cmd command-line limit.' }
 $tokens = $null
 $parseErrors = $null
