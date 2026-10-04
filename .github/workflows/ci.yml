@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: ["main", "product/jarvis-brain"]
 
 jobs:
   backend:
@@ -58,6 +58,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: Verify immutable preview publication and branch gates
+        working-directory: .
+        run: node --test tests/publish_preview.test.cjs
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint

@@ -17,20 +17,7 @@ on:
       - "web/**"
       - ".github/workflows/build-windows.yml"
   push:
-    branches: ["product/**"]
-    paths:
-      - "brain_sidecar.py"
-      - "api/jarvis_local_server.py"
-      - "core/**"
-      - "agent/**"
-      - "actions/**"
-      - "memory/**"
-      - "models/**"
-      - "requirements.txt"
-      - "packaging/**"
-      - "scripts/generate_build_info.py"
-      - "web/**"
-      - ".github/workflows/build-windows.yml"
+    branches: ["main", "product/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -48,6 +35,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify Windows bootstrap failure contracts
+        shell: pwsh
+        run: powershell.exe -NoLogo -NoProfile -File tests/windows_bootstrap_contracts.ps1
+
+      - name: Verify source-folder setup through Windows cmd and public downloads
+        shell: cmd
+        run: Install-JARVIS.cmd --verify-only
 
       - uses: actions/setup-python@v5
         with:

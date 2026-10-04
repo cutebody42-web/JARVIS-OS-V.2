@@ -539,11 +539,27 @@ class GitHubReleaseSource:
         releases = self._json(self.api_url + "/releases?per_page=100")
         if not isinstance(releases, list):
             raise UpdateArtifactError("GitHub returned an invalid release list")
+        candidates: list[tuple[datetime, Mapping[str, Any]]] = []
         for release in releases:
             if release.get("draft") is False and any(
                     asset.get("name") == self.MANIFEST_NAME for asset in release.get("assets", [])):
-                return self._release_plan(release)
-        return None
+                # GitHub's listing order is not a publication-order guarantee.
+                # Compare actual instants, including offsets, so an older build
+                # cannot hide a newly published update. Unknown dates must not
+                # silently cause a fallback to an older installer.
+                value = release.get("published_at")
+                if not isinstance(value, str) or not re.fullmatch(
+                        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value):
+                    raise UpdateArtifactError("Release publication timestamp is missing or invalid")
+                try:
+                    published = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+                except (ValueError, OverflowError) as exc:
+                    raise UpdateArtifactError("Release publication timestamp is invalid") from exc
+                candidates.append((published, release))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return self._release_plan(candidates[0][1])
 
     def find_version(self, version: str, *, commit_sha: str | None = None) -> UpdatePlan:
         releases = self._json(self.api_url + "/releases?per_page=100")

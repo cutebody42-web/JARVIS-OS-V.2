@@ -2,17 +2,31 @@
 
 ## Install the local Windows app and Android companion
 
-For the packaged local JARVIS product on `product/jarvis-brain`, start with the
-[laptop and phone installation guide](docs/JARVIS-INSTALL.md). It includes the
-Windows installer and Android APK download pages, existing Ollama model-folder
-setup, face enrollment, phone fingerprint pairing, and real-device checks.
+On a Windows x64 laptop, extract this repository's ZIP and double-click
+**[Install-JARVIS.cmd](Install-JARVIS.cmd)** in its main folder. It downloads the
+latest published JARVIS Windows installer, verifies the exact release manifest,
+file size and SHA-256, and opens the standard installer. Follow its prompts,
+then open **JARVIS** from Start. The download is approximately 200 MB; model
+weights are downloaded separately when needed. Windows security prompts remain
+enabled.
+
+For the folder `%USERPROFILE%\Downloads\JARVIS-OS-V.2-main\JARVIS`, look for
+`Install-JARVIS.cmd` there or in its parent `JARVIS-OS-V.2-main`. An older ZIP
+will not contain the new launcher: download a fresh **Code > Download ZIP**
+from `main`, or get **JARVIS-Setup.exe** directly from the
+[published releases](https://github.com/cutebody42-web/JARVIS-OS-V.2/releases).
+
+Continue with the [laptop and phone installation guide](docs/JARVIS-INSTALL.md)
+for existing Ollama model folders, face enrollment, Android installation,
+phone fingerprint pairing, and real-device checks.
 **The Windows installer includes the Brain runtime; Python and a Gemini key are
 not required for this product.** Initial local-AI setup downloads missing model
 weights and can install Ollama with owner approval.
 
-The existing candidate is built from `1506249`. `jarvis-core-1b` uses the Llama
-3.2 1B base with a JARVIS coordinator profile and hidden Ollama experts; it is
-not an independently trained JARVIS model. Windows VM and Android emulator
+Each published installer is pinned to its source commit by `jarvis-update.json`.
+The default `jarvis-core-1b` uses the Llama 3.2 1B base with a JARVIS coordinator
+profile and hidden Ollama experts; the separate 1.5B training pipeline does not
+contain trained-from-scratch weights yet. Windows VM and Android emulator
 validation do not certify the owner's physical microphone, camera, or
 fingerprint sensor. See the guide for the current limits and acceptance steps.
 

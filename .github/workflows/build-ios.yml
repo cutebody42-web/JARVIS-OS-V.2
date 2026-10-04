@@ -7,10 +7,7 @@ on:
       - "web/**"
       - ".github/workflows/build-ios.yml"
   push:
-    branches: ["product/**"]
-    paths:
-      - "web/**"
-      - ".github/workflows/build-ios.yml"
+    branches: ["main", "product/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

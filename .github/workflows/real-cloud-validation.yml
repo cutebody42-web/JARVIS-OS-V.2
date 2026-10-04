@@ -17,20 +17,7 @@ on:
       - ".github/scripts/android-emulator-smoke.sh"
       - ".github/workflows/real-cloud-validation.yml"
   push:
-    branches: ["product/**"]
-    paths:
-      - "brain_sidecar.py"
-      - "api/jarvis_local_server.py"
-      - "core/**"
-      - "agent/**"
-      - "actions/**"
-      - "memory/**"
-      - "models/**"
-      - "packaging/**"
-      - "scripts/generate_build_info.py"
-      - "web/**"
-      - ".github/scripts/android-emulator-smoke.sh"
-      - ".github/workflows/real-cloud-validation.yml"
+    branches: ["main", "product/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

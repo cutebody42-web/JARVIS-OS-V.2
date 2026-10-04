@@ -3,7 +3,7 @@ name: NEXUS architecture contracts
 on:
   pull_request:
   push:
-    branches: ["nexus/**", "product/**"]
+    branches: ["main", "nexus/**", "product/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

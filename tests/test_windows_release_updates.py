@@ -225,7 +225,8 @@ class ReleaseSourceTests(unittest.TestCase):
         self.asset = {"name": "JARVIS-Setup.exe", "browser_download_url":
                       f"https://github.com/{self.source.repository}/releases/download/{self.plan.release_tag}/JARVIS-Setup.exe",
                       "digest": "sha256:" + self.plan.artifact_sha256}
-        self.release = {"draft": False, "tag_name": self.plan.release_tag, "assets": [self.manifest, self.asset]}
+        self.release = {"draft": False, "tag_name": self.plan.release_tag, "assets": [self.manifest, self.asset],
+                        "published_at": "2026-10-04T07:10:45Z"}
 
     def metadata(self, url):
         if url.endswith("jarvis-update.json"):
@@ -244,13 +245,46 @@ class ReleaseSourceTests(unittest.TestCase):
         with patch.object(self.source, "_json", side_effect=changed), self.assertRaises(UpdateArtifactError):
             self.source._release_plan(self.release)
 
-    def test_discover_returns_the_first_published_verified_release(self):
+    def test_discover_returns_the_published_verified_release(self):
         def metadata(url):
             if "/releases?" in url:
                 return [{"draft": True, "assets": []}, self.release]
             return self.metadata(url)
         with patch.object(self.source, "_json", side_effect=metadata):
             self.assertEqual(self.source.discover(), self.plan)
+
+    def test_discover_uses_publication_time_when_api_lists_older_release_first(self):
+        older = {**self.release, "published_at": "2026-10-04T06:35:40Z", "tag_name": "older"}
+        with patch.object(self.source, "_json", return_value=[older, self.release]), \
+                patch.object(self.source, "_release_plan", return_value=self.plan) as release_plan:
+            self.assertEqual(self.source.discover(), self.plan)
+        release_plan.assert_called_once_with(self.release)
+
+    def test_discover_compares_timezone_offsets_as_instants(self):
+        older = {**self.release, "published_at": "2026-10-04T10:00:00+03:00", "tag_name": "older"}
+        with patch.object(self.source, "_json", return_value=[older, self.release]), \
+                patch.object(self.source, "_release_plan", return_value=self.plan) as release_plan:
+            self.assertEqual(self.source.discover(), self.plan)
+        release_plan.assert_called_once_with(self.release)
+
+    def test_discover_rejects_unknown_publication_time_without_older_fallback(self):
+        for timestamp in (None, 42, "", "not-a-date", "2026-10-04T07:10:45",
+                          "2026-02-30T07:10:45Z", "2026-10-04T07:10:45+99:00"):
+            with self.subTest(timestamp=timestamp):
+                invalid = {**self.release, "published_at": timestamp}
+                with patch.object(self.source, "_json", return_value=[self.release, invalid]), \
+                        patch.object(self.source, "_release_plan") as release_plan, \
+                        self.assertRaises(UpdateArtifactError):
+                    self.source.discover()
+                release_plan.assert_not_called()
+
+    def test_discover_does_not_fall_back_when_latest_manifest_is_invalid(self):
+        older = {**self.release, "published_at": "2026-10-04T06:35:40Z", "tag_name": "older"}
+        with patch.object(self.source, "_json", return_value=[older, self.release]), \
+                patch.object(self.source, "_release_plan", side_effect=UpdateArtifactError("invalid manifest")) as release_plan, \
+                self.assertRaises(UpdateArtifactError):
+            self.source.discover()
+        release_plan.assert_called_once_with(self.release)
 
     def test_recovery_lookup_skips_unrelated_pinned_builds_before_fetching_manifests(self):
         def metadata(url):

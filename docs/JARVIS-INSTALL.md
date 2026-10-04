@@ -1,6 +1,6 @@
 # Install JARVIS on your laptop and Android phone
 
-The `product/jarvis-brain` branch contains the packaged local JARVIS application.
+The `main` branch contains the consolidated packaged local JARVIS application.
 The Windows installer includes its Python Brain runtime; **you do not need Python,
 pip, a Gemini key, or a source checkout** to use this version. The Android app is
 a companion to the laptop Brain, so the laptop must stay running for phone chat.
@@ -13,6 +13,14 @@ Choose the newest **JARVIS preview**, expand **Assets**, and download
 `JARVIS-Setup.exe` for the Windows laptop and `JARVIS-Companion.apk` for the
 Android phone. These public release files do not require signing in to GitHub
 or extracting an Actions artifact ZIP.
+
+If you downloaded the source ZIP, double-click `Install-JARVIS.cmd` in the
+extracted repository's main folder. It downloads the newest published preview,
+checks its release binding, file size and SHA-256, and opens the standard Windows
+installer. An older source ZIP will not gain new files automatically: download
+the latest ZIP from `main`, or download `JARVIS-Setup.exe` directly above.
+The older `scripts/setup_jarvis.bat` starts the legacy Python application; use
+the packaged installer for the local JARVIS product described in this guide.
 
 The tag has the form `jarvis-preview-<commit-prefix>`. Its `jarvis-update.json`
 pins the full source commit, Windows installer SHA-256, changed paths, and major

@@ -88,7 +88,8 @@ class OllamaProvider:
                     raise ValueError("Incomplete response")
                 message = value.get("message")
                 if (not isinstance(message, dict) or message.get("role") != "assistant"
-                        or not isinstance(message.get("content"), str) or message.get("tool_calls")):
+                        or not isinstance(message.get("content"), str)
+                        or not message["content"].strip() or message.get("tool_calls")):
                     raise ValueError("Invalid text response")
                 return ModelResponse(message["content"], "ollama", self.model)
             except Exception as exc:

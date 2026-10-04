@@ -5,7 +5,7 @@ import json
 import os
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.model_provider import ModelProvider, ModelRequest, default_provider
 from core.providers.ollama import LocalProviderError, OllamaProvider
@@ -82,10 +82,52 @@ class LocalProviderTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 2)
 
     def test_invalid_incomplete_or_tool_response_fails_closed(self):
-        for value in ({"done": False}, [], {"done": True, "message": {"role": "assistant", "content": "ok", "tool_calls": [{"function": "shell"}]}}):
+        for value in (
+            {"done": False},
+            [],
+            {"done": True, "message": {"role": "assistant", "content": ""}},
+            {"done": True, "message": {"role": "assistant", "content": " \n\t"}},
+            {"done": True, "message": {"role": "assistant", "content": "ok", "tool_calls": [{"function": "shell"}]}},
+        ):
             self.reply(value)
             with self.assertRaises(LocalProviderError):
                 self.provider.generate(ModelRequest("input"))
+
+    def test_blank_local_response_uses_next_local_route(self):
+        from core.model_router import ProviderChoice, ProviderKind, RoutePlan
+        from core.personas import TABY
+        from core.routed_model_provider import RoutedModelProvider
+
+        fallback = OllamaProvider("fallback-model", base_url=self.url, timeout=1)
+        self.addCleanup(fallback.close)
+        providers = {self.provider.model: self.provider, fallback.model: fallback}
+        plan = RoutePlan(
+            primary=ProviderChoice(ProviderKind.OLLAMA, self.provider.model, "primary", ensure_priority=1),
+            fallbacks=(ProviderChoice(ProviderKind.OLLAMA, fallback.model, "fallback", ensure_priority=1),),
+        )
+        router = Mock()
+        router.route.return_value = plan
+        routed = RoutedModelProvider(
+            TABY,
+            profiler=Mock(),
+            runtime=Mock(),
+            router=router,
+            ollama_factory=lambda choice: providers[choice.model],
+            gemini_factory=lambda choice: self.fail("Local fallback must not use cloud"),
+            allow_cloud=False,
+        )
+        self.reply({"done": True, "message": {"role": "assistant", "content": " \n\t"}})
+        self.reply()
+
+        response = routed.generate(ModelRequest("hello"))
+
+        self.assertEqual((response.model, response.text), (fallback.model, "hello"))
+        self.assertEqual([body["model"] for _, body, _ in self.requests], list(providers))
+        self.assertEqual(
+            [attempt.outcome for attempt in routed.last_attempts],
+            ["failed:LocalProviderError", "succeeded"],
+        )
+        router.route.assert_called_once()
 
     def test_request_limit_prevents_http(self):
         with self.assertRaises(ValueError):

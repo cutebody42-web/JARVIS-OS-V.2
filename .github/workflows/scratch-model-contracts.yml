@@ -3,14 +3,8 @@ name: Scratch model contracts
 on:
   workflow_dispatch:
   push:
-    branches: [product/jarvis-brain]
-    paths:
-      - 'training/**'
-      - 'tests/test_scratch_training.py'
-      - 'tests/test_scratch_core_activation.py'
-      - 'core/scratch_activation.py'
-      - 'core/ollama_bootstrap.py'
-      - '.github/workflows/scratch-model-contracts.yml'
+    branches: ["main", "product/jarvis-brain"]
+
   pull_request:
     paths:
       - 'training/**'
@@ -29,6 +23,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

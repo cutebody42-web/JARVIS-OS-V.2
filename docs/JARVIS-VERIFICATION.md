@@ -1,6 +1,8 @@
 # JARVIS validation and remaining installation gates
 
-Reviewed on 4 October 2026 against the `product/jarvis-brain` development line.
+Reviewed on 4 October 2026 for consolidation of the development branches into
+`main`. Branch-by-branch resolutions are recorded in
+[BRANCH-CONSOLIDATION.md](BRANCH-CONSOLIDATION.md).
 
 The current changes repair model-store switching, premature readiness during
 setup, Core parameter/inference verification, stale face presence, enrollment
@@ -15,7 +17,7 @@ checks.
 
 ## Local verification
 
-- Full Python discovery: **840 passed**, zero failures/errors/skips.
+- Full Python discovery: **850 passed**, zero failures/errors/skips.
 - Actual running Brain HTTP service: **28/28 checks passed**, including
   authentication, malformed input, unavailable hardware, missing model setup,
   stale pairing approval, and setup error recovery.
@@ -23,6 +25,9 @@ checks.
 - Native-bridge JavaScript tests: **19 passed**; mobile pairing, chat, pending
   approvals and decisions use the Rust transport and retain signed-response
   verification.
+- Eight publisher contract tests passed, covering branch-bound checks and reuse
+  of immutable release assets. The Windows build also runs bootstrap contracts
+  for malformed releases, checksums, executable headers and download failures.
 - `npm audit --audit-level=high`: **zero vulnerabilities**.
 - Actual Chromium at 1440×1000 and 390×844: zero page errors or horizontal
   overflow. Desktop UI used the running HTTP Brain; tests exercised invalid
@@ -73,10 +78,17 @@ Android emulator install/launch and iOS simulator install/launch passed.
 The Android runners required explicit KVM access and an absolute SDK-manager
 path; after those fixes their API 36 guests booted in 48 and 58 seconds.
 
-Later source changes add actual-listener gateway readiness, explicit phone
-laptop switching, recovery of damaged pairing, stronger Android process/activity
-checks and the scratch-Core activation bridge. They require a fresh complete
-validation and release before being present in a downloaded installer.
+The [e01f5a6 preview](https://github.com/cutebody42-web/JARVIS-OS-V.2/releases/tag/jarvis-preview-e01f5a6439cc)
+also passed all nine workflows. Its three public assets were downloaded and their
+sizes and complete SHA-256 hashes verified. It includes actual-listener gateway
+readiness, explicit phone laptop switching, recovery of damaged pairing, stronger
+Android process/activity checks and the scratch-Core activation bridge.
+
+The consolidation additionally preserves an independent improvement-evidence
+ledger, rejects blank Ollama replies before local fallback, fixes update discovery
+when GitHub lists an older release first, and adds the Windows setup launcher.
+The main release publisher requires a fresh complete validation of the exact
+consolidation commit before publishing its installer.
 
 The activation bridge has 37 offline tests using tiny files and a substituted
 Ollama service. It checks production corpus/checkpoint/evaluation/export evidence,

@@ -6,10 +6,8 @@ on:
       - "web/**"
       - ".github/workflows/product-shell.yml"
   push:
-    branches: ["product/**"]
-    paths:
-      - "web/**"
-      - ".github/workflows/product-shell.yml"
+    branches: ["main", "product/**"]
+
   workflow_dispatch:
 
 concurrency:
