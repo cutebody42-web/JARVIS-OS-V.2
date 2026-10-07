@@ -40,10 +40,12 @@ class GroundingContractTests(unittest.TestCase):
         self.assertIn("numeric and time budgets", context)
         self.assertIn("never allocate more time", context)
 
-    def test_core_brief_gate_accepts_structured_grounded_coordinator_output(self):
+    def test_core_brief_gate_accepts_normalized_authoritative_owner_contract(self):
         quality = _SMOKE.validate_core_brief_quality(
             "GOAL: Create a neutral preparation plan.\n"
-            "STATED_CONSTRAINTS: Thirty minutes, exactly three numbered steps, no assumptions.\n"
+            "STATED_CONSTRAINTS: AUTHORITATIVE_OWNER_REQUEST: I have thirty minutes to prepare "
+            "for tomorrow. Return exactly three short numbered planning steps. Do not assume my "
+            "calendar, events or preferences. Keep the final answer under eighty words.\n"
             "UNKNOWNS: The preparation subject and personal schedule are UNKNOWN.\n"
             "VERIFY: Three steps fit within the thirty-minute budget and add no personal facts."
         )
@@ -52,7 +54,11 @@ class GroundingContractTests(unittest.TestCase):
             quality["labels_seen"],
             ["GOAL", "STATED_CONSTRAINTS", "UNKNOWNS", "VERIFY"],
         )
+        self.assertTrue(quality["authoritative_request_preserved"])
         self.assertTrue(quality["time_budget_preserved"])
+        self.assertTrue(quality["output_shape_preserved"])
+        self.assertTrue(quality["word_budget_preserved"])
+        self.assertTrue(quality["grounding_prohibition_preserved"])
         self.assertEqual(quality["refusal_markers"], [])
 
     def test_core_brief_gate_rejects_previous_real_refusal_regression(self):
@@ -63,17 +69,21 @@ class GroundingContractTests(unittest.TestCase):
         self.assertFalse(quality["certified"])
         self.assertIn("core_brief_protocol_mismatch", quality["failures"])
         self.assertIn("core_brief_refusal", quality["failures"])
+        self.assertIn("core_brief_missing_authoritative_request", quality["failures"])
         self.assertIn("core_brief_omitted_time_budget", quality["failures"])
 
-    def test_core_brief_gate_rejects_structured_brief_that_drops_time_budget(self):
+    def test_core_brief_gate_rejects_authoritative_brief_that_drops_time_budget(self):
         quality = _SMOKE.validate_core_brief_quality(
             "GOAL: Create a neutral preparation plan.\n"
-            "STATED_CONSTRAINTS: Exactly three numbered steps and no assumptions.\n"
+            "STATED_CONSTRAINTS: AUTHORITATIVE_OWNER_REQUEST: Return exactly three numbered "
+            "planning steps. Do not assume my calendar, events or preferences. Keep the final "
+            "answer under eighty words.\n"
             "UNKNOWNS: The preparation subject is UNKNOWN.\n"
             "VERIFY: Do not invent personal facts."
         )
         self.assertFalse(quality["certified"])
         self.assertIn("core_brief_omitted_time_budget", quality["failures"])
+        self.assertNotIn("core_brief_missing_authoritative_request", quality["failures"])
 
     def test_quality_gate_accepts_grounded_three_step_response(self):
         quality = _SMOKE.validate_grounding_quality(
@@ -148,6 +158,17 @@ class GroundingContractTests(unittest.TestCase):
         )
         self.assertFalse(quality["certified"])
         self.assertIn("claimed_preparation_context", quality["unsupported_assumption_markers"])
+
+    def test_quality_gate_rejects_latest_real_core_tasks_regression(self):
+        quality = _SMOKE.validate_grounding_quality(
+            "1. Allocate twenty minutes to review your core tasks. "
+            "2. Reserve ten minutes for contingency planning. "
+            "3. Ensure total time equals exactly thirty minutes. "
+            "This plan strictly adheres to your thirty-minute constraint."
+        )
+        self.assertFalse(quality["certified"])
+        self.assertIn("claimed_task_inventory", quality["unsupported_assumption_markers"])
+        self.assertIn("claimed_work_object", quality["unsupported_assumption_markers"])
 
     def test_quality_gate_rejects_impossible_per_step_time(self):
         for phrase in ("twenty minutes per action", "20 minutes for each step"):
