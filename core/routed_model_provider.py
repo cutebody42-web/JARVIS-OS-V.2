@@ -27,8 +27,11 @@ _CONVERSATIONAL_EVIDENCE_CONTRACT = (
     "current owner request, the current-session conversation, or explicitly supplied durable "
     "synchronized continuity. Missing context stays UNKNOWN or conditional. Do not invent "
     "unstated meetings, events, calendar entries, task lists, existing tasks, projects, goals, "
-    "priorities, people, locations, files, device state, habits or preferences. Respect explicit "
-    "numeric and time constraints and verify arithmetic before presenting a plan."
+    "priorities, people, locations, files, sessions, materials, documents, notes, workspaces, "
+    "resources, device state, habits or preferences. If the owner did not name the object to "
+    "work on, keep it abstract (for example, a chosen focus) instead of supplying a plausible "
+    "object. Respect explicit numeric and time constraints and verify arithmetic before "
+    "presenting a plan."
 )
 
 
