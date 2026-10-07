@@ -88,8 +88,8 @@ class TemporalEmbeddingMemory:
     def index_claims(self, claim_ids: Sequence[str], *, batch_size: int = 32) -> int:
         if isinstance(claim_ids, (str, bytes)) or not isinstance(claim_ids, Sequence):
             raise ValueError("claim_ids must be a sequence")
-        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 64:
-            raise ValueError("batch_size must be between 1 and 64")
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 32:
+            raise ValueError("batch_size must be between 1 and 32")
         if len(claim_ids) > 1000:
             raise ValueError("at most 1000 claims may be indexed at once")
 
