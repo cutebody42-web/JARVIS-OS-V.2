@@ -11,6 +11,14 @@ from .conflict_resolver import (
 )
 from .event_store import ClockRelation, EventStore, SyncEvent, compare_vector_clocks
 from .integration_hub import IntegrationState, NEXUSIntegrationHub
+from .middleware import (
+    MiddlewareContext,
+    MiddlewareError,
+    MiddlewareExecutionError,
+    MiddlewarePipeline,
+    MiddlewareSpec,
+    MiddlewareTrace,
+)
 from .merge_applier import ApplyResult, ApplyStatus, MergeApplier
 from .sync_daemon import (
     PROTOCOL_VERSION,
@@ -69,6 +77,12 @@ __all__ = [
     "DeviceSigner",
     "EventStore",
     "IntegrationState",
+    "MiddlewareContext",
+    "MiddlewareError",
+    "MiddlewareExecutionError",
+    "MiddlewarePipeline",
+    "MiddlewareSpec",
+    "MiddlewareTrace",
     "MergeAction",
     "MergeApplier",
     "MergeDecision",
