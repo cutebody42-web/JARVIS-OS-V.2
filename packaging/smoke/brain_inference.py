@@ -98,6 +98,23 @@ _PER_STEP_TIME_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+_NUMBERED_STEP_BLOCK = re.compile(
+    r"(?ms)(?<!\d)([123])[.)]\s+(.*?)(?=(?<!\d)[123][.)]\s+|\Z)"
+)
+_DIRECT_STEP_TIME_PATTERNS = (
+    re.compile(
+        rf"\b(?:spend|allocate|use|reserve|take)\s+(?P<minutes>{_MINUTE_TOKEN})\s*(?:minutes?|mins?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\bset\s+aside\s+(?P<minutes>{_MINUTE_TOKEN})\s*(?:minutes?|mins?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?P<minutes>{_MINUTE_TOKEN})\s*(?:minutes?|mins?)\s+(?:to|for|on)\b",
+        re.IGNORECASE,
+    ),
+)
 
 
 def _minute_value(token: str) -> int | None:
@@ -123,6 +140,27 @@ def _time_budget_evidence(text: str, step_count: int) -> list[dict]:
                 "implied_total_minutes": per_step * step_count,
             })
     return evidence
+
+
+def _step_time_allocations(text: str) -> list[dict]:
+    allocations = []
+    for step, body in _NUMBERED_STEP_BLOCK.findall(text):
+        accepted_spans = []
+        for pattern in _DIRECT_STEP_TIME_PATTERNS:
+            for match in pattern.finditer(body):
+                start, end = match.span()
+                if any(start < other_end and end > other_start for other_start, other_end in accepted_spans):
+                    continue
+                minutes = _minute_value(match.group("minutes"))
+                if minutes is None:
+                    continue
+                accepted_spans.append((start, end))
+                allocations.append({
+                    "step": int(step),
+                    "phrase": match.group(0),
+                    "minutes": minutes,
+                })
+    return allocations
 
 
 def observed_routes(route_attempts) -> list[dict]:
@@ -195,10 +233,19 @@ def validate_grounding_quality(response_text: str) -> dict:
         if pattern.search(text)
     ]
     time_budget_evidence = _time_budget_evidence(text, len(step_markers))
+    step_time_allocations = _step_time_allocations(text)
+    explicit_step_total_minutes = sum(item["minutes"] for item in step_time_allocations)
     time_budget_violations = [
         item for item in time_budget_evidence
         if item["implied_total_minutes"] > TIME_BUDGET_MINUTES
     ]
+    if explicit_step_total_minutes > TIME_BUDGET_MINUTES:
+        time_budget_violations.append({
+            "kind": "explicit_step_allocations",
+            "total_minutes": explicit_step_total_minutes,
+            "budget_minutes": TIME_BUDGET_MINUTES,
+            "allocations": step_time_allocations,
+        })
 
     failures = []
     if word_count > 80:
@@ -212,13 +259,15 @@ def validate_grounding_quality(response_text: str) -> dict:
 
     return {
         "certified": not failures,
-        "scope": "thirty-minute-planning-grounding-probe-v3",
+        "scope": "thirty-minute-planning-grounding-probe-v4",
         "word_count": word_count,
         "word_limit": 80,
         "numbered_steps_seen": sorted(step_markers),
         "unsupported_assumption_markers": assumption_markers,
         "time_budget_minutes": TIME_BUDGET_MINUTES,
         "time_budget_evidence": time_budget_evidence,
+        "explicit_step_time_allocations": step_time_allocations,
+        "explicit_step_total_minutes": explicit_step_total_minutes,
         "time_budget_violations": time_budget_violations,
         "failures": failures,
     }
