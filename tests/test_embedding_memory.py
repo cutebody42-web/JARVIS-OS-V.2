@@ -18,6 +18,16 @@ class FakeProvider:
         return tuple(self.embed(text) for text in texts)
 
 
+class RemoteProvider(FakeProvider):
+    info = EmbeddingInfo(
+        model_id="remote-test",
+        dimension=2,
+        engine="remote",
+        normalized=False,
+        local_only=False,
+    )
+
+
 class EmbeddingMemoryTests(unittest.TestCase):
     def test_indexes_claims_and_searches_from_text(self):
         with tempfile.TemporaryDirectory() as td:
@@ -30,6 +40,7 @@ class EmbeddingMemoryTests(unittest.TestCase):
             self.assertEqual(matches[0].claim.claim_id, first.claim_id)
             self.assertFalse(memory.status()["network_required"])
             self.assertEqual(memory.status()["dimension"], 2)
+            self.assertNotIn("count", memory.status()["vector_index"])
 
     def test_hybrid_search_uses_local_embedding(self):
         with tempfile.TemporaryDirectory() as td:
@@ -41,6 +52,12 @@ class EmbeddingMemoryTests(unittest.TestCase):
             matches = memory.hybrid_search_text("physics voltage", limit=2)
             self.assertEqual(matches[0].claim.claim_id, first.claim_id)
             self.assertEqual({item.claim.claim_id for item in matches}, {first.claim_id, second.claim_id})
+
+    def test_remote_provider_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = TemporalMemoryStore(Path(td) / "memory.sqlite")
+            with self.assertRaises(ValueError):
+                TemporalEmbeddingMemory(store, RemoteProvider(), prefer_native=False)
 
     def test_batch_controls_are_bounded(self):
         with tempfile.TemporaryDirectory() as td:
