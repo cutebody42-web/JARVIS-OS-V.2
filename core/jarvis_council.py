@@ -137,14 +137,28 @@ class JarvisCouncil:
         self.runtime.ensure(CORE_MODEL, 100, keep_alive="10m")
         response = self._provider(CORE_MODEL, keep_alive="10m").generate(
             ModelRequest(
-                prompt=message,
+                prompt=(
+                    "INTERNAL COORDINATOR TASK — do not answer the owner.\n"
+                    "Read the OWNER REQUEST below and emit a routing brief using exactly these "
+                    "four field labels, each once:\n"
+                    "GOAL: <what the owner is asking for, without adding facts>\n"
+                    "STATED_CONSTRAINTS: <copy all explicit limits such as counts, time budgets, "
+                    "formats, or prohibitions; use NONE only if truly absent>\n"
+                    "UNKNOWNS: <missing personal/situational facts that matter, or NONE>\n"
+                    "VERIFY: <what the final answer must check before returning>\n\n"
+                    "Never greet, apologize, refuse, ask a question, offer more help, or answer "
+                    "the owner directly. Missing context belongs under UNKNOWNS and is never a "
+                    "reason to refuse the routing task.\n\n"
+                    "OWNER REQUEST:\n" + message
+                ),
                 system_instruction=(
                     "You are the hidden JARVIS Core coordinator. Produce a compact internal "
                     "routing brief for specialist models. Identify the owner's goal, key "
                     "constraints, uncertainty, and what the final answer must verify. "
                     + _COUNCIL_GROUNDING_RULES + " "
                     "Explicit constraints from the owner belong in the brief and must not be "
-                    "refused or omitted. Do not answer the owner directly. Do not mention model names."
+                    "refused or omitted. Output only the requested internal routing fields. "
+                    "Do not answer the owner directly. Do not mention model names."
                 ),
                 tier=ModelTier.FAST,
             )
