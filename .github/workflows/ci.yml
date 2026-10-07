@@ -56,6 +56,7 @@ jobs:
           tests.test_hybrid_retrieval
           tests.test_local_embedding
           tests.test_embedding_memory
+          tests.test_android_signing
 
   frontend:
     runs-on: ubuntu-latest
