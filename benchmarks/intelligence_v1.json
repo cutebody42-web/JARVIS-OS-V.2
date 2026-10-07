@@ -30,7 +30,7 @@
       "prompt": "عندي 20 minutes بس. Give me exactly 2 numbered steps، وماتخترعش أي meeting أو tasks أو files مش قلتهم.",
       "max_words": 60,
       "numbered_steps": ["1", "2"],
-      "required_regex": ["(?i)\\b(?:20|twenty)\\b"],
+      "required_regex": ["(?i)(?<![0-9])(?:20|twenty)(?![0-9])"],
       "forbidden_regex": [
         "(?i)\\byour\\s+(?:meeting|tasks?|files?|projects?)\\b",
         "(?:اجتماعك|مهامك|تاسكاتك|ملفاتك|مشروعك)"
