@@ -293,7 +293,7 @@ export function WakeWordBridge() {
 
   if (!supported) return null;
 
-  const enabled = Boolean(status?.enabled && enabledRef.current);
+  const enabled = Boolean(status?.enabled);
   return (
     <div className="fixed bottom-4 right-4 z-[80] w-[min(92vw,390px)] rounded-2xl border border-cyan-400/25 bg-slate-950/90 p-3 text-xs text-slate-200 shadow-2xl backdrop-blur-xl">
       <button
