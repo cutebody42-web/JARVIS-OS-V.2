@@ -254,3 +254,4 @@ class BM25Plus(BM25):
 #             q_freq = np.array([(doc.get(q) or 0) for doc in self.doc_freqs])
 #             score += (self.idf.get(q) or 0) * (self.delta + (q_freq * (self.k1 + 1)) /
 #                                                (self.k1 * (1 - self.b + self.b * doc_len / self.avgdl) + q_freq))
+#         return score
