@@ -1,8 +1,10 @@
-"""Bounded autonomous self-healing and self-repair contracts for JARVIS.
+"""Bounded autonomous self-healing and owner-reviewed repair contracts.
 
-Runtime recovery is automatic. Code repair may also be automatic only when the
-change stays inside explicitly low-risk paths and passes the full configured
-verification gate. Security/authority/update paths can never self-approve.
+Ephemeral runtime recovery may be automatic. Repository changes may be
+generated and evaluated as inert candidates, but every non-forbidden patch
+requires an exact, one-time owner approval before it can be applied or
+published. A model, caller, policy override, or green test result is never an
+approval.
 
 This module does not grant new capabilities and does not implement replication,
 privilege escalation or self-preservation behavior.
@@ -10,6 +12,7 @@ privilege escalation or self-preservation behavior.
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -196,7 +199,7 @@ class RepairSandbox(Protocol):
 
 
 class SelfHealPolicy:
-    """Path-based authority ceiling for automatic code changes."""
+    """Classify repair risk without granting autonomous promotion authority."""
 
     # Any edit here always requires owner approval even if tests pass.
     MAJOR_PREFIXES = (
@@ -268,9 +271,10 @@ class SelfHealPolicy:
         risk = self.classify(patch)
         if risk is RepairRisk.FORBIDDEN:
             return RepairDisposition.REJECT
-        if risk is RepairRisk.MAJOR:
-            return RepairDisposition.REQUIRE_OWNER
-        return RepairDisposition.AUTO_APPLY
+        # Risk controls review depth; it never grants permission to promote a
+        # repository change. AUTO_APPLY is retained only for bounded runtime
+        # recovery outcomes, not for RepairPatch values.
+        return RepairDisposition.REQUIRE_OWNER
 
 
 class RepairJournal:
@@ -279,7 +283,7 @@ class RepairJournal:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS repair_events (
@@ -301,7 +305,7 @@ class RepairJournal:
         checkpoint_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 """
                 INSERT INTO repair_events(
@@ -312,7 +316,7 @@ class RepairJournal:
             )
 
     def history(self, incident_id: str) -> tuple[dict[str, object], ...]:
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             rows = db.execute(
                 """
@@ -328,7 +332,7 @@ class RepairJournal:
     def recent(self, limit: int = 20) -> tuple[dict[str, object], ...]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
             raise ValueError("limit must be between 1 and 200")
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             rows = db.execute(
                 """
@@ -350,6 +354,8 @@ class SelfHealController:
         journal: RepairJournal | None = None,
         owner_approvals: OwnerApprovalManager | None = None,
     ):
+        if owner_approvals is not None and type(owner_approvals) is not OwnerApprovalManager:
+            raise TypeError("owner_approvals must be OwnerApprovalManager or None")
         self.policy = policy or SelfHealPolicy()
         self.journal = journal
         self.owner_approvals = owner_approvals
@@ -421,34 +427,48 @@ class SelfHealController:
         approval_id: str | None = None,
     ) -> RepairOutcome:
         patch = engine.propose(incident, repository_context)
+        if type(patch) is not RepairPatch:
+            raise TypeError("repair engine must return an exact RepairPatch value")
         if patch.incident_id != incident.id:
             raise ValueError("repair patch is not bound to the incident")
+        patch_digest = RepairPatch.digest(patch)
 
-        disposition = self.policy.disposition(patch)
-        if disposition is RepairDisposition.REJECT:
+        policy_disposition = self.policy.disposition(patch)
+        # An injected/custom policy may add restrictions, but may never weaken
+        # the built-in boundary or turn a repository patch into AUTO_APPLY.
+        baseline_disposition = SelfHealPolicy().disposition(patch)
+        if (
+            policy_disposition is RepairDisposition.REJECT
+            or baseline_disposition is RepairDisposition.REJECT
+        ):
             outcome = RepairOutcome(
                 incident.id,
                 RepairState.FAILED,
-                disposition,
+                RepairDisposition.REJECT,
                 "Repair touches a forbidden self-modification surface.",
             )
             if self.journal:
                 self.journal.record(incident.id, outcome.state, outcome.message)
             return outcome
 
+        disposition = RepairDisposition.REQUIRE_OWNER
+
         # A caller/model supplied boolean is not proof of an owner decision.
         if disposition is RepairDisposition.REQUIRE_OWNER and approval_id is None:
             request_id = None
             if self.owner_approvals is not None:
-                request_id = self.owner_approvals.create(
-                    f"Apply JARVIS repair: {patch.rationale[:350]}", patch.digest(),
+                if type(self.owner_approvals) is not OwnerApprovalManager:
+                    raise TypeError("owner_approvals must be OwnerApprovalManager or None")
+                request_id = OwnerApprovalManager.create(
+                    self.owner_approvals,
+                    f"Apply JARVIS repair: {patch.rationale[:350]}", patch_digest,
                     ttl_seconds=300,
                 ).approval_id
             outcome = RepairOutcome(
                 incident.id,
                 RepairState.AWAITING_OWNER,
                 disposition,
-                "Major repair passed policy classification but requires owner approval.",
+                "Repair candidate requires explicit owner review and approval before application.",
                 approval_id=request_id,
             )
             if self.journal:
@@ -457,8 +477,13 @@ class SelfHealController:
 
         if disposition is RepairDisposition.REQUIRE_OWNER:
             if self.owner_approvals is None:
-                raise PermissionError("Major repair requires the paired owner approval queue")
-            self.owner_approvals.consume(approval_id, action_digest=patch.digest())
+                raise PermissionError("Repair promotion requires the paired owner approval queue")
+            if type(self.owner_approvals) is not OwnerApprovalManager:
+                raise TypeError("owner_approvals must be OwnerApprovalManager or None")
+            # Invoke the concrete one-shot verifier, not a subclass override.
+            OwnerApprovalManager.consume(
+                self.owner_approvals, approval_id, action_digest=patch_digest,
+            )
 
         checkpoint = sandbox.create_checkpoint(incident)
         if self.journal:

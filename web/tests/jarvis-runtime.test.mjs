@@ -58,20 +58,36 @@ test("mobile approval list and decision use native transport and native biometri
     if (command === "mobile_sign_approval_list" || command === "mobile_sign_approval_decision") {
       if (command === "mobile_sign_approval_decision") {
         assert.equal(args.approvalId, "approval-1");
+        assert.equal(args.listRequestId, "approval-request");
+        assert.equal(args.signedPendingResponse, "signed-response");
+        assert.equal("actionDigest" in args, false);
         assert.equal(args.approved, true);
+        return {
+          request_id: "decision-request",
+          approval_id: "approval-1",
+          action_digest: "a".repeat(64),
+          endpoint: "http://100.90.10.3:8765/nexus/approval/v1/decision",
+          body: "signed-decision",
+        };
       }
       return { request_id: "approval-request", endpoint: "http://100.90.10.3:8765/nexus/approval/v1/pending", body: "signed-request" };
     }
     if (command === "mobile_companion_post") {
       return { status: 200, content_type: mediaType, body: "signed-response" };
     }
-    if (command === "mobile_verify_approval_list_response") return { pending: [{ approval_id: "approval-1" }] };
-    if (command === "mobile_verify_approval_receipt") return { state: "approved" };
+    if (command === "mobile_verify_approval_list_response") {
+      return { pending: [{ approval_id: "approval-1", action_digest: "a".repeat(64) }] };
+    }
+    if (command === "mobile_verify_approval_receipt") {
+      assert.equal(args.approvalId, "approval-1");
+      assert.equal(args.actionDigest, "a".repeat(64));
+      return { state: "approved" };
+    }
     throw new Error(command);
   });
   const pending = await api.mobilePendingApprovals();
   assert.equal(pending[0].approval_id, "approval-1");
-  assert.equal((await api.mobileDecideApproval("approval-1", true)).state, "approved");
+  assert.equal((await api.mobileDecideApproval(pending[0], true)).state, "approved");
   assert.equal(commands.filter((command) => command === "mobile_companion_post").length, 2);
   assert.ok(commands.includes("mobile_sign_approval_decision"));
 });
@@ -146,13 +162,51 @@ test("a cancelled native fingerprint approval sends no decision to the desktop",
   const commands = [];
   const api = runtime(async (command) => {
     commands.push(command);
+    if (command === "mobile_sign_approval_list") {
+      return { request_id: "list-1", endpoint: "http://100.90.10.3:8765/nexus/approval/v1/pending", body: "list-request" };
+    }
+    if (command === "mobile_companion_post") {
+      return { status: 200, content_type: mediaType, body: "signed-pending" };
+    }
+    if (command === "mobile_verify_approval_list_response") {
+      return { pending: [{ approval_id: "approval-1", action_digest: "a".repeat(64), summary: "Exact action", expires_at: "2099-01-01T00:00:00Z" }] };
+    }
     if (command === "mobile_sign_approval_decision") {
       throw new Error("Fingerprint verification failed or was cancelled");
     }
     throw new Error("No decision may leave this phone without fingerprint proof");
   });
-  await assert.rejects(api.mobileDecideApproval("approval-1", true), /Fingerprint verification failed/);
-  assert.deepEqual(commands, ["mobile_sign_approval_decision"]);
+  const [approval] = await api.mobilePendingApprovals();
+  await assert.rejects(api.mobileDecideApproval(approval, true), /Fingerprint verification failed/);
+  assert.deepEqual(commands, [
+    "mobile_sign_approval_list",
+    "mobile_companion_post",
+    "mobile_verify_approval_list_response",
+    "mobile_sign_approval_decision",
+  ]);
+});
+
+test("mobile approval decisions require their exact verified signed-list object", async () => {
+  let signed = 0;
+  const api = runtime(async (command) => {
+    if (command === "mobile_sign_approval_list") {
+      return { request_id: "list-2", endpoint: "http://100.90.10.3:8765/nexus/approval/v1/pending", body: "list-request" };
+    }
+    if (command === "mobile_companion_post") {
+      return { status: 200, content_type: mediaType, body: "signed-pending" };
+    }
+    if (command === "mobile_verify_approval_list_response") {
+      return { pending: [{ approval_id: "approval-2", action_digest: "b".repeat(64), summary: "Exact action", expires_at: "2099-01-01T00:00:00Z" }] };
+    }
+    if (command === "mobile_sign_approval_decision") signed += 1;
+    throw new Error(command);
+  });
+  const [approval] = await api.mobilePendingApprovals();
+  await assert.rejects(
+    api.mobileDecideApproval({ ...approval, action_digest: "c".repeat(64) }, true),
+    /Refresh JARVIS approvals/,
+  );
+  assert.equal(signed, 0);
 });
 
 test("desktop updates use authenticated explicit steps and bind installation to checkpoint and approval", async () => {
@@ -212,17 +266,28 @@ test("disconnected phone cannot send old chat or approval requests", async () =>
   let paired = true;
   let posts = 0;
   const api = runtime(async (command) => {
+    if (!paired && command.startsWith("mobile_sign_")) throw new Error("This mobile JARVIS is not paired");
+    if (command === "mobile_sign_approval_list") {
+      return { request_id: "old-list", endpoint: "http://100.90.10.3:8765/nexus/approval/v1/pending", body: "old-list-request" };
+    }
+    if (command === "mobile_verify_approval_list_response") {
+      return { pending: [{ approval_id: "old-approval", action_digest: "a".repeat(64), summary: "Old action", expires_at: "2099-01-01T00:00:00Z" }] };
+    }
     if (command === "mobile_disconnect_companion") {
       paired = false;
       return { paired: false, desktop_device: null };
     }
-    if (!paired && command.startsWith("mobile_sign_")) throw new Error("This mobile JARVIS is not paired");
-    if (command === "mobile_companion_post") posts += 1;
+    if (command === "mobile_companion_post") {
+      posts += 1;
+      return { status: 200, content_type: mediaType, body: "signed-pending" };
+    }
     throw new Error(command);
   });
+  const [oldApproval] = await api.mobilePendingApprovals();
+  posts = 0;
   await api.disconnectMobileCompanion("laptop-a");
   await assert.rejects(api.mobileBrainMessage("old draft"), /not paired/);
   await assert.rejects(api.mobilePendingApprovals(), /not paired/);
-  await assert.rejects(api.mobileDecideApproval("old-approval", true), /not paired/);
+  await assert.rejects(api.mobileDecideApproval(oldApproval, true), /not paired/);
   assert.equal(posts, 0);
 });

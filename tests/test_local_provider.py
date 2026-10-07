@@ -7,7 +7,13 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from core.model_provider import ModelProvider, ModelRequest, default_provider
+from core.model_provider import (
+    ContextClassification,
+    ModelContext,
+    ModelProvider,
+    ModelRequest,
+    default_provider,
+)
 from core.providers.ollama import LocalProviderError, OllamaProvider
 
 
@@ -72,6 +78,28 @@ class LocalProviderTests(unittest.TestCase):
         self.assertEqual(body["keep_alive"], "5m")
         self.assertEqual(body["options"], {"num_ctx": 4096, "num_predict": 512})
         self.assertNotIn("tools", body)
+
+    def test_direct_local_adapter_receives_private_and_shareable_context(self):
+        self.reply()
+        private_secret = "api_key=owner-private-value-123456"
+        public_context = "public project architecture"
+
+        self.provider.generate(ModelRequest(
+            "review this locally",
+            context=(
+                ModelContext(private_secret, label="private memory"),
+                ModelContext(
+                    public_context,
+                    label="public context",
+                    classification=ContextClassification.CLOUD_SHAREABLE,
+                ),
+            ),
+        ))
+
+        prompt = self.requests[-1][1]["messages"][1]["content"]
+        self.assertIn(private_secret, prompt)
+        self.assertIn(public_context, prompt)
+        self.assertIn("review this locally", prompt)
 
     def test_redirect_and_errors_never_follow_or_leak(self):
         for status in (302, 500):

@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -113,7 +114,39 @@ class ReceiptTests(unittest.TestCase):
         path = receipt.write_receipt(valid_receipt(), URL, directory=self.directory)
         self.assertEqual(receipt.read_receipt(URL, directory=self.directory), valid_receipt())
         self.assertEqual(list(self.directory.glob(".activation-*")), [])
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        if os.name == "posix":
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        else:
+            import win32api
+            import win32con
+            import win32security
+
+            token = win32security.OpenProcessToken(
+                win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+            )
+            owner = win32security.GetTokenInformation(
+                token, win32security.TokenUser
+            )[0]
+            system = win32security.CreateWellKnownSid(
+                win32security.WinLocalSystemSid, None
+            )
+            descriptor = win32security.GetNamedSecurityInfo(
+                str(path),
+                win32security.SE_FILE_OBJECT,
+                win32security.DACL_SECURITY_INFORMATION,
+            )
+            acl = descriptor.GetSecurityDescriptorDacl()
+            trustees = {
+                win32security.ConvertSidToStringSid(acl.GetAce(i)[2])
+                for i in range(acl.GetAceCount())
+            }
+            self.assertEqual(
+                trustees,
+                {
+                    win32security.ConvertSidToStringSid(owner),
+                    win32security.ConvertSidToStringSid(system),
+                },
+            )
 
     def test_present_invalid_evidence_fails_closed(self):
         changes = [("development_only", True), ("parameters", 1_000_000_000), ("trainable_parameters", True),
@@ -134,7 +167,12 @@ class ReceiptTests(unittest.TestCase):
         path.unlink()
         target = self.directory / "target.json"
         write_json(target, valid_receipt())
-        path.symlink_to(target)
+        try:
+            path.symlink_to(target)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows account cannot create symbolic links")
+            raise
         with self.assertRaises(receipt.ScratchActivationError):
             receipt.read_receipt(URL, directory=self.directory)
 
@@ -203,8 +241,7 @@ class BootstrapActivationTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertTrue(model_matches_manifest(receipt.CORE_ALIAS, 1.0, base_url=url, request_post=post))
         with patch("core.ollama_bootstrap.installed_model_names", return_value={receipt.CORE_ALIAS}), \
-                patch("core.ollama_bootstrap.model_matches_manifest", side_effect=lambda model, size, base_url:
-                      model_matches_manifest(model, size, base_url=base_url, request_post=post)):
+                patch("core.ollama_bootstrap.model_matches_pinned_spec", return_value=True):
             ready, _ = provision_brain_models("ollama", base_url="http://[::1]:11435")
         self.assertEqual(ready, (receipt.CORE_ALIAS,))
 
@@ -358,7 +395,12 @@ class ProductionExportTests(unittest.TestCase):
         target = self.root / "elsewhere.gguf"
         target.write_bytes(original)
         self.gguf.unlink()
-        self.gguf.symlink_to(target)
+        try:
+            self.gguf.symlink_to(target)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows account cannot create symbolic links")
+            raise
         with self.assertRaises(PipelineError):
             self.check()
         with self.assertRaises(PipelineError):

@@ -12,6 +12,7 @@ The desktop host does not automatically create or apply these proposals.
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -77,7 +78,7 @@ class ImprovementLedger:
         return db
 
     def _init_db(self) -> None:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS improvement_proposals (
@@ -125,7 +126,7 @@ class ImprovementLedger:
 
         proposal_id = uuid4().hex
         created = _now()
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """
                 INSERT INTO improvement_proposals(
@@ -167,7 +168,7 @@ class ImprovementLedger:
         if name not in proposal.required_checks:
             raise ValueError("check is not part of this proposal's required evidence")
 
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """
                 INSERT INTO improvement_checks(
@@ -192,7 +193,7 @@ class ImprovementLedger:
     def get(self, proposal_id: str) -> ImprovementProposal:
         import json
 
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             proposal = db.execute(
                 "SELECT * FROM improvement_proposals WHERE proposal_id=?",
                 (proposal_id,),

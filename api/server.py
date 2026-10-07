@@ -18,6 +18,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.api_key_validator import normalize_gemini_api_key, validate_gemini_api_key
+from core.model_provider import (
+    CloudDisclosureError,
+    ContextClassification,
+    ModelContext,
+    ModelRequest,
+    ModelTier,
+)
+from core.providers.gemini import GeminiProvider
 from core.tenant import tenant_scope
 from memory.memory_manager import format_memory_for_prompt, load_memory
 
@@ -311,28 +319,53 @@ async def chat(
         memory = format_memory_for_prompt(load_memory())
 
         def generate() -> str:
-            from google import genai
-            from google.genai import types
             from main import _load_system_prompt
 
-            client = genai.Client(api_key=api_key)
-            context = "\n".join(
+            classified_context: list[ModelContext] = []
+            recent_history = "\n".join(
                 f"{message.role.title()}: {message.content}" for message in history
             )
-            prompt = (
-                f"Recent conversation:\n{context}\n\n"
-                f"Current user message: {payload.message}"
-            )
-            response = client.models.generate_content(
-                model=settings.chat_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=_load_system_prompt() + "\n\n" + memory,
-                ),
-            )
-            return str(response.text or "").strip()
+            if recent_history:
+                classified_context.append(ModelContext(
+                    recent_history,
+                    label="stored hosted-chat history",
+                ))
+            if memory:
+                classified_context.append(ModelContext(
+                    memory,
+                    label="durable owner memory",
+                ))
+            if payload.cloud_shareable_context is not None:
+                classified_context.append(ModelContext(
+                    payload.cloud_shareable_context,
+                    label="explicitly cloud-shareable owner context",
+                    classification=ContextClassification.CLOUD_SHAREABLE,
+                ))
 
-        response_text = await asyncio.to_thread(generate)
+            response = GeminiProvider(
+                fast_model=settings.chat_model,
+                standard_model=settings.chat_model,
+                # Bind this provider instance to the authenticated tenant's
+                # decrypted secret. Never fall back to desktop/global config.
+                credential_resolver=lambda: api_key,
+            ).generate(ModelRequest(
+                prompt=payload.message,
+                system_instruction=_load_system_prompt(),
+                tier=ModelTier.STANDARD,
+                context=tuple(classified_context),
+            ))
+            return response.text.strip()
+
+        try:
+            response_text = await asyncio.to_thread(generate)
+        except CloudDisclosureError:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Cloud request blocked because it contains likely credential "
+                    "material. Remove the credential or use local inference."
+                ),
+            ) from None
         if not response_text:
             raise HTTPException(status_code=502, detail="Gemini returned an empty response")
         add_chat_message(user.id, "assistant", response_text)
@@ -396,8 +429,22 @@ async def live_socket(websocket: WebSocket) -> None:
             event_type = event.get("type")
             if event_type == "text":
                 await limiter.consume(user.id, "live_text", 60, 60)
+                content = str(event.get("content", ""))
+                try:
+                    from core.model_provider import assert_cloud_safe_text
+                    assert_cloud_safe_text(content)
+                except CloudDisclosureError:
+                    client._emit({
+                        "type": "error",
+                        "code": "cloud_disclosure_blocked",
+                        "message": (
+                            "Cloud Live blocked credential-shaped text. "
+                            "Use the local Brain for this request."
+                        ),
+                    })
+                    continue
                 with tenant_scope(user.id):
-                    await engine.send_text(str(event.get("content", "")))
+                    await engine.send_text(content)
             elif event_type == "audio":
                 data = base64.b64decode(event.get("data", ""), validate=True)
                 await engine.send_audio_chunk(

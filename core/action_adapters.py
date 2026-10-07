@@ -16,25 +16,38 @@ def _verified(message, source, observation):
     ))
 
 
-def _windows_workspace_path(context, relative, *, create=False):
-    """Resolve a workspace path without following Windows links/reparse points."""
-    root = Path(context.workspace_root).expanduser().resolve()
-    if create:
+def _windows_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _reject_windows_reparse_components(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if _windows_reparse_point(current):
+            raise OSError("Workspace path traverses a Windows reparse point.")
+
+
+def _windows_workspace_target(context, relative: str, *, create_root: bool) -> Path:
+    root = Path(context.workspace_root).absolute()
+    _reject_windows_reparse_components(root.parent)
+    if create_root:
         root.mkdir(parents=True, exist_ok=True)
-    target = (root / relative).resolve()
-    if target != root and root not in target.parents:
-        raise PermissionError("Workspace path escapes the approved root.")
-    parent = target.parent
-    if create:
-        parent.mkdir(parents=True, exist_ok=True)
-    for candidate in (root, *root.parents, parent):
-        if not candidate.exists():
-            continue
-        if candidate.is_symlink():
-            raise OSError("Workspace reparse points are not allowed.")
-        attributes = getattr(candidate.stat(), "st_file_attributes", 0)
-        if attributes & 0x400:
-            raise OSError("Workspace reparse points are not allowed.")
+    if not root.is_dir():
+        raise FileNotFoundError("Workspace root is unavailable.")
+    _reject_windows_reparse_components(root)
+    target = root.joinpath(*relative.split("/"))
+    if not target.parent.is_dir():
+        raise FileNotFoundError("Workspace subdirectories must already exist.")
+    _reject_windows_reparse_components(target.parent)
+    if not target.parent.resolve().is_relative_to(root.resolve()):
+        raise OSError("Workspace path escaped its trusted root.")
+    if target.exists() or target.is_symlink():
+        _reject_windows_reparse_components(target)
     return target
 
 
@@ -71,19 +84,21 @@ def _workspace_parent(context, relative, *, create=False):
 
 
 def _workspace_read(args, context):
-    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
-        target = _windows_workspace_path(context, args["path"])
-        fd = os.open(str(target), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    if os.name == "nt":
+        target = _windows_workspace_target(context, args["path"], create_root=False)
+        fd = os.open(target, os.O_RDONLY | os.O_BINARY)
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
-                raise ValueError("Only bounded regular workspace files may be read.")
+            if (_windows_reparse_point(target) or not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink != 1 or info.st_size > 65536):
+                raise ValueError("Only bounded regular, non-linked workspace files may be read.")
             data = stream.read(65537)
             if len(data) > 65536:
                 raise ValueError("File grew beyond the read limit.")
         content = data.decode("utf-8")
         return _verified(content or "Empty workspace file.", "native.workspace.read",
                          f"{args['path']}: sha256={hashlib.sha256(data).hexdigest()}; bytes={len(data)}")
+
     with _workspace_parent(context, args["path"]) as (parent, name):
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
         with os.fdopen(fd, "rb") as stream:
@@ -100,23 +115,28 @@ def _workspace_read(args, context):
 
 def _workspace_create(args, context):
     data = args["content"].encode("utf-8")
-    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
-        target = _windows_workspace_path(context, args["path"], create=True)
-        fd = os.open(
-            str(target),
-            os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
-            0o600,
-        )
-        with os.fdopen(fd, "w+b") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-            stream.seek(0)
-            observed = stream.read()
-            if observed != data:
-                raise OSError("Post-write verification failed.")
+    if os.name == "nt":
+        target = _windows_workspace_target(context, args["path"], create_root=True)
+        fd = os.open(target, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_BINARY)
+        try:
+            info = os.fstat(fd)
+            if _windows_reparse_point(target) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Workspace artifact must be a new regular file.")
+            with os.fdopen(fd, "w+b") as stream:
+                fd = -1
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+                stream.seek(0)
+                observed = stream.read()
+                if observed != data:
+                    raise OSError("Post-write verification failed.")
+        finally:
+            if fd >= 0:
+                os.close(fd)
         return _verified(f"Created workspace file: {args['path']}", "native.workspace.readback",
                          f"{args['path']}: sha256={hashlib.sha256(observed).hexdigest()}; bytes={len(observed)}")
+
     with _workspace_parent(context, args["path"], create=True) as (parent, name):
         # Exclusive create: approval never permits overwriting an existing file.
         fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)

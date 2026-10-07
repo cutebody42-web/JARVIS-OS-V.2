@@ -1,11 +1,14 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "identity": "JARVIS",
   "namespace": "jarvis",
   "models": [
     {
       "alias": "jarvis-core-1b",
       "base": "llama3.2:1b",
+      "base_digest": "baf6a787fdffd633537aa2eb51cfd54cb93ff08e28040095462bb63daf552878",
+      "weights_digest": "74701a8c35f6c8d9a4b91f3f3497643001d63e0c7a84e085bed452548fa88d45",
+      "modelfile_sha256": "1d389dd4f651ac0a217916f2d95e879f1f9beb45cd6a79f8587dcb34109c5f50",
       "role": "coordinator",
       "min_ram_gb": 1.5,
       "parameters_b": 1
@@ -13,6 +16,9 @@
     {
       "alias": "jarvis-brain-fast",
       "base": "qwen3.5:4b",
+      "base_digest": "d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04",
+      "weights_digest": "e56a899b1540860385465756dd308c84417410b94dbc1c380adffd20a921ca60",
+      "modelfile_sha256": "803de88084399e48ce0a98cc9e06f410a64cf86d8ccb2877a249f8a6785bc885",
       "role": "general_realtime",
       "min_ram_gb": 4,
       "parameters_b": 4
@@ -20,6 +26,9 @@
     {
       "alias": "jarvis-brain-engineering",
       "base": "qwen2.5-coder:7b",
+      "base_digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+      "weights_digest": "60e05f2100071479f596b964f89f510f057ce397ea22f2833a0cfe029bfc2463",
+      "modelfile_sha256": "85ff760df14df7e15a0d75e8d848a7c188ef87271b8fbd40ac5e2b0caf95abc3",
       "role": "engineering",
       "min_ram_gb": 6,
       "parameters_b": 7
@@ -27,6 +36,9 @@
     {
       "alias": "jarvis-brain-lite",
       "base": "qwen3:1.7b",
+      "base_digest": "8f68893c685c3ddff2aa3fffce2aa60a30bb2da65ca488b61fff134a4d1730e7",
+      "weights_digest": "3d0b790534fe4b79525fc3692950408dca41171676ed7e21db57af5c65ef6ab6",
+      "modelfile_sha256": "cf056c273f9f288e15b7270f6b5b7fe70a87506a329df772aac2176767c20fdf",
       "role": "low_memory_fallback",
       "min_ram_gb": 2,
       "parameters_b": 1.7

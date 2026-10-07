@@ -59,6 +59,10 @@ class OllamaProvider:
         if (not isinstance(request, ModelRequest) or not isinstance(request.prompt, str)
                 or not isinstance(request.system_instruction, str)):
             raise TypeError("Expected a text ModelRequest.")
+        # Direct local-adapter users get the same context semantics as routed
+        # users.  Local-only context never needs to be reclassified to be useful
+        # to the on-device model.
+        request = request.for_local_provider()
         payload = {"model": self.model, "messages": [
             {"role": "system", "content": request.system_instruction},
             {"role": "user", "content": request.prompt}], "stream": False,

@@ -111,7 +111,10 @@ class SidecarUpdateModeTests(unittest.TestCase):
         self.assertEqual(brain_sidecar.main(["--update-self-test", str(self.output)]), 1)
         self.assertEqual(self.output.read_text("utf-8"), "existing private data")
         link = self.root / "linked-result.json"
-        link.symlink_to(self.output)
+        try:
+            link.symlink_to(self.output)
+        except OSError:
+            self.skipTest("Symbolic links are unavailable on this Windows account")
         self.assertEqual(brain_sidecar.main(["--update-self-test", str(link)]), 2)
         self.assertEqual(self.output.read_text("utf-8"), "existing private data")
         self.assert_no_host()

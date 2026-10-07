@@ -133,12 +133,24 @@ export type MobileApprovalRequest = {
   body: string;
 };
 
+export type MobileApprovalDecisionRequest = MobileApprovalRequest & {
+  approval_id: string;
+  action_digest: string;
+};
+
 export type PendingApproval = {
   approval_id: string;
   summary: string;
   action_digest: string;
   expires_at: string;
 };
+
+type SignedApprovalContext = {
+  listRequestId: string;
+  signedPendingResponse: string;
+};
+
+const signedApprovalContexts = new WeakMap<PendingApproval, SignedApprovalContext>();
 
 export type BrainReply = {
   identity: "JARVIS";
@@ -686,18 +698,37 @@ export async function mobilePendingApprovals(): Promise<PendingApproval[]> {
     requestId: request.request_id,
     signedResponse,
   });
-  return Array.isArray(payload.pending) ? payload.pending : [];
+  if (!Array.isArray(payload.pending)) return [];
+  return payload.pending.map((approval) => {
+    const verified = { ...approval };
+    signedApprovalContexts.set(verified, {
+      listRequestId: request.request_id,
+      signedPendingResponse: signedResponse,
+    });
+    return verified;
+  });
 }
 
 export async function mobileDecideApproval(
-  approvalId: string,
+  approval: Pick<PendingApproval, "approval_id" | "action_digest">,
   approved: boolean,
 ): Promise<Record<string, unknown>> {
   // The Rust command performs the OS biometric prompt itself immediately
-  // before signing, so WebView code cannot assert user verification.
-  const request = await core().invoke<MobileApprovalRequest>(
+  // before signing. It also re-verifies the desktop-signed pending list and
+  // derives the action digest from it, so WebView code cannot assert user
+  // verification or substitute the action being signed.
+  const context = signedApprovalContexts.get(approval as PendingApproval);
+  if (!context) {
+    throw new Error("Refresh JARVIS approvals before making a fingerprint decision.");
+  }
+  const request = await core().invoke<MobileApprovalDecisionRequest>(
     "mobile_sign_approval_decision",
-    { approvalId, approved },
+    {
+      approvalId: approval.approval_id,
+      listRequestId: context.listRequestId,
+      signedPendingResponse: context.signedPendingResponse,
+      approved,
+    },
   );
   const response = await mobileCompanionPost(request.endpoint, request.body);
   if (!response.ok) {
@@ -709,6 +740,8 @@ export async function mobileDecideApproval(
     "mobile_verify_approval_receipt",
     {
       requestId: request.request_id,
+      approvalId: request.approval_id,
+      actionDigest: request.action_digest,
       signedResponse,
     },
   );

@@ -281,14 +281,14 @@ function MobileShell() {
     };
   }, [identity]);
 
-  async function decideApproval(approvalId: string, approved: boolean) {
+  async function decideApproval(approval: PendingApproval, approved: boolean) {
     if (operationBusy.current || !identity) return;
     operationBusy.current = true;
     const revision = connectionRevision.current;
     setBusy(true);
     setError("");
     try {
-      await mobileDecideApproval(approvalId, approved);
+      await mobileDecideApproval(approval, approved);
       const next = await mobilePendingApprovals();
       if (!mounted.current || revision !== connectionRevision.current) return;
       setPendingApprovals(next);
@@ -453,11 +453,12 @@ function MobileShell() {
                     <div>
                       <strong>{approval.summary}</strong>
                       <small>Expires {new Date(approval.expires_at).toLocaleTimeString()}</small>
+                      <small>SHA-256 {approval.action_digest}</small>
                     </div>
                     <div className="pair-actions">
                       <Button
                         size="sm"
-                        onClick={() => void decideApproval(approval.approval_id, true)}
+                        onClick={() => void decideApproval(approval, true)}
                         disabled={busy}
                       >
                         Approve with fingerprint
@@ -465,7 +466,7 @@ function MobileShell() {
                       <Button
                         size="sm"
                         variant="secondary"
-                        onClick={() => void decideApproval(approval.approval_id, false)}
+                        onClick={() => void decideApproval(approval, false)}
                         disabled={busy}
                       >
                         Reject

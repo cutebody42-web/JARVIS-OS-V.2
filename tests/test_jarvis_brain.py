@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone
 import unittest
+from unittest.mock import Mock
 
 from core.hardware_profile import GPUMemoryKind, HardwareSnapshot, PowerSource
 from core.jarvis_brain import (
+    BrainPolicy,
     BrainIntent,
     BrainLane,
     JARVIS_CONTEXT_NAMESPACE,
@@ -15,7 +17,15 @@ from core.jarvis_brain import (
     classify_intent,
     classify_lane,
 )
-from core.model_provider import ModelRequest, ModelResponse, ModelTier
+from core.model_provider import (
+    CloudDisclosureError,
+    ContextClassification,
+    ModelContext,
+    ModelRequest,
+    ModelResponse,
+    ModelTier,
+)
+from core.model_router import ProviderChoice, ProviderKind, RoutePlan
 from core.model_runtime import RuntimeStatus
 from core.routed_model_provider import RoutedModelProvider, RoutedProviderError
 
@@ -167,6 +177,87 @@ class ConversationContinuityTests(unittest.TestCase):
             self.assertIn("numeric and time constraints", request.system_instruction)
 
 
+    def test_memory_history_and_council_stay_local_during_cloud_fallback(self):
+        private_memory = "OWNER MEMORY: launch code is heliotrope-71"
+        private_council = "COUNCIL NOTES: owner has an undisclosed constraint"
+        public_context = "The public project codename is Aurora."
+        local_requests = []
+        cloud_requests = []
+
+        class Memory:
+            def continuity_context(self, *, turn_limit):
+                self.turn_limit = turn_limit
+                return private_memory
+
+            @staticmethod
+            def current_handoff():
+                return {}
+
+            @staticmethod
+            def append_turn(*args, **kwargs):
+                return None
+
+        class Council:
+            @staticmethod
+            def consult(message, task):
+                return object()
+
+            @staticmethod
+            def context(result):
+                return private_council
+
+        class LocalFailure:
+            def generate(self, request):
+                local_requests.append(request)
+                raise RuntimeError("offline local test failure")
+
+        class CloudSuccess:
+            def __init__(self, model):
+                self.model = model
+
+            def generate(self, request):
+                cloud_requests.append(request)
+                return ModelResponse("cloud answer", "gemini", self.model)
+
+        from core.jarvis_brain import JarvisBrain
+        brain = JarvisBrain(
+            policy=BrainPolicy(allow_cloud=True),
+            memory=Memory(),
+            profiler=FakeProfiler(hardware()),
+            model_runtime=FakeRuntime(),
+            ollama_factory=lambda choice: LocalFailure(),
+            gemini_factory=lambda choice: CloudSuccess(choice.model),
+            council=Council(),
+        )
+
+        self.assertEqual(brain.respond("First cloud-eligible request"), "cloud answer")
+        local_count_after_first_turn = len(local_requests)
+        result = brain.respond(
+            "Help me plan the next milestone",
+            cloud_shareable_context=public_context,
+        )
+
+        self.assertEqual(result, "cloud answer")
+        second_turn_local_requests = local_requests[local_count_after_first_turn:]
+        self.assertTrue(second_turn_local_requests)
+        self.assertEqual(len(cloud_requests), 2)
+        self.assertTrue(all(
+            private_memory in item.prompt
+            and private_council in item.prompt
+            and "First cloud-eligible request" in item.prompt
+            and "cloud answer" in item.prompt
+            for item in second_turn_local_requests
+        ))
+        sent_to_cloud = cloud_requests[-1]
+        self.assertIn("Help me plan the next milestone", sent_to_cloud.prompt)
+        self.assertIn(public_context, sent_to_cloud.prompt)
+        self.assertNotIn(private_memory, sent_to_cloud.prompt)
+        self.assertNotIn(private_council, sent_to_cloud.prompt)
+        self.assertNotIn("First cloud-eligible request", sent_to_cloud.prompt)
+        self.assertNotIn("cloud answer", sent_to_cloud.prompt)
+        self.assertEqual(sent_to_cloud.context, ())
+        self.assertIs(brain.last_attempts[-1].provider, ProviderKind.GEMINI)
+
 class LocalFirstRoutingTests(unittest.TestCase):
     def test_cloud_is_skipped_when_owner_disables_it(self):
         runtime = FakeRuntime()
@@ -200,6 +291,176 @@ class LocalFirstRoutingTests(unittest.TestCase):
 
         self.assertEqual(response.provider, "gemini")
         self.assertEqual(routed.last_attempts[-1].outcome, "succeeded")
+
+    def test_context_defaults_local_only_and_cloud_projection_is_fail_closed(self):
+        runtime = FakeRuntime()
+        local_requests = []
+        cloud_requests = []
+
+        class LocalFailure:
+            def generate(self, request):
+                local_requests.append(request)
+                raise RuntimeError("offline local test failure")
+
+        class CloudSuccess:
+            def __init__(self, model):
+                self.model = model
+
+            def generate(self, request):
+                cloud_requests.append(request)
+                return ModelResponse("ok", "gemini", self.model)
+
+        private = ModelContext("private owner preference", label="owner memory")
+        shareable = ModelContext(
+            "public issue description",
+            label="owner-approved context",
+            classification=ContextClassification.CLOUD_SHAREABLE,
+        )
+        routed = RoutedModelProvider(
+            JARVIS_ENGINEERING,
+            profiler=FakeProfiler(hardware()),
+            runtime=runtime,
+            allow_cloud=True,
+            ollama_factory=lambda choice: LocalFailure(),
+            gemini_factory=lambda choice: CloudSuccess(choice.model),
+        )
+
+        response = routed.generate(ModelRequest(
+            "debug the current failure",
+            tier=ModelTier.STANDARD,
+            context=(private, shareable),
+        ))
+
+        self.assertEqual(response.provider, "gemini")
+        self.assertTrue(local_requests)
+        self.assertTrue(all("private owner preference" in item.prompt for item in local_requests))
+        self.assertEqual(len(cloud_requests), 1)
+        cloud_request = cloud_requests[0]
+        self.assertIn("debug the current failure", cloud_request.prompt)
+        self.assertIn("public issue description", cloud_request.prompt)
+        self.assertNotIn("private owner preference", cloud_request.prompt)
+        self.assertEqual(cloud_request.context, ())
+        self.assertIs(routed.last_attempts[-1].provider, ProviderKind.GEMINI)
+
+    def test_cloud_secret_block_falls_through_to_local_without_mutating_request(self):
+        secret = "api_key=owner-private-credential-123456"
+        plan = RoutePlan(
+            primary=ProviderChoice(
+                ProviderKind.GEMINI,
+                "gemini-test",
+                "adversarial_cloud_primary",
+            ),
+            fallbacks=(ProviderChoice(
+                ProviderKind.OLLAMA,
+                "jarvis-local-test",
+                "local_privacy_fallback",
+                ensure_priority=1,
+            ),),
+        )
+        router = Mock()
+        router.route.return_value = plan
+        cloud_calls = []
+        local_calls = []
+
+        class CloudSpy:
+            def generate(self, request):
+                cloud_calls.append(request)
+                return ModelResponse("unsafe", "gemini", "gemini-test")
+
+        class LocalSuccess:
+            def generate(self, request):
+                local_calls.append(request)
+                return ModelResponse("local answer", "ollama", "jarvis-local-test")
+
+        routed = RoutedModelProvider(
+            JARVIS_ENGINEERING,
+            profiler=FakeProfiler(hardware()),
+            runtime=FakeRuntime(),
+            router=router,
+            allow_cloud=True,
+            ollama_factory=lambda choice: LocalSuccess(),
+            gemini_factory=lambda choice: CloudSpy(),
+        )
+
+        response = routed.generate(ModelRequest(secret))
+
+        self.assertEqual(response.provider, "ollama")
+        self.assertEqual(cloud_calls, [])
+        self.assertEqual(len(local_calls), 1)
+        self.assertIn(secret, local_calls[0].prompt)
+        self.assertEqual(
+            [attempt.outcome for attempt in routed.last_attempts],
+            ["blocked:sensitive_content", "succeeded"],
+        )
+
+    def test_local_failure_never_promotes_secret_bearing_request_to_cloud(self):
+        secret = "Authorization: Bearer ownerPrivateToken123456789"
+        cloud_calls = []
+
+        class CloudSpy:
+            def generate(self, request):
+                cloud_calls.append(request)
+                return ModelResponse("unsafe", "gemini", "gemini-test")
+
+        routed = RoutedModelProvider(
+            JARVIS_ENGINEERING,
+            profiler=FakeProfiler(hardware()),
+            runtime=FakeRuntime(),
+            allow_cloud=True,
+            ollama_factory=lambda choice: FailingProvider(),
+            gemini_factory=lambda choice: CloudSpy(),
+        )
+
+        with self.assertRaises(RoutedProviderError):
+            routed.generate(ModelRequest(secret, tier=ModelTier.STANDARD))
+
+        self.assertEqual(cloud_calls, [])
+        self.assertEqual(routed.last_attempts[-1].outcome, "blocked:sensitive_content")
+
+    def test_cloud_projection_scans_only_content_that_would_leave_machine(self):
+        private_secret = "password=private-local-value-12345"
+        request = ModelRequest(
+            "safe current request",
+            context=(
+                ModelContext(private_secret, label="private memory"),
+                ModelContext(
+                    "public architecture summary",
+                    label="approved public context",
+                    classification=ContextClassification.CLOUD_SHAREABLE,
+                ),
+            ),
+        )
+
+        cloud = request.for_cloud_provider()
+        local = request.for_local_provider()
+
+        self.assertNotIn(private_secret, cloud.prompt)
+        self.assertIn("public architecture summary", cloud.prompt)
+        self.assertIn(private_secret, local.prompt)
+
+    def test_cloud_projection_rejects_credentials_in_each_egress_channel(self):
+        requests = (
+            ModelRequest("GEMINI_API_KEY=owner-private-value-123456"),
+            ModelRequest(
+                "safe prompt",
+                system_instruction="Authorization: Bearer ownerPrivateToken123456789",
+            ),
+            ModelRequest(
+                "safe prompt",
+                context=(ModelContext(
+                    "github_pat_0123456789abcdef0123456789abcdef",
+                    label="mistakenly approved",
+                    classification=ContextClassification.CLOUD_SHAREABLE,
+                ),),
+            ),
+        )
+
+        for request in requests:
+            with self.subTest(request=request):
+                with self.assertRaises(CloudDisclosureError) as caught:
+                    request.for_cloud_provider()
+                self.assertNotIn("owner-private", str(caught.exception))
+                self.assertNotIn("github_pat_", str(caught.exception))
 
 
 if __name__ == "__main__":

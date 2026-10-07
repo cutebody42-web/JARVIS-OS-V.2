@@ -16,7 +16,15 @@ from agent.executor import AgentExecutor
 from agent.planner import create_plan, replan, validate_plan
 from agent.reflex import reflex_plan
 from core.action_contracts import ActionReceipt, ActionStatus, Evidence, ToolResult
-from core.model_provider import ModelProvider, ModelResponse, ModelRequest, ModelTier
+from core.model_provider import (
+    CloudDisclosureError,
+    ContextClassification,
+    ModelContext,
+    ModelProvider,
+    ModelRequest,
+    ModelResponse,
+    ModelTier,
+)
 
 
 class FakeProvider:
@@ -116,11 +124,27 @@ assert AgentExecutor().execute('الساعة كام؟').startswith('Local time:'
             "memory.config_manager.get_gemini_key", return_value="test-credential"
         ):
             response = GeminiProvider(standard_model="test-model").generate(
-                ModelRequest("goal", "instruction", ModelTier.STANDARD, True))
+                ModelRequest(
+                    "goal",
+                    "instruction",
+                    ModelTier.STANDARD,
+                    True,
+                    context=(
+                        ModelContext("private durable memory", label="memory"),
+                        ModelContext(
+                            "owner-approved public context",
+                            label="approved",
+                            classification=ContextClassification.CLOUD_SHAREABLE,
+                        ),
+                    ),
+                ))
         self.assertEqual(response.provider, "gemini")
         self.assertEqual(response.model, "test-model")
         self.assertEqual(constructor.call_args.kwargs["http_options"]["timeout"], 30000)
-        self.assertEqual(client.models.generate_content.call_args.kwargs["config"]["response_mime_type"], "application/json")
+        generate_args = client.models.generate_content.call_args.kwargs
+        self.assertEqual(generate_args["config"]["response_mime_type"], "application/json")
+        self.assertIn("owner-approved public context", generate_args["contents"])
+        self.assertNotIn("private durable memory", generate_args["contents"])
         context.__exit__.assert_called_once()
 
     def test_gemini_resolves_credentials_each_call_and_never_falls_back(self):
@@ -131,6 +155,37 @@ assert AgentExecutor().execute('الساعة كام؟').startswith('Local time:'
             with self.assertRaises(ValueError):
                 adapter.generate(ModelRequest("goal"))
             client.assert_not_called()
+
+    def test_direct_gemini_adapter_blocks_sensitive_egress_before_sdk_client(self):
+        from core.providers.gemini import GeminiProvider
+        from google import genai
+
+        adapter = GeminiProvider()
+        requests = (
+            ModelRequest("GEMINI_API_KEY=owner-private-value-123456"),
+            ModelRequest(
+                "safe prompt",
+                system_instruction="Authorization: Bearer ownerPrivateToken123456789",
+            ),
+            ModelRequest(
+                "safe prompt",
+                context=(ModelContext(
+                    "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+                    label="mistakenly approved",
+                    classification=ContextClassification.CLOUD_SHAREABLE,
+                ),),
+            ),
+        )
+        with patch.object(genai, "Client") as client, patch(
+            "memory.config_manager.get_gemini_key"
+        ) as get_key:
+            for request in requests:
+                with self.subTest(request=request):
+                    with self.assertRaises(CloudDisclosureError):
+                        adapter.generate(request)
+
+        client.assert_not_called()
+        get_key.assert_not_called()
 
 
 class ReceiptTests(unittest.TestCase):

@@ -66,6 +66,15 @@ pub struct MobileApprovalRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct MobileApprovalDecisionRequest {
+    pub request_id: String,
+    pub approval_id: String,
+    pub action_digest: String,
+    pub endpoint: String,
+    pub body: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct MobileCompanionStatus {
     pub identity: MobileIdentity,
     pub paired: bool,
@@ -190,6 +199,79 @@ fn key_protection() -> &'static str {
 
 fn hex(data: impl AsRef<[u8]>) -> String {
     data.as_ref().iter().map(|value| format!("{value:02x}")).collect()
+}
+
+fn canonical_action_digest(value: &str) -> Result<String, String> {
+    let digest = value.trim();
+    if digest.len() != 64
+        || !digest
+            .as_bytes()
+            .iter()
+            .all(|value| matches!(*value, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err("JARVIS approval action digest must be lowercase SHA-256 hex.".into());
+    }
+    Ok(digest.to_string())
+}
+
+fn pending_approval_binding<'a>(
+    payload: &'a Value,
+    approval_id: &str,
+) -> Result<(&'a str, String), String> {
+    let pending = payload
+        .get("pending")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "JARVIS approval list response mismatch.".to_string())?;
+    if pending.len() > 100 {
+        return Err("JARVIS approval list response is too large.".into());
+    }
+
+    let mut binding = None;
+    for item in pending {
+        let record = item
+            .as_object()
+            .ok_or_else(|| "JARVIS approval list entry is invalid.".to_string())?;
+        let expected = ["action_digest", "approval_id", "expires_at", "summary"];
+        if record.len() != expected.len()
+            || expected.iter().any(|field| !record.contains_key(*field))
+        {
+            return Err("JARVIS approval list entry schema mismatch.".into());
+        }
+        let candidate_id = record
+            .get("approval_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "JARVIS approval id is invalid.".to_string())?;
+        let summary = record
+            .get("summary")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "JARVIS approval summary is invalid.".to_string())?;
+        let expires_at = record
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "JARVIS approval expiry is invalid.".to_string())?;
+        let digest = canonical_action_digest(
+            record
+                .get("action_digest")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "JARVIS approval action digest is invalid.".to_string())?,
+        )?;
+        if candidate_id.is_empty()
+            || candidate_id.len() > 128
+            || summary.trim().is_empty()
+            || summary.len() > 500
+            || expires_at.is_empty()
+            || expires_at.len() > 64
+        {
+            return Err("JARVIS approval list entry is invalid.".into());
+        }
+        if candidate_id == approval_id {
+            if binding.is_some() {
+                return Err("JARVIS approval list contains a duplicate id.".into());
+            }
+            binding = Some((summary, digest));
+        }
+    }
+    binding.ok_or_else(|| "JARVIS approval is not in the signed pending list.".into())
 }
 
 fn public_b64(key: &SigningKey) -> String {
@@ -635,11 +717,19 @@ pub fn mobile_verify_approval_list_response(
     request_id: String,
     signed_response: String,
 ) -> Result<Value, String> {
+    verified_approval_list_payload(&app, &request_id, &signed_response)
+}
+
+fn verified_approval_list_payload(
+    app: &AppHandle,
+    request_id: &str,
+    signed_response: &str,
+) -> Result<Value, String> {
     let trust = load_trust(&app)?;
     let key = signing_key(&app)?;
     let identity = identity_for(&key);
     let payload = verify_signed_envelope(
-        &signed_response,
+        signed_response,
         &trust.desktop_public_key,
         "approval.pending",
         &trust.desktop_device,
@@ -647,10 +737,21 @@ pub fn mobile_verify_approval_list_response(
         &format!("approval-pending:{request_id}"),
     )?;
     if payload.get("version").and_then(Value::as_u64) != Some(1)
-        || payload.get("request_id").and_then(Value::as_str) != Some(request_id.as_str())
+        || payload.get("request_id").and_then(Value::as_str) != Some(request_id)
         || !payload.get("pending").map(Value::is_array).unwrap_or(false)
     {
         return Err("JARVIS approval list response mismatch.".into());
+    }
+    for item in payload
+        .get("pending")
+        .and_then(Value::as_array)
+        .expect("pending was checked as an array")
+    {
+        let approval_id = item
+            .get("approval_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "JARVIS approval list entry is invalid.".to_string())?;
+        pending_approval_binding(&payload, approval_id)?;
     }
     Ok(payload)
 }
@@ -659,9 +760,19 @@ pub fn mobile_verify_approval_list_response(
 pub async fn mobile_sign_approval_decision(
     app: AppHandle,
     approval_id: String,
+    list_request_id: String,
+    signed_pending_response: String,
     approved: bool,
-) -> Result<MobileApprovalRequest, String> {
-    tauri::async_runtime::spawn_blocking(move || sign_fingerprint_approval(app, approval_id, approved))
+) -> Result<MobileApprovalDecisionRequest, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        sign_fingerprint_approval(
+            app,
+            approval_id,
+            list_request_id,
+            signed_pending_response,
+            approved,
+        )
+    })
         .await
         .map_err(|_| "JARVIS fingerprint approval could not complete.".to_string())?
 }
@@ -669,24 +780,41 @@ pub async fn mobile_sign_approval_decision(
 fn sign_fingerprint_approval(
     app: AppHandle,
     approval_id: String,
+    list_request_id: String,
+    signed_pending_response: String,
     approved: bool,
-) -> Result<MobileApprovalRequest, String> {
+) -> Result<MobileApprovalDecisionRequest, String> {
     let approval_id = approval_id.trim().to_string();
     if approval_id.is_empty() || approval_id.len() > 128 {
         return Err("Invalid JARVIS approval id.".into());
     }
+    if list_request_id.is_empty() || list_request_id.len() > 128 {
+        return Err("Invalid JARVIS approval-list request id.".into());
+    }
+    let pending = verified_approval_list_payload(
+        &app,
+        &list_request_id,
+        &signed_pending_response,
+    )?;
+    let (summary, action_digest) = pending_approval_binding(&pending, &approval_id)?;
 
-    authenticate_owner_fingerprint(&app, if approved {
-        "Confirm this JARVIS action with your fingerprint"
+    let prompt = if approved {
+        format!(
+            "Approve this exact JARVIS action with your fingerprint.\n\n{summary}\n\nSHA-256:\n{action_digest}"
+        )
     } else {
-        "Confirm rejecting this JARVIS action with your fingerprint"
-    })?;
+        format!(
+            "Reject this exact JARVIS action with your fingerprint.\n\n{summary}\n\nSHA-256:\n{action_digest}"
+        )
+    };
+    authenticate_owner_fingerprint(&app, &prompt)?;
 
     let request_id = Uuid::new_v4().simple().to_string();
     let payload = json!({
         "version": 1,
         "request_id": request_id,
         "approval_id": approval_id,
+        "action_digest": action_digest,
         "approved": approved,
         "user_verified": true,
         "biometry_type": "fingerprint",
@@ -699,15 +827,24 @@ fn sign_fingerprint_approval(
         payload,
         "/nexus/approval/v1/decision",
     )?;
-    Ok(MobileApprovalRequest { request_id, endpoint, body })
+    Ok(MobileApprovalDecisionRequest {
+        request_id,
+        approval_id,
+        action_digest,
+        endpoint,
+        body,
+    })
 }
 
 #[tauri::command]
 pub fn mobile_verify_approval_receipt(
     app: AppHandle,
     request_id: String,
+    approval_id: String,
+    action_digest: String,
     signed_response: String,
 ) -> Result<Value, String> {
+    let action_digest = canonical_action_digest(&action_digest)?;
     let trust = load_trust(&app)?;
     let key = signing_key(&app)?;
     let identity = identity_for(&key);
@@ -721,6 +858,8 @@ pub fn mobile_verify_approval_receipt(
     )?;
     if payload.get("version").and_then(Value::as_u64) != Some(1)
         || payload.get("request_id").and_then(Value::as_str) != Some(request_id.as_str())
+        || payload.get("approval_id").and_then(Value::as_str) != Some(approval_id.as_str())
+        || payload.get("action_digest").and_then(Value::as_str) != Some(action_digest.as_str())
         || !matches!(
             payload.get("state").and_then(Value::as_str),
             Some("approved") | Some("rejected")
@@ -729,4 +868,47 @@ pub fn mobile_verify_approval_receipt(
         return Err("JARVIS approval receipt mismatch.".into());
     }
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_action_digest, pending_approval_binding};
+    use serde_json::json;
+
+    #[test]
+    fn approval_digest_requires_canonical_sha256_hex() {
+        let digest = "a".repeat(64);
+        assert_eq!(canonical_action_digest(&digest).unwrap(), digest);
+        assert!(canonical_action_digest(&"A".repeat(64)).is_err());
+        assert!(canonical_action_digest(&"a".repeat(63)).is_err());
+        assert!(
+            canonical_action_digest(&format!("{}g", "a".repeat(63))).is_err()
+        );
+    }
+
+    #[test]
+    fn pending_binding_is_exact_and_rejects_substitution_shapes() {
+        let digest = "a".repeat(64);
+        let payload = json!({
+            "version": 1,
+            "request_id": "list-nonce",
+            "pending": [{
+                "approval_id": "approval-1",
+                "summary": "Install exact update",
+                "action_digest": digest,
+                "expires_at": "2026-10-06T12:00:00Z",
+            }],
+        });
+        let (summary, bound) = pending_approval_binding(&payload, "approval-1").unwrap();
+        assert_eq!(summary, "Install exact update");
+        assert_eq!(bound, "a".repeat(64));
+        assert!(pending_approval_binding(&payload, "approval-2").is_err());
+
+        let mut altered = payload.clone();
+        altered["pending"][0]["action_digest"] = json!("A".repeat(64));
+        assert!(pending_approval_binding(&altered, "approval-1").is_err());
+        altered = payload.clone();
+        altered["pending"][0]["unexpected"] = json!(true);
+        assert!(pending_approval_binding(&altered, "approval-1").is_err());
+    }
 }

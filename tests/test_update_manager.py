@@ -1,5 +1,6 @@
 """Major update approval and rollback contracts."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
@@ -168,18 +169,136 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             UpdatePolicy().validate_declared_class(bad)
 
-    def test_patch_update_can_apply_without_biometric_gate(self):
-        update = plan(UpdateClass.PATCH, ("docs/readme.md",))
-        installer = Installer()
-        result = UpdateManager(installer).apply(update)
-        self.assertEqual(result.state, UpdateState.APPLIED)
+    def test_patch_and_minor_updates_wait_for_explicit_owner_approval(self):
+        cases = (
+            plan(UpdateClass.PATCH, ("docs/readme.md",)),
+            plan(UpdateClass.MINOR, ("actions/helper.py",)),
+        )
+        for update in cases:
+            with self.subTest(update_class=update.update_class):
+                installer = Installer()
+                result = UpdateManager(installer).apply(update)
+                self.assertEqual(result.state, UpdateState.AWAITING_APPROVAL)
+                self.assertTrue(installer.staged)
+                self.assertFalse(installer.applied)
 
     def test_failed_verification_rolls_back(self):
         update = plan(UpdateClass.PATCH, ("web/view.tsx",))
+        challenge = self.gate.create_challenge(update)
+        approval = UpdateApprovalGate.sign_on_companion(
+            "phone", challenge, self.phone_signer, user_verified=True,
+        )
         installer = Installer(verify=False)
-        result = UpdateManager(installer).apply(update)
+        result = UpdateManager(installer, approval_gate=self.gate).apply(
+            update, approval=approval,
+        )
         self.assertEqual(result.state, UpdateState.ROLLED_BACK)
         self.assertTrue(installer.rolled_back)
+
+    def test_injected_policy_cannot_bypass_patch_approval(self):
+        class UnsafePolicy(UpdatePolicy):
+            def requires_owner_approval(self, plan):
+                return False
+
+        update = plan(UpdateClass.PATCH, ("docs/readme.md",))
+        installer = Installer()
+        result = UpdateManager(installer, policy=UnsafePolicy()).apply(update)
+        self.assertEqual(result.state, UpdateState.AWAITING_APPROVAL)
+        self.assertFalse(installer.applied)
+
+    def test_all_version_and_path_categories_require_approval_under_unsafe_policy(self):
+        class UnsafePolicy(UpdatePolicy):
+            def requires_owner_approval(self, plan):
+                return False
+
+        cases = (
+            (UpdateClass.MAJOR, "core/helper.py"),
+            (UpdateClass.MAJOR, "models/router.yaml"),
+            (UpdateClass.MINOR, "skills/personal/SKILL.md"),
+            (UpdateClass.MINOR, "config/brain-policy.yaml"),
+            (UpdateClass.MINOR, "policy/authority.yaml"),
+            (UpdateClass.MAJOR, "packaging/windows/setup.nsi"),
+            (UpdateClass.PATCH, "tests/test_helper.py"),
+            (UpdateClass.PATCH, "docs/runtime.md"),
+        )
+        for update_class, path in cases:
+            with self.subTest(update_class=update_class, path=path):
+                update = plan(update_class, (path,))
+                installer = Installer()
+                result = UpdateManager(installer, policy=UnsafePolicy()).apply(update)
+                self.assertEqual(result.state, UpdateState.AWAITING_APPROVAL)
+                self.assertTrue(installer.staged)
+                self.assertFalse(installer.applied)
+
+    def test_owner_approval_subclass_is_rejected_at_install_boundary(self):
+        class UnsafeApprovals(OwnerApprovalManager):
+            def _row(self, row):
+                value = OwnerApprovalManager._row(row)
+                return replace(value, state="approved", decided_by="forged")
+
+        approvals = UnsafeApprovals(self.store, clock=lambda: NOW)
+        installer = Installer()
+        with self.assertRaises(TypeError):
+            UpdateManager(installer, owner_approvals=approvals)
+        self.assertFalse(installer.applied)
+
+    def test_signature_gate_subclass_is_rejected_at_install_boundary(self):
+        class UnsafeGate(UpdateApprovalGate):
+            def verify_and_consume(self, plan, approval):
+                return True
+
+        gate = UnsafeGate(self.registry, clock=lambda: NOW)
+        installer = Installer()
+        with self.assertRaises(TypeError):
+            UpdateManager(installer, approval_gate=gate)
+        self.assertFalse(installer.applied)
+
+    def test_duck_typed_approval_verifiers_are_rejected(self):
+        class Noop:
+            def verify_and_consume(self, *args, **kwargs):
+                return True
+
+            def consume(self, *args, **kwargs):
+                return None
+
+        with self.assertRaises(TypeError):
+            UpdateManager(Installer(), approval_gate=Noop())
+        with self.assertRaises(TypeError):
+            UpdateManager(Installer(), owner_approvals=Noop())
+
+    def test_update_plan_subclass_cannot_override_the_approval_digest(self):
+        class ForgedPlan(UpdatePlan):
+            def digest(self):
+                return "0" * 64
+
+        update = ForgedPlan(
+            version="2.1.0",
+            commit_sha="a" * 40,
+            artifact_sha256="b" * 64,
+            changed_paths=("docs/readme.md",),
+            notes="forged digest",
+            update_class=UpdateClass.PATCH,
+        )
+        installer = Installer()
+        with self.assertRaises(TypeError):
+            UpdateManager(installer).apply(update)
+        self.assertFalse(installer.staged)
+        self.assertFalse(installer.applied)
+
+    def test_patch_approval_is_bound_to_exact_update_digest(self):
+        approvals = OwnerApprovalManager(self.store, clock=lambda: NOW)
+        installer = Installer()
+        manager = UpdateManager(installer, owner_approvals=approvals)
+        original = plan(UpdateClass.PATCH, ("docs/readme.md",))
+        waiting = manager.apply(original)
+        approvals.decide(
+            waiting.approval_id, peer_id="phone", approved=True, user_verified=True,
+        )
+        altered = UpdatePlan.from_dict({**original.to_dict(), "notes": "altered after approval"})
+        with self.assertRaises(PermissionError):
+            manager.apply(altered, approval_id=waiting.approval_id)
+        self.assertFalse(approvals.get(waiting.approval_id).consumed)
+        self.assertFalse(installer.applied)
 
     def test_major_candidate_stage_failure_creates_no_approval(self):
         class BrokenInstaller(Installer):

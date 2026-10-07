@@ -1,6 +1,8 @@
 """Offline tests for bundled Ollama/JARVIS Brain provisioning."""
 
 from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -10,12 +12,14 @@ from core.hardware_profile import GPUMemoryKind, HardwareSnapshot, PowerSource
 from core.ollama_bootstrap import (
     OllamaBootstrapError,
     _OWNED_SERVICES,
+    _modelfile_expectations,
     _ollama_environment,
     bootstrap_local_brain,
     ensure_ollama_service,
     import_gguf_model,
     load_brain_manifest,
     model_matches_manifest,
+    model_matches_pinned_spec,
     parameter_size_b,
     provision_brain_models,
     select_brain_models,
@@ -57,6 +61,34 @@ class BootstrapTests(unittest.TestCase):
         core = next(spec for spec in specs if spec.alias == "jarvis-core-1b")
         self.assertEqual(core.role, "coordinator")
         self.assertEqual(core.parameters_b, 1.0)
+        for spec in specs:
+            self.assertRegex(spec.base_digest, r"^[0-9a-f]{64}$")
+            self.assertRegex(spec.weights_digest, r"^[0-9a-f]{64}$")
+            self.assertRegex(spec.modelfile_sha256, r"^[0-9a-f]{64}$")
+
+    def test_modelfile_provenance_treats_windows_crlf_as_canonical_lf(self):
+        canonical = 'FROM llama3.2:1b\nSYSTEM """\nJARVIS\n"""\n'
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            models = root / "models"
+            models.mkdir()
+            (models / "test.Modelfile").write_bytes(canonical.replace("\n", "\r\n").encode("utf-8"))
+            (models / "manifest.json").write_text(json.dumps({
+                "schema_version": 2,
+                "models": [{
+                    "alias": "test",
+                    "base": "llama3.2:1b",
+                    "base_digest": "a" * 64,
+                    "weights_digest": "b" * 64,
+                    "modelfile_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    "role": "test",
+                    "min_ram_gb": 0,
+                    "parameters_b": 1,
+                }],
+            }), encoding="utf-8")
+            with patch("core.ollama_bootstrap.resource_path", side_effect=lambda *parts: root.joinpath(*parts)):
+                specs = load_brain_manifest()
+        self.assertEqual(specs[0].alias, "test")
 
     def test_low_memory_machine_keeps_core_and_skips_engineering_lane(self):
         selected = select_brain_models(load_brain_manifest(), snapshot(8, 4.5))
@@ -87,6 +119,10 @@ class BootstrapTests(unittest.TestCase):
             env = _ollama_environment("http://127.0.0.1:11435", directory)
             self.assertEqual(env["OLLAMA_HOST"], "127.0.0.1:11435")
             self.assertEqual(Path(env["OLLAMA_MODELS"]), Path(directory).resolve())
+
+    def test_literal_ipv6_loopback_is_preserved_for_ollama_cli(self):
+        env = _ollama_environment("http://[::1]:11435/")
+        self.assertEqual(env["OLLAMA_HOST"], "[::1]:11435")
 
     def test_ollama_parameter_size_parser_supports_billions_and_millions(self):
         self.assertEqual(parameter_size_b("1B"), 1.0)
@@ -145,14 +181,80 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(payload["model"], "jarvis-core-1b")
         self.assertFalse(payload["stream"])
 
-    @patch("core.ollama_bootstrap.model_matches_manifest", return_value=False)
+    @patch("core.ollama_bootstrap._installed_model_digest")
+    @patch("core.ollama_bootstrap.model_matches_pinned_spec", return_value=False)
     @patch("core.ollama_bootstrap.installed_model_names", return_value=set())
-    def test_new_alias_must_pass_metadata_verification(self, listed, checked):
+    def test_new_alias_must_pass_pinned_provenance(self, listed, checked, digest):
+        core = next(spec for spec in load_brain_manifest() if spec.alias == "jarvis-core-1b")
+        digest.return_value = core.base_digest
         runner = Mock(return_value=Mock(returncode=0))
-        with self.assertRaisesRegex(OllamaBootstrapError, "parameter size"):
+        with self.assertRaisesRegex(OllamaBootstrapError, "pinned provenance"):
             provision_brain_models("ollama", runner=runner)
         self.assertEqual([call.args[0][1] for call in runner.call_args_list], ["pull", "create"])
+        for call in runner.call_args_list:
+            self.assertEqual(call.kwargs["encoding"], "utf-8")
+            self.assertEqual(call.kwargs["errors"], "replace")
         checked.assert_called_once()
+
+    @patch("core.ollama_bootstrap._installed_model_digest", return_value="0" * 64)
+    @patch("core.ollama_bootstrap.installed_model_names", return_value=set())
+    def test_changed_registry_tag_fails_before_alias_creation(self, listed, digest):
+        runner = Mock(return_value=Mock(returncode=0))
+        with self.assertRaisesRegex(OllamaBootstrapError, "mutable registry tag changed"):
+            provision_brain_models("ollama", runner=runner)
+        self.assertEqual([call.args[0][1] for call in runner.call_args_list], ["pull"])
+
+    def test_pinned_model_verification_binds_tag_weights_prompt_and_parameters(self):
+        spec = next(spec for spec in load_brain_manifest() if spec.alias == "jarvis-brain-lite")
+        system, parameters = _modelfile_expectations(spec.modelfile)
+        tags = Mock()
+        tags.raise_for_status.return_value = None
+        tags.json.return_value = {
+            "models": [
+                {"name": spec.base, "digest": spec.base_digest},
+                {"name": spec.alias + ":latest", "digest": "f" * 64},
+            ]
+        }
+        alias = {
+            "details": {"parameter_size": "2.0B", "parent_model": spec.base},
+            "capabilities": ["completion", "tools"],
+            "template": "pinned-template",
+            "license": "pinned-license",
+            "system": system,
+            "parameters": "\n".join(f"{key} {value}" for key, value in parameters.items()),
+            "modelfile": "FROM C:\\\\models\\\\sha256-" + spec.weights_digest,
+        }
+        base = {
+            "template": "pinned-template",
+            "license": "pinned-license",
+            "modelfile": "FROM C:\\\\models\\\\sha256-" + spec.weights_digest,
+        }
+
+        def response(value):
+            result = Mock()
+            result.raise_for_status.return_value = None
+            result.json.return_value = value
+            return result
+
+        self.assertTrue(model_matches_pinned_spec(
+            spec,
+            request_get=Mock(return_value=tags),
+            request_post=Mock(side_effect=[response(alias), response(base)]),
+        ))
+
+        mutations = (
+            ("weights", {**alias, "modelfile": "FROM sha256-" + "0" * 64}, base),
+            ("system", {**alias, "system": system + "tampered"}, base),
+            ("template", {**alias, "template": "tampered"}, base),
+            ("parameters", {**alias, "parameters": "temperature 9"}, base),
+        )
+        for name, changed_alias, changed_base in mutations:
+            with self.subTest(name=name):
+                self.assertFalse(model_matches_pinned_spec(
+                    spec,
+                    request_get=Mock(return_value=tags),
+                    request_post=Mock(side_effect=[response(changed_alias), response(changed_base)]),
+                ))
 
     @patch("core.ollama_bootstrap.verify_model_inference", return_value=False)
     @patch("core.ollama_bootstrap.provision_brain_models", return_value=(("jarvis-core-1b",), ()))

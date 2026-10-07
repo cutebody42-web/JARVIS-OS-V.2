@@ -36,6 +36,14 @@ class GeminiKeyRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
+    # Extra context is cloud-ineligible unless the authenticated owner places
+    # it in this explicitly named field. Stored history and durable memory are
+    # never copied into this field by the server.
+    cloud_shareable_context: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=12000,
+    )
 
 
 class ChatResponse(BaseModel):

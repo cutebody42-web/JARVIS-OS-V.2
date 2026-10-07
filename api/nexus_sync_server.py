@@ -233,7 +233,7 @@ def create_sync_app(
                     raise PermissionError("approval decisions require a trusted companion")
                 if set(payload) != {
                     "version", "request_id", "approval_id", "approved",
-                    "user_verified", "biometry_type",
+                    "action_digest", "user_verified", "biometry_type",
                 }:
                     raise ValueError("invalid approval decision payload")
                 if (
@@ -244,11 +244,18 @@ def create_sync_app(
                     raise PermissionError("fingerprint verification is required")
                 request_id = payload["request_id"]
                 approval_id = payload["approval_id"]
+                action_digest = payload["action_digest"]
                 approved = payload["approved"]
                 if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
                     raise ValueError("invalid approval decision request id")
                 if not isinstance(approval_id, str) or not approval_id or len(approval_id) > 128:
                     raise ValueError("invalid approval id")
+                if (
+                    not isinstance(action_digest, str)
+                    or len(action_digest) != 64
+                    or any(character not in "0123456789abcdef" for character in action_digest)
+                ):
+                    raise ValueError("invalid approval action digest")
                 if not isinstance(approved, bool):
                     raise ValueError("approved must be boolean")
                 if message_id != "approval-decision:" + request_id:
@@ -259,6 +266,7 @@ def create_sync_app(
                     peer_id=peer.peer_id,
                     approved=approved,
                     user_verified=True,
+                    action_digest=action_digest,
                 )
                 signed = node.authenticator.sign(
                     "approval.receipt",

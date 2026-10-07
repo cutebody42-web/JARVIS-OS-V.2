@@ -21,14 +21,13 @@ from google import genai
 from google.genai import types
 from api import status as jarvis_status
 from core.jarvis_client import JarvisClient
-from memory.memory_manager import (
-    load_memory, update_memory, format_memory_for_prompt,
-)
+from memory.memory_manager import update_memory
 import hashlib
 import importlib
 import time
 
 from core.live_model import pick_live_model
+from core.model_provider import CloudDisclosureError, assert_cloud_safe_text
 
 
 def _require_sounddevice():
@@ -1136,6 +1135,15 @@ CLOUD_SAFE_ACTIONS = frozenset({
     "youtube_video",
 })
 
+# Only outputs that originated outside the owner's private machine may be
+# returned to the cloud model. Local file/memory/action details stay local even
+# after an action was individually approved.
+CLOUD_SHAREABLE_RESULT_CAPABILITIES = frozenset({
+    "system.time",
+    "weather.read",
+    "web.search",
+})
+
 LOCAL_MACHINE_ONLY_ACTIONS = frozenset({
     "computer_control",
     "open_app",
@@ -1238,6 +1246,13 @@ class JarvisLive:
             return False
         self._current_input_transcript = str(text or "").strip()
         if not self._current_input_transcript:
+            return False
+        try:
+            assert_cloud_safe_text(self._current_input_transcript)
+        except CloudDisclosureError:
+            message = "Cloud Live blocked credential-shaped text. Use the local Brain for this request."
+            self.ui.write_log(f"SYS: {message}")
+            self.ui.show_subtitle(message)
             return False
         self._last_input_transcript = self._current_input_transcript
         self._last_input_transcript_at = time.monotonic()
@@ -1452,17 +1467,10 @@ class JarvisLive:
 
     async def _announce_startup(self):
         try:
-            memory = load_memory()
-            name_entry = memory.get("identity", {}).get("name")
-            name = None
-            if isinstance(name_entry, dict):
-                name = name_entry.get("value")
-            elif isinstance(name_entry, str):
-                name = name_entry
-            if name:
-                greeting = f"Jarvis. At your service, {name}. What would you like to accomplish today?"
-            else:
-                greeting = "Jarvis. At your service, Sir or Madam. What would you like to accomplish today?"
+            # A Live session is a cloud boundary. Personal identity stays in
+            # local memory unless a future owner-reviewed disclosure flow
+            # explicitly marks it cloud-shareable.
+            greeting = "Jarvis is online. What would you like to accomplish today?"
             await self.session.send_client_content(
                 turns={"parts": [{"text": greeting}]},
                 turn_complete=True,
@@ -1473,8 +1481,6 @@ class JarvisLive:
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
-        memory     = load_memory()
-        mem_str    = format_memory_for_prompt(memory)
         sys_prompt = _load_system_prompt()
 
         now      = datetime.now()
@@ -1485,16 +1491,15 @@ class JarvisLive:
             f"Use this to calculate exact times for reminders.\n\n"
         )
 
-        parts = [time_ctx]
-        if mem_str:
-            parts.append(mem_str)
-        parts.append(sys_prompt)
+        parts = [time_ctx, sys_prompt]
+        system_instruction = "\n".join(parts)
+        assert_cloud_safe_text(system_instruction)
 
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
             input_audio_transcription={},
-            system_instruction="\n".join(parts),
+            system_instruction=system_instruction,
             tools=[{
                 "function_declarations": getattr(
                     self,
@@ -1562,12 +1567,40 @@ class JarvisLive:
             route="live",
             runtime=runtime,
         )
+        status = receipt.result.status.value
+        if status == "require_confirmation":
+            cloud_result = "Action needs explicit owner approval in the local JARVIS interface."
+        elif status == "denied":
+            cloud_result = "Action was denied by local owner policy."
+        elif status == "cancelled":
+            cloud_result = "Action was cancelled locally."
+        elif status == "failed":
+            cloud_result = "Action failed locally; details were withheld from the cloud model."
+        elif status == "succeeded" and receipt.capability_id in CLOUD_SHAREABLE_RESULT_CAPABILITIES:
+            try:
+                assert_cloud_safe_text(str(receipt.result.message))
+            except CloudDisclosureError:
+                cloud_result = "Action completed; credential-shaped output was withheld from the cloud model."
+            else:
+                cloud_result = str(receipt.result.message)
+        elif status == "succeeded":
+            cloud_result = "Action completed locally; private output was withheld from the cloud model."
+        else:
+            cloud_result = "Action returned without verified completion; details were withheld from the cloud model."
+        authorization = getattr(receipt.authorization_decision, "value", "UNKNOWN")
         return types.FunctionResponse(
             id=fc.id,
             name=name,
             response={
-                "result": receipt.result.message,
-                "receipt": receipt.to_dict(),
+                "result": cloud_result,
+                "receipt": {
+                    "action_id": receipt.action_id,
+                    "request_id": receipt.request_id,
+                    "status": status,
+                    "capability_id": receipt.capability_id,
+                    "authorization_decision": authorization,
+                    "normalized_argument_digest": receipt.normalized_argument_digest,
+                },
             },
         )
 

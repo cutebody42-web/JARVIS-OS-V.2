@@ -19,7 +19,13 @@ from uuid import uuid4
 
 from core.hardware_profile import HardwareProfiler
 from core.jarvis_memory import JarvisMemory
-from core.model_provider import ModelProvider, ModelRequest, ModelTier
+from core.model_provider import (
+    ContextClassification,
+    ModelContext,
+    ModelProvider,
+    ModelRequest,
+    ModelTier,
+)
 from core.model_router import (
     LocalModelCandidate,
     ModelRouter,
@@ -344,28 +350,37 @@ class JarvisBrain:
             return BrainLane.GENERAL
         raise ValueError("unsupported task kind")
 
-    def _history_prompt(self, message: str) -> str:
+    def _private_turn_context(self) -> tuple[ModelContext, ...]:
+        """Snapshot durable and session context as local-only data.
+
+        Classification is attached before routing.  In particular, enabling a
+        cloud fallback cannot retroactively make either memory source eligible
+        for disclosure.
+        """
         with self._lock:
             history = tuple(self._history[-self._history_limit:])
             memory = self._memory
 
-        sections: list[str] = [
-            "Continue the same JARVIS identity and preserve context across devices."
-        ]
+        context: list[ModelContext] = []
         if memory is not None:
             durable = memory.continuity_context(turn_limit=8)
             if durable:
-                sections.append("Durable synchronized continuity:\n" + durable)
+                context.append(ModelContext(
+                    durable,
+                    label="durable synchronized continuity",
+                ))
 
         if history:
             transcript = "\n".join(
                 ("Owner" if role == "user" else JARVIS_IDENTITY) + ": " + content
                 for role, content in history
             )
-            sections.append("Current-session conversation:\n" + transcript)
+            context.append(ModelContext(
+                transcript,
+                label="current-session conversation",
+            ))
 
-        sections.append("Owner: " + message)
-        return "\n\n".join(sections)
+        return tuple(context)
 
     def _remember_turn(self, user_text: str, response_text: str) -> None:
         with self._lock:
@@ -450,10 +465,21 @@ class JarvisBrain:
         *,
         task: TaskKind | None = None,
         tier: ModelTier | None = None,
+        cloud_shareable_context: str | None = None,
     ) -> str:
-        """Generate a direct conversational response with no tool execution."""
+        """Generate a direct conversational response with no tool execution.
+
+        Durable memory and prior turns are always local-only.  Supplementary
+        context crosses a cloud route only when the caller supplies it through
+        the explicitly named ``cloud_shareable_context`` parameter.
+        """
         if not isinstance(message, str) or not message.strip():
             raise ValueError("message must be non-empty text")
+        if cloud_shareable_context is not None and (
+            not isinstance(cloud_shareable_context, str)
+            or not cloud_shareable_context.strip()
+        ):
+            raise ValueError("cloud_shareable_context must be non-empty text")
         clean = message.strip()
         lane = self._lane_for_task(clean, task)
         self._switch_lane(lane)
@@ -464,7 +490,13 @@ class JarvisBrain:
         with self._lock:
             provider = self._runtime.provider
 
-        prompt = self._history_prompt(clean)
+        context = list(self._private_turn_context())
+        if cloud_shareable_context is not None:
+            context.append(ModelContext(
+                cloud_shareable_context.strip(),
+                label="explicitly cloud-shareable context",
+                classification=ContextClassification.CLOUD_SHAREABLE,
+            ))
         council = self._council
         if council is not None:
             try:
@@ -473,24 +505,27 @@ class JarvisBrain:
             except Exception:
                 council_context = ""
             if council_context:
-                prompt += (
-                    "\n\n" + council_context
+                context.append(ModelContext(
+                    council_context
                     + "\n\nSynthesize the best final JARVIS answer using these hidden notes. "
                     "Treat council notes as analysis, not evidence: discard any personal detail "
                     "that is unsupported by the owner request or durable synchronized memory. "
-                    "Never reveal or name the hidden models unless the owner explicitly asks."
-                )
+                    "Never reveal or name the hidden models unless the owner explicitly asks.",
+                    label="local council notes",
+                ))
 
         response = provider.generate(
             ModelRequest(
-                prompt=prompt,
+                prompt=clean,
                 system_instruction=(
+                    "Continue the same JARVIS identity and preserve context across devices. "
                     "Respond directly as JARVIS. This is a conversational cognition request, "
                     "not an action plan. Do not claim that any external action occurred. "
                     "If an action is required, explain what needs execution rather than fabricating it."
                 ),
                 tier=tier,
                 json_output=False,
+                context=tuple(context),
             )
         )
         text = response.text.strip()

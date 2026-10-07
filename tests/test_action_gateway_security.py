@@ -143,7 +143,12 @@ class GatewaySecurityTests(unittest.TestCase):
         (root / "sub").rmdir()
         outside = Path(self.tmp.name) / "outside"
         outside.mkdir()
-        (root / "sub").symlink_to(outside, target_is_directory=True)
+        try:
+            (root / "sub").symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows account cannot create symbolic links")
+            raise
         result = self.runtime.execute_approved(receipt.request_id, ticket.ticket_id)
         self.assertIs(result.result.status, S.DENIED)
         self.assertFalse((outside / "note.txt").exists())
@@ -151,7 +156,12 @@ class GatewaySecurityTests(unittest.TestCase):
     def test_workspace_root_symlink_is_never_followed(self):
         outside = Path(self.tmp.name) / "outside"
         outside.mkdir()
-        self.context.workspace_root.symlink_to(outside, target_is_directory=True)
+        try:
+            self.context.workspace_root.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows account cannot create symbolic links")
+            raise
         receipt = self.write_proposal()
         ticket = self.ticket(receipt)
         result = self.runtime.execute_approved(receipt.request_id, ticket.ticket_id)
