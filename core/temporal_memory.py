@@ -19,8 +19,10 @@ import json
 from pathlib import Path
 import re
 import sqlite3
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 import uuid
+
+from core.vector_index import VectorIndex
 
 
 _CLAIM_ID = re.compile(r"[a-f0-9]{32}")
@@ -29,6 +31,12 @@ _SOURCE_ID = re.compile(r"[A-Za-z0-9_.:/@-]{1,240}")
 
 class TemporalMemoryError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class SemanticClaimMatch:
+    claim: "TemporalClaim"
+    distance: float
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,7 @@ class TemporalMemoryStore:
         db_path = Path(path).expanduser()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.path = db_path
+        self._vector_index: VectorIndex | None = None
         self._initialize()
 
     @contextmanager
@@ -371,6 +380,77 @@ class TemporalMemoryStore:
         with self._connect() as conn:
             rows = conn.execute(sql, args).fetchall()
         return tuple(self._row(row) for row in rows)
+
+    def enable_vector_index(
+        self,
+        dimension: int,
+        *,
+        prefer_native: bool = True,
+        extension_path: str | Path | None = None,
+    ) -> dict[str, object]:
+        """Enable semantic retrieval inside this process.
+
+        The database is deliberately separate from the temporal ledger so a
+        vector index can be rebuilt without changing claim history.
+        """
+        vector_path = self.path.with_name(self.path.name + ".vectors")
+        self._vector_index = VectorIndex(
+            vector_path,
+            dimension=dimension,
+            prefer_native=prefer_native,
+            extension_path=extension_path,
+        )
+        return self._vector_index.status()
+
+    def index_claim_embedding(
+        self,
+        claim_id: str,
+        embedding: Sequence[float],
+    ) -> None:
+        if self._vector_index is None:
+            raise TemporalMemoryError("Vector index is not enabled.")
+        claim = self.get(claim_id)
+        self._vector_index.upsert(
+            claim.claim_id,
+            embedding,
+            payload={
+                "subject": claim.subject,
+                "predicate": claim.predicate,
+                "source": claim.source,
+                "verified": claim.verified,
+            },
+        )
+
+    def semantic_search(
+        self,
+        embedding: Sequence[float],
+        *,
+        active_only: bool = True,
+        verified_only: bool = False,
+        limit: int = 20,
+    ) -> tuple[SemanticClaimMatch, ...]:
+        if self._vector_index is None:
+            raise TemporalMemoryError("Vector index is not enabled.")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100.")
+
+        # Ask for extra candidates because stale/superseded entries are filtered
+        # against the authoritative temporal ledger below.
+        matches = self._vector_index.search(embedding, limit=min(100, limit * 4))
+        results: list[SemanticClaimMatch] = []
+        for match in matches:
+            try:
+                claim = self.get(match.entity_id)
+            except TemporalMemoryError:
+                continue
+            if active_only and not claim.active:
+                continue
+            if verified_only and not claim.verified:
+                continue
+            results.append(SemanticClaimMatch(claim=claim, distance=match.distance))
+            if len(results) >= limit:
+                break
+        return tuple(results)
 
     def search(
         self,
