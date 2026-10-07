@@ -76,6 +76,14 @@ _UNSUPPORTED_ASSUMPTION_PATTERNS = (
     ),
 )
 
+_CORE_REQUIRED_LABELS = ("GOAL", "STATED_CONSTRAINTS", "UNKNOWNS", "VERIFY")
+_CORE_REFUSAL_PATTERNS = (
+    re.compile(r"\bI\s+(?:cannot|can't|am unable to)\b", re.IGNORECASE),
+    re.compile(r"\bcannot\s+provide\b", re.IGNORECASE),
+    re.compile(r"\bcan I help you with something else\b", re.IGNORECASE),
+    re.compile(r"\bunable\s+to\s+(?:provide|help|comply)\b", re.IGNORECASE),
+)
+
 _MINUTE_WORDS = {
     "one": 1,
     "two": 2,
@@ -227,6 +235,41 @@ def validate_inference(response_text, council_results, route_attempts) -> dict:
     }
 
 
+def validate_core_brief_quality(core_brief: str) -> dict:
+    """Certify that JARVIS Core performed its internal coordinator role."""
+    if not isinstance(core_brief, str) or not core_brief.strip():
+        raise RuntimeError("Cannot evaluate an empty JARVIS Core brief.")
+
+    text = core_brief.strip()
+    labels_seen = re.findall(
+        r"(?im)^(GOAL|STATED_CONSTRAINTS|UNKNOWNS|VERIFY):",
+        text,
+    )
+    refusal_markers = [
+        pattern.pattern for pattern in _CORE_REFUSAL_PATTERNS
+        if pattern.search(text)
+    ]
+    has_time_budget = bool(re.search(r"\b(?:30|thirty)\b", text, re.IGNORECASE))
+
+    failures = []
+    if labels_seen != list(_CORE_REQUIRED_LABELS):
+        failures.append("core_brief_protocol_mismatch")
+    if refusal_markers:
+        failures.append("core_brief_refusal")
+    if not has_time_budget:
+        failures.append("core_brief_omitted_time_budget")
+
+    return {
+        "certified": not failures,
+        "scope": "core-coordinator-routing-brief-v1",
+        "required_labels": list(_CORE_REQUIRED_LABELS),
+        "labels_seen": labels_seen,
+        "refusal_markers": refusal_markers,
+        "time_budget_preserved": has_time_budget,
+        "failures": failures,
+    }
+
+
 def validate_grounding_quality(response_text: str) -> dict:
     """Evaluate the narrow planning probe without asking another model to grade it.
 
@@ -272,7 +315,7 @@ def validate_grounding_quality(response_text: str) -> dict:
 
     return {
         "certified": not failures,
-        "scope": "thirty-minute-planning-grounding-probe-v5",
+        "scope": "thirty-minute-planning-grounding-probe-v6",
         "word_count": word_count,
         "word_limit": 80,
         "numbered_steps_seen": step_markers,
@@ -350,12 +393,21 @@ def run_inference(base_url: str, report: dict) -> None:
         report["lane"] = brain.lane.value
 
     report.update(validate_inference(response, council.results, brain.last_attempts))
-    quality = validate_grounding_quality(response)
-    report["intelligence_quality"] = quality
-    report["intelligence_quality_certified"] = quality["certified"]
-    if not quality["certified"]:
-        failures = ", ".join(quality["failures"]) or "unknown quality failure"
-        raise RuntimeError(f"JARVIS grounding quality gate failed: {failures}")
+    core_quality = validate_core_brief_quality(report["core_brief"])
+    final_quality = validate_grounding_quality(response)
+    report["core_brief_quality"] = core_quality
+    report["core_brief_quality_certified"] = core_quality["certified"]
+    report["intelligence_quality"] = final_quality
+    report["intelligence_quality_certified"] = (
+        core_quality["certified"] and final_quality["certified"]
+    )
+    combined_failures = [
+        *core_quality["failures"],
+        *final_quality["failures"],
+    ]
+    if combined_failures:
+        failures = ", ".join(combined_failures)
+        raise RuntimeError(f"JARVIS intelligence quality gate failed: {failures}")
 
 
 def main(argv=None) -> int:
@@ -372,6 +424,7 @@ def main(argv=None) -> int:
         "cloud_allowed": False,
         "tools_executed": False,
         "physical_device_certified": False,
+        "core_brief_quality_certified": False,
         "intelligence_quality_certified": False,
     }
     try:
