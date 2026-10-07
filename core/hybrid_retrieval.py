@@ -93,6 +93,7 @@ class TemporalHybridRetriever:
         query_tokens = _tokens(query)
         if not query_tokens:
             return ()
+        query_token_set = set(query_tokens)
 
         claims = self.store.active_claims(
             verified_only=verified_only,
@@ -111,7 +112,10 @@ class TemporalHybridRetriever:
             corpus.append(tokens or [text.casefold()])
 
         # BM25Plus keeps IDF positive and behaves predictably for tiny personal
-        # corpora where a useful token may appear in more than half the claims.
+        # corpora. Its delta term intentionally gives every document a positive
+        # contribution for known query terms, even when that particular document
+        # does not contain the term. JARVIS applies an explicit lexical-overlap
+        # gate so semantic-only candidates cannot masquerade as lexical matches.
         ranker = BM25Plus(corpus)
         scores = ranker.get_scores(query_tokens)
         ordered = sorted(
@@ -121,6 +125,8 @@ class TemporalHybridRetriever:
         )
         matches: list[LexicalClaimMatch] = []
         for idx in ordered:
+            if not query_token_set.intersection(corpus[idx]):
+                continue
             score = float(scores[idx])
             if score <= 0.0:
                 continue
