@@ -50,19 +50,34 @@ class WakeWordModelFiles:
         ).validated(root=root)
 
     def validated(self, *, root: Path | None = None) -> "WakeWordModelFiles":
-        resolved_root = root.resolve(strict=True) if root is not None else None
+        resolved_root: Path | None = None
+        if root is not None:
+            try:
+                resolved_root = Path(root).expanduser().resolve(strict=True)
+            except OSError as exc:
+                raise WakeWordError("Wake-word model directory does not exist.") from exc
+            if not resolved_root.is_dir():
+                raise WakeWordError("Wake-word model directory does not exist.")
+
         validated: list[Path] = []
         for value, label in (
             (self.wakeword_model, "wake-word"),
             (self.melspec_model, "melspectrogram"),
             (self.embedding_model, "audio embedding"),
         ):
-            path = Path(value).expanduser().resolve(strict=True)
+            try:
+                path = Path(value).expanduser().resolve(strict=True)
+            except OSError as exc:
+                raise WakeWordError(f"{label} model must be an existing local ONNX file.") from exc
             if resolved_root is not None and resolved_root not in path.parents:
                 raise WakeWordError(f"{label} model must stay inside the configured model directory.")
             if not path.is_file() or path.suffix.lower() != ".onnx":
                 raise WakeWordError(f"{label} model must be a local ONNX file.")
-            if path.stat().st_size <= 0:
+            try:
+                size = path.stat().st_size
+            except OSError as exc:
+                raise WakeWordError(f"{label} model must be an accessible local ONNX file.") from exc
+            if size <= 0:
                 raise WakeWordError(f"{label} model file is empty.")
             validated.append(path)
         return WakeWordModelFiles(*validated)
