@@ -24,6 +24,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from api.wake_word_routes import install_wake_word_routes
+
 from core.action_gateway import create_runtime
 from core.app_paths import user_data_dir
 from core.hardware_profile import HardwareProfiler, HardwareSnapshot
@@ -55,6 +57,7 @@ from core.self_heal import (
     SelfHealController,
 )
 from core.voice_runtime import VoiceRuntimeError, WindowsVoiceRuntime
+from core.wake_word_session import WakeWordSession
 
 
 _REQUIRED_LOCAL_MODELS = frozenset({"jarvis-core-1b"})
@@ -158,6 +161,7 @@ class LocalBrainHost:
 
         self.owner_face = OwnerFaceRecognizer()
         self.voice = WindowsVoiceRuntime()
+        self.wake_word = WakeWordSession(self.state_dir / "wake-word.json")
 
         self.owner_runtime = create_runtime(
             owner_id="local-owner",
@@ -378,7 +382,7 @@ class LocalBrainHost:
                 "face_score": round(self.owner_face.last_score, 4),
                 "face_engine": self.owner_face.engine,
             },
-            "voice": self.voice.status(),
+            "voice": {**self.voice.status(), "wake_word": bool(self.wake_word.status()["enabled"])},
             "approvals": {
                 "pending": len(self.approvals.pending()),
                 **self.approval_bridge.status(),
@@ -695,6 +699,8 @@ def create_local_brain_app(host: LocalBrainHost) -> FastAPI:
     def forget_owner_face() -> dict[str, Any]:
         host.owner_face.forget()
         return {"enrolled": False, "recognized": False}
+
+    install_wake_word_routes(app, host.wake_word, require_ui)
 
     @app.get("/v1/voice/status", dependencies=[Depends(require_ui)])
     def voice_status() -> dict[str, Any]:

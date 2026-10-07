@@ -5,6 +5,7 @@ import { AuthScreen } from "@/components/auth-screen";
 import { JarvisConsole } from "@/components/jarvis-console";
 import { JarvisProductShell } from "@/components/jarvis-product-shell";
 import { Onboarding } from "@/components/onboarding";
+import { WakeWordBridge } from "@/components/wake-word-bridge";
 import { api, getToken, setToken, type Session, type User } from "@/lib/api";
 import { isNativeJarvis } from "@/lib/jarvis-runtime";
 
@@ -50,7 +51,14 @@ export default function Home() {
   if (view === "loading") {
     return <div className="boot-screen"><div className="boot-pulse" aria-label="Initializing JARVIS" /></div>;
   }
-  if (view === "native") return <JarvisProductShell />;
+  if (view === "native") {
+    return (
+      <>
+        <JarvisProductShell />
+        <WakeWordBridge />
+      </>
+    );
+  }
   if (view === "auth") return <AuthScreen onSession={handleSession} />;
   if (view === "onboarding" && user) {
     return <Onboarding user={user} onComplete={() => setView("console")} onSignOut={signOut} />;

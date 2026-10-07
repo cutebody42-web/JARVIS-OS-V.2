@@ -58,6 +58,9 @@ jobs:
           tests.test_embedding_memory
           tests.test_android_signing
           tests.test_wake_word
+          tests.test_wake_word_session
+          tests.test_wake_word_routes
+          tests.test_wake_word_server_patch
 
   frontend:
     runs-on: ubuntu-latest
