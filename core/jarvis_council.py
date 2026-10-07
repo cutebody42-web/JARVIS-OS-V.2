@@ -30,18 +30,52 @@ _NEGATIVE_EVIDENCE = re.compile(
     r"\b(?:do\s+not|don't|never|without|no|none|unknown)\b",
     re.IGNORECASE,
 )
-_EVIDENCE_SENSITIVE_OBJECTS = (
-    ("calendar_or_schedule", re.compile(r"\b(?:calendar|schedule)\b", re.IGNORECASE)),
+
+# A class has two patterns: what constitutes a generated *claim*, and what
+# counts as positive owner evidence for that class. Meta words such as
+# "owner goal" or "specialist note" therefore do not trigger filtering.
+_EVIDENCE_SENSITIVE_CLAIMS = (
+    (
+        "calendar_or_schedule",
+        re.compile(
+            r"\b(?:(?:review|check|open|inspect|consult|look\s+at)\s+(?:your\s+|the\s+)?"
+            r"(?:calendar|schedule)|(?:your|tomorrow(?:'s)?)\s+(?:calendar|schedule)|"
+            r"calendar\s+events?)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(r"\b(?:calendar|schedule)\b", re.IGNORECASE),
+    ),
     (
         "task_inventory",
+        re.compile(
+            r"\b(?:(?:review|plan|rank|prioritize|organize|draft|finish|complete|work\s+on)\s+"
+            r"(?:your\s+)?(?:(?:core|current|existing|planned|relevant)\s+){0,2}"
+            r"(?:tasks?|projects?|goals?|priorities)|(?:your|tomorrow(?:'s)?)\s+"
+            r"(?:(?:core|current|existing|planned|relevant)\s+){0,2}"
+            r"(?:tasks?|projects?|goals?|priorities|task\s+list|to-?do\s+list))\b",
+            re.IGNORECASE,
+        ),
         re.compile(
             r"\b(?:task\s+list|to-?do\s+list|tasks?|projects?|goals?|priorities)\b",
             re.IGNORECASE,
         ),
     ),
-    ("reminders", re.compile(r"\breminders?\b", re.IGNORECASE)),
+    (
+        "reminders",
+        re.compile(
+            r"\b(?:set|create|check|review|schedule)\s+(?:your\s+|the\s+)?reminders?\b",
+            re.IGNORECASE,
+        ),
+        re.compile(r"\breminders?\b", re.IGNORECASE),
+    ),
     (
         "personal_event",
+        re.compile(
+            r"\b(?:(?:your|tomorrow(?:'s)?)\s+(?:meeting|presentation|appointment|class|exam|"
+            r"shift|interview|flight|deadline|trip)|(?:before|after)\s+(?:the|your)\s+"
+            r"(?:meeting|presentation|appointment|class|exam|shift|interview|flight|deadline))\b",
+            re.IGNORECASE,
+        ),
         re.compile(
             r"\b(?:events?|meeting|presentation|appointment|class|exam|shift|interview|"
             r"flight|deadline|trip|travel)\b",
@@ -51,13 +85,15 @@ _EVIDENCE_SENSITIVE_OBJECTS = (
     (
         "artifact_or_resource",
         re.compile(
+            r"\b(?:review|prepare|organize|draft|finish|check|rehearse|open|use|gather|ensure)\s+"
+            r"(?:your\s+|the\s+|relevant\s+|available\s+){0,2}"
+            r"(?:files?|materials?|documents?|notes?|slides?|workspace|resources?|session)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
             r"\b(?:files?|materials?|documents?|notes?|slides?|workspace|resources?|session)\b",
             re.IGNORECASE,
         ),
-    ),
-    (
-        "situational_state",
-        re.compile(r"\b(?:people|person|location|device\s+state|habits?|preferences?)\b", re.IGNORECASE),
     ),
 )
 
@@ -134,8 +170,8 @@ def _sentence_has_positive_evidence(text: str, pattern: re.Pattern) -> bool:
     for sentence in re.split(r"(?<=[.!?])\s+|[\r\n]+", text):
         if not pattern.search(sentence):
             continue
-        # Conservative by design: a sentence that explicitly negates/forbids an
-        # object does not establish that the object exists in owner context.
+        # Conservative by design: explicit negation/prohibition does not establish
+        # that the object exists in the owner's real context.
         if _NEGATIVE_EVIDENCE.search(sentence):
             continue
         return True
@@ -143,16 +179,12 @@ def _sentence_has_positive_evidence(text: str, pattern: re.Pattern) -> bool:
 
 
 def unsupported_evidence_objects(owner_evidence: str, candidate: str) -> tuple[str, ...]:
-    """Return evidence-sensitive object classes asserted without positive owner evidence.
-
-    This is deliberately conservative. False positives only remove a hidden council note;
-    they never delete owner evidence or block the normal single-model conversation route.
-    """
+    """Find generated evidence-sensitive claims unsupported by positive owner evidence."""
     unsupported = []
-    for name, pattern in _EVIDENCE_SENSITIVE_OBJECTS:
-        if not pattern.search(candidate):
+    for name, claim_pattern, evidence_pattern in _EVIDENCE_SENSITIVE_CLAIMS:
+        if not claim_pattern.search(candidate):
             continue
-        if _sentence_has_positive_evidence(owner_evidence, pattern):
+        if _sentence_has_positive_evidence(owner_evidence, evidence_pattern):
             continue
         unsupported.append(name)
     return tuple(unsupported)
@@ -167,10 +199,9 @@ def _safe_reasoning_field(value: str, owner: str, fallback: str) -> str:
 def _normalize_core_brief(raw_text: str, owner_request: str) -> str:
     """Build a deterministic coordinator envelope around probabilistic Core reasoning.
 
-    The owner request is authoritative evidence. Model-extracted constraints are intentionally
-    *not* trusted as constraints: the exact owner request is retained instead. The model may
-    contribute goal/unknown/verification reasoning only when it does not introduce an
-    evidence-sensitive object absent from the owner request.
+    The exact owner request is the authoritative constraint ledger. Model-extracted
+    constraints are intentionally not trusted as constraints, and model reasoning that
+    introduces unsupported evidence-sensitive claims is replaced with a safe fallback.
     """
     fields = _parse_core_brief(raw_text)
     owner = " ".join(owner_request.split()).strip()
@@ -382,20 +413,16 @@ class JarvisCouncil:
                     raw_notes.append(note)
 
         raw_notes.sort(key=lambda item: selected.index(item.model))
-        accepted: list[CouncilNote] = []
-        rejected: list[CouncilNote] = []
-        for note in raw_notes:
-            if unsupported_evidence_objects(clean, note.text):
-                rejected.append(note)
-            else:
-                accepted.append(note)
-
+        rejected = tuple(
+            note for note in raw_notes
+            if unsupported_evidence_objects(clean, note.text)
+        )
         return CouncilResult(
             core_brief,
-            tuple(accepted),
+            tuple(raw_notes),
             (CORE_MODEL, *tuple(note.model for note in raw_notes)),
             owner_request=clean,
-            rejected_notes=tuple(rejected),
+            rejected_notes=rejected,
         )
 
     @staticmethod
@@ -406,14 +433,16 @@ class JarvisCouncil:
             _SYNTHESIS_GROUNDING_CONTRACT,
             "Hidden JARVIS Core routing brief:\n" + result.core_brief,
         ]
-        if result.notes:
+        rejected = set(result.rejected_notes)
+        safe_notes = tuple(note for note in result.notes if note not in rejected)
+        if safe_notes:
             parts.append(
                 "Hidden local specialist notes (grounding-filtered):\n"
-                + "\n\n".join(note.text for note in result.notes)
+                + "\n\n".join(note.text for note in safe_notes)
             )
         if result.rejected_notes:
             parts.append(
                 "Grounding filter: one or more hidden specialist notes were omitted because "
-                "they introduced evidence-sensitive objects absent from positive owner evidence."
+                "they introduced evidence-sensitive claims absent from positive owner evidence."
             )
         return "\n\n".join(parts)
