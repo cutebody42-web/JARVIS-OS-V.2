@@ -45,7 +45,7 @@ class _Session:
         return [output]
 
 
-def _make_model(root: Path, **overrides): -> Path:
+def _make_model(root: Path, **overrides) -> Path:
     model = root / "model"
     model.mkdir()
     (model / "model.onnx").write_bytes(b"fake-onnx")
