@@ -1,0 +1,15 @@
+name: sqlite-vec
+source: https://github.com/asg017/sqlite-vec.git
+upstream_ref: v0.1.10-alpha.4
+upstream_commit: 04d28bd21773981e2d266bbf6aa4efbd011eb4f6
+upstream_commit_date: 2026-05-18T06:50:43Z
+license_expression: MIT OR Apache-2.0
+selected_distribution_license: MIT
+import_mode: pinned-source-assimilation
+purpose: embedded in-process vector search for JARVIS memory
+local_changes:
+  - "Generated sqlite-vec.h from upstream template/version metadata."
+  - "Build and Python integration are owned by JARVIS core."
+update_policy:
+  mode: manual-review
+  security_and_compatibility_gate: required
