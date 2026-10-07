@@ -30,6 +30,7 @@ class EmbeddingInfo:
     dimension: int
     engine: str = "onnx-local"
     normalized: bool = True
+    local_only: bool = True
 
 
 @runtime_checkable
@@ -151,6 +152,7 @@ class LocalOnnxEmbeddingProvider:
             model_id=self._manifest.model_id,
             dimension=self._manifest.dimension,
             normalized=self._manifest.normalize,
+            local_only=True,
         )
 
     @property
