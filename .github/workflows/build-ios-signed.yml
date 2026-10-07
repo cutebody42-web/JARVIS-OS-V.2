@@ -1,0 +1,158 @@
+name: Build signed JARVIS iOS release
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  signed-ios-release:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CI: "true"
+      IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+      IOS_CERT_SHA256: ${{ secrets.IOS_CERT_SHA256 }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Validate production signing inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in IOS_CERTIFICATE IOS_CERTIFICATE_PASSWORD IOS_MOBILE_PROVISION APPLE_DEVELOPMENT_TEAM IOS_CERT_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "Required iOS signing secret $name is missing" >&2
+              exit 1
+            fi
+          done
+          if ! [[ "$APPLE_DEVELOPMENT_TEAM" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "APPLE_DEVELOPMENT_TEAM must be a 10-character Apple team identifier" >&2
+            exit 1
+          fi
+          EXPECTED="$(printf '%s' "$IOS_CERT_SHA256" | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          if ! [[ "$EXPECTED" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "IOS_CERT_SHA256 must contain one SHA-256 certificate fingerprint" >&2
+            exit 1
+          fi
+
+      - name: Prepare Xcode and Rust device target
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          rustup update stable
+          rustup default stable
+          rustup target add aarch64-apple-ios
+          rustc --version
+          cargo --version
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Initialize generated Xcode project
+        working-directory: web
+        run: npm run tauri -- ios init --ci
+
+      - name: Build App Store Connect signed IPA
+        working-directory: web
+        run: npm run tauri -- ios build --export-method app-store-connect --target aarch64 --ci
+
+      - name: Verify IPA signature, certificate and provisioning identity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          IPA="$(find web/src-tauri/gen/apple -type f -name '*.ipa' | head -n 1)"
+          if [ -z "$IPA" ] || [ ! -f "$IPA" ]; then
+            echo "Tauri did not produce a signed IPA" >&2
+            exit 1
+          fi
+
+          WORK="$RUNNER_TEMP/jarvis-ios-verify"
+          rm -rf "$WORK"
+          mkdir -p "$WORK/unpacked" "$GITHUB_WORKSPACE/artifacts/ios-signed"
+          ditto -x -k "$IPA" "$WORK/unpacked"
+          APP="$(find "$WORK/unpacked/Payload" -maxdepth 1 -type d -name '*.app' | head -n 1)"
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+            echo "Signed IPA does not contain an application bundle" >&2
+            exit 1
+          fi
+
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          if [ "$BUNDLE_ID" != "ai.jarvis.app" ]; then
+            echo "Unexpected signed bundle identifier: $BUNDLE_ID" >&2
+            exit 1
+          fi
+
+          pushd "$WORK" >/dev/null
+          /usr/bin/codesign -d --extract-certificates "$APP"
+          if [ ! -s codesign0 ]; then
+            echo "Could not extract the signing certificate from the app" >&2
+            exit 1
+          fi
+          ACTUAL_CERT="$(openssl x509 -inform DER -in codesign0 -noout -fingerprint -sha256 | awk -F= '{print $2}' | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          popd >/dev/null
+          EXPECTED_CERT="$(printf '%s' "$IOS_CERT_SHA256" | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          if [ "$ACTUAL_CERT" != "$EXPECTED_CERT" ]; then
+            echo "Signed app certificate does not match IOS_CERT_SHA256" >&2
+            exit 1
+          fi
+
+          if [ ! -s "$APP/embedded.mobileprovision" ]; then
+            echo "Signed app does not contain a provisioning profile" >&2
+            exit 1
+          fi
+          security cms -D -i "$APP/embedded.mobileprovision" > "$WORK/profile.plist"
+          PROFILE_TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$WORK/profile.plist")"
+          APP_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$WORK/profile.plist")"
+          if [ "$PROFILE_TEAM" != "$APPLE_DEVELOPMENT_TEAM" ]; then
+            echo "Provisioning profile team does not match APPLE_DEVELOPMENT_TEAM" >&2
+            exit 1
+          fi
+          if [ "$APP_IDENTIFIER" != "$APPLE_DEVELOPMENT_TEAM.ai.jarvis.app" ]; then
+            echo "Provisioning profile application identifier does not match JARVIS" >&2
+            exit 1
+          fi
+
+          cp "$IPA" artifacts/ios-signed/JARVIS-iOS-release.ipa
+          IPA_SHA="$(shasum -a 256 artifacts/ios-signed/JARVIS-iOS-release.ipa | awk '{print $1}')"
+          cat > artifacts/ios-signed/build-info.txt <<EOF
+          commit=$SOURCE_SHA
+          bundle_id=$BUNDLE_ID
+          team_id=$PROFILE_TEAM
+          export_method=app-store-connect
+          signature_verified=true
+          certificate_sha256=$ACTUAL_CERT
+          ipa_sha256=$IPA_SHA
+          touch_id_verified=false
+          physical_device_verified=false
+          EOF
+
+      - name: Upload signed iOS release
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-iOS-Signed-Release
+          path: artifacts/ios-signed/
+          if-no-files-found: error
+          retention-days: 14
