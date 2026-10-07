@@ -27,9 +27,10 @@ _COUNCIL_GROUNDING_RULES = (
     "owner request is the only current-turn evidence. Mark missing personal context as UNKNOWN "
     "and never fill gaps by assumption; never invent it or imply meetings, presentations, "
     "appointments, classes, exams, work shifts, deadlines, travel, people, locations, device "
-    "state, files, calendar events, habits or preferences that were not stated. Respect every "
-    "explicit numeric or time constraint and verify arithmetic before proposing a plan. When a "
-    "useful plan depends on missing context, use a conditional or neutral placeholder instead."
+    "state, files, calendar events, task lists, existing tasks, projects, goals, priorities, "
+    "habits or preferences that were not stated. Respect every explicit numeric or time "
+    "constraint and verify arithmetic before proposing a plan. When a useful plan depends on "
+    "missing context, use a conditional or neutral placeholder instead."
 )
 
 _SYNTHESIS_GROUNDING_CONTRACT = (
@@ -38,9 +39,9 @@ _SYNTHESIS_GROUNDING_CONTRACT = (
     "by the current owner request or by separately supplied durable synchronized memory or "
     "recent owner messages. Otherwise keep it UNKNOWN or phrase the advice conditionally. "
     "Never convert a plausible scenario into a claimed meeting, presentation, appointment, "
-    "class, exam, shift, deadline, trip, person, location, device state or file. Respect explicit "
-    "numeric and time budgets; verify arithmetic and never allocate more time than the owner "
-    "made available."
+    "class, exam, shift, deadline, trip, person, location, device state, file, task list, "
+    "existing task, project, goal or priority. Respect explicit numeric and time budgets; "
+    "verify arithmetic and never allocate more time than the owner made available."
 )
 
 
