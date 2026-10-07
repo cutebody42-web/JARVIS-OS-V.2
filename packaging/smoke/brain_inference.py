@@ -65,6 +65,15 @@ _UNSUPPORTED_ASSUMPTION_PATTERNS = (
             re.IGNORECASE,
         ),
     ),
+    (
+        "claimed_preparation_context",
+        re.compile(
+            r"\b(?:tomorrow(?:'s)?\s+session|prepare\s+(?:your\s+)?materials?|"
+            r"review\s+(?:your\s+|relevant\s+)?documents?|organize\s+(?:your\s+)?notes?|"
+            r"ensure\s+(?:your\s+|the\s+)?workspace|available\s+resources?)\b",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 _MINUTE_WORDS = {
@@ -112,6 +121,10 @@ _DIRECT_STEP_TIME_PATTERNS = (
     ),
     re.compile(
         rf"\b(?P<minutes>{_MINUTE_TOKEN})\s*(?:minutes?|mins?)\s+(?:to|for|on)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:first|next|final)\s+(?P<minutes>{_MINUTE_TOKEN})\s*(?:minutes?|mins?)\b",
         re.IGNORECASE,
     ),
 )
@@ -227,7 +240,7 @@ def validate_grounding_quality(response_text: str) -> dict:
 
     text = response_text.strip()
     word_count = len(re.findall(r"\S+", text))
-    step_markers = set(re.findall(r"(?<!\d)([123])[.)](?=\s)", text))
+    step_markers = re.findall(r"(?<!\d)([123])[.)](?=\s)", text)
     assumption_markers = [
         name for name, pattern in _UNSUPPORTED_ASSUMPTION_PATTERNS
         if pattern.search(text)
@@ -250,7 +263,7 @@ def validate_grounding_quality(response_text: str) -> dict:
     failures = []
     if word_count > 80:
         failures.append("word_limit_exceeded")
-    if step_markers != {"1", "2", "3"}:
+    if step_markers != ["1", "2", "3"]:
         failures.append("missing_exact_three_numbered_steps")
     if assumption_markers:
         failures.append("unsupported_personal_assumption")
@@ -259,10 +272,10 @@ def validate_grounding_quality(response_text: str) -> dict:
 
     return {
         "certified": not failures,
-        "scope": "thirty-minute-planning-grounding-probe-v4",
+        "scope": "thirty-minute-planning-grounding-probe-v5",
         "word_count": word_count,
         "word_limit": 80,
-        "numbered_steps_seen": sorted(step_markers),
+        "numbered_steps_seen": step_markers,
         "unsupported_assumption_markers": assumption_markers,
         "time_budget_minutes": TIME_BUDGET_MINUTES,
         "time_budget_evidence": time_budget_evidence,
