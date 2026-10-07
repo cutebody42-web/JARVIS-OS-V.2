@@ -26,10 +26,12 @@ sys.path.insert(0, str(ROOT))
 from core.jarvis_council import CORE_MODEL
 
 EXPERT_MODEL = "jarvis-brain-fast"
+TIME_BUDGET_MINUTES = 30
 PROMPT = (
     "I have thirty minutes to prepare for tomorrow. Return exactly three short numbered "
     "planning steps (1., 2., 3.) using only that information. Do not assume my calendar, "
-    "events or preferences. Keep the final answer under eighty words."
+    "events or preferences. If you assign times, they must total no more than thirty minutes. "
+    "Keep the final answer under eighty words."
 )
 
 _UNSUPPORTED_ASSUMPTION_PATTERNS = (
@@ -57,6 +59,63 @@ _UNSUPPORTED_ASSUMPTION_PATTERNS = (
         ),
     ),
 )
+
+_MINUTE_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "fifteen": 15,
+    "twenty": 20,
+    "twenty-five": 25,
+    "thirty": 30,
+    "forty": 40,
+    "forty-five": 45,
+    "fifty": 50,
+    "sixty": 60,
+}
+_MINUTE_TOKEN = r"(?:\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|twenty-five|thirty|forty|forty-five|fifty|sixty)"
+_PER_STEP_TIME_PATTERNS = (
+    re.compile(
+        rf"\b(?P<minutes>{_MINUTE_TOKEN})\s*(?:minutes?|mins?)\s+(?:per|for each)\s+(?:action|step)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?P<minutes>{_MINUTE_TOKEN})\s*(?:minutes?|mins?)\s+(?:on\s+)?each\s+(?:action|step)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _minute_value(token: str) -> int | None:
+    normalized = token.strip().lower()
+    if normalized.isdigit():
+        return int(normalized)
+    return _MINUTE_WORDS.get(normalized)
+
+
+def _time_budget_evidence(text: str, step_count: int) -> list[dict]:
+    evidence = []
+    if step_count <= 0:
+        return evidence
+    for pattern in _PER_STEP_TIME_PATTERNS:
+        for match in pattern.finditer(text):
+            per_step = _minute_value(match.group("minutes"))
+            if per_step is None:
+                continue
+            evidence.append({
+                "phrase": match.group(0),
+                "minutes_per_step": per_step,
+                "step_count": step_count,
+                "implied_total_minutes": per_step * step_count,
+            })
+    return evidence
 
 
 def observed_routes(route_attempts) -> list[dict]:
@@ -114,9 +173,9 @@ def validate_grounding_quality(response_text: str) -> dict:
     """Evaluate the narrow planning probe without asking another model to grade it.
 
     The gate intentionally certifies only properties that can be observed
-    deterministically: the requested numbered shape, the explicit word budget,
-    and absence of a small set of personalized event assumptions that caused the
-    prior production failure. It is not a general intelligence benchmark.
+    deterministically: requested numbered shape, word budget, absence of known
+    unsupported personal assumptions, and consistency with the explicit thirty-
+    minute time budget. It is not a general intelligence benchmark.
     """
     if not isinstance(response_text, str) or not response_text.strip():
         raise RuntimeError("Cannot evaluate grounding quality for an empty response.")
@@ -128,6 +187,11 @@ def validate_grounding_quality(response_text: str) -> dict:
         name for name, pattern in _UNSUPPORTED_ASSUMPTION_PATTERNS
         if pattern.search(text)
     ]
+    time_budget_evidence = _time_budget_evidence(text, len(step_markers))
+    time_budget_violations = [
+        item for item in time_budget_evidence
+        if item["implied_total_minutes"] > TIME_BUDGET_MINUTES
+    ]
 
     failures = []
     if word_count > 80:
@@ -136,14 +200,19 @@ def validate_grounding_quality(response_text: str) -> dict:
         failures.append("missing_exact_three_numbered_steps")
     if assumption_markers:
         failures.append("unsupported_personal_assumption")
+    if time_budget_violations:
+        failures.append("time_budget_inconsistent")
 
     return {
         "certified": not failures,
-        "scope": "thirty-minute-planning-grounding-probe-v1",
+        "scope": "thirty-minute-planning-grounding-probe-v2",
         "word_count": word_count,
         "word_limit": 80,
         "numbered_steps_seen": sorted(step_markers),
         "unsupported_assumption_markers": assumption_markers,
+        "time_budget_minutes": TIME_BUDGET_MINUTES,
+        "time_budget_evidence": time_budget_evidence,
+        "time_budget_violations": time_budget_violations,
         "failures": failures,
     }
 
