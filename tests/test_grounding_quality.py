@@ -40,6 +40,41 @@ class GroundingContractTests(unittest.TestCase):
         self.assertIn("numeric and time budgets", context)
         self.assertIn("never allocate more time", context)
 
+    def test_core_brief_gate_accepts_structured_grounded_coordinator_output(self):
+        quality = _SMOKE.validate_core_brief_quality(
+            "GOAL: Create a neutral preparation plan.\n"
+            "STATED_CONSTRAINTS: Thirty minutes, exactly three numbered steps, no assumptions.\n"
+            "UNKNOWNS: The preparation subject and personal schedule are UNKNOWN.\n"
+            "VERIFY: Three steps fit within the thirty-minute budget and add no personal facts."
+        )
+        self.assertTrue(quality["certified"])
+        self.assertEqual(
+            quality["labels_seen"],
+            ["GOAL", "STATED_CONSTRAINTS", "UNKNOWNS", "VERIFY"],
+        )
+        self.assertTrue(quality["time_budget_preserved"])
+        self.assertEqual(quality["refusal_markers"], [])
+
+    def test_core_brief_gate_rejects_previous_real_refusal_regression(self):
+        quality = _SMOKE.validate_core_brief_quality(
+            "I cannot provide a response that assumes your calendar, events, or preferences. "
+            "Can I help you with something else?"
+        )
+        self.assertFalse(quality["certified"])
+        self.assertIn("core_brief_protocol_mismatch", quality["failures"])
+        self.assertIn("core_brief_refusal", quality["failures"])
+        self.assertIn("core_brief_omitted_time_budget", quality["failures"])
+
+    def test_core_brief_gate_rejects_structured_brief_that_drops_time_budget(self):
+        quality = _SMOKE.validate_core_brief_quality(
+            "GOAL: Create a neutral preparation plan.\n"
+            "STATED_CONSTRAINTS: Exactly three numbered steps and no assumptions.\n"
+            "UNKNOWNS: The preparation subject is UNKNOWN.\n"
+            "VERIFY: Do not invent personal facts."
+        )
+        self.assertFalse(quality["certified"])
+        self.assertIn("core_brief_omitted_time_budget", quality["failures"])
+
     def test_quality_gate_accepts_grounded_three_step_response(self):
         quality = _SMOKE.validate_grounding_quality(
             "1. Pick one focus for the thirty minutes. "
