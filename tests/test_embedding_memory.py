@@ -66,6 +66,8 @@ class EmbeddingMemoryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 memory.index_claims([], batch_size=0)
             with self.assertRaises(ValueError):
+                memory.index_claims([], batch_size=33)
+            with self.assertRaises(ValueError):
                 memory.index_claims(["x"] * 1001)
 
 
