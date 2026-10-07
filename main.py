@@ -112,6 +112,7 @@ RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 LIVE_VAD_SILENCE_MS = 200
 STARTUP_CLAPS_REQUIRED = 2
+CLOUD_MICROPHONE_OPT_IN_ENV = "JARVIS_ALLOW_CLOUD_MICROPHONE"
 STARTUP_CLAP_MAX_GAP_SECONDS = 4.0
 STARTUP_CLAP_COOLDOWN_SECONDS = 0.22
 SELF_QUIT_GOODBYE = (
@@ -340,6 +341,14 @@ def _get_api_key() -> str:
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable not set. Please set it to your Gemini API key.")
     return api_key
+
+
+def _cloud_microphone_env_opted_in() -> bool:
+    """Return the explicit desktop opt-in; absence and unknown values are off."""
+    return (
+        os.environ.get(CLOUD_MICROPHONE_OPT_IN_ENV, "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
 
 
 def _normalize_voice_name(voice_name: str | None) -> str:
@@ -1175,6 +1184,7 @@ class JarvisLive:
         cloud_safe: bool = False,
         api_key: str | None = None,
         external_audio: bool = False,
+        allow_cloud_microphone: bool = False,
         owner_runtime=None,
     ):
         # Keep ``ui`` as a compatibility alias for desktop integrations that
@@ -1183,6 +1193,7 @@ class JarvisLive:
         self.ui             = client
         self.cloud_safe     = bool(cloud_safe)
         self.external_audio = bool(external_audio)
+        self.allow_cloud_microphone = bool(allow_cloud_microphone)
         self.owner_runtime  = owner_runtime
         self._api_key       = api_key.strip() if isinstance(api_key, str) else None
         self.tool_declarations = get_tool_declarations(cloud_safe=self.cloud_safe)
@@ -1291,13 +1302,44 @@ class JarvisLive:
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-    def speak(self, text: str) -> bool:
-        if not self._loop or not self.session:
+    def speak(self, text: str, *, cloud_shareable: bool = False) -> bool:
+        """Deliver local text without silently disclosing it to Gemini Live.
+
+        Callers must explicitly classify text as cloud-shareable before this
+        method may use the Live transport. The credential gate remains the
+        final fail-closed check even for explicitly classified text.
+        """
+        content = str(text or "").strip()
+        if not content:
             return False
+
+        if not cloud_shareable:
+            self.ui.show_subtitle(content)
+            self.ui.write_log(
+                "SYS: Speech text kept local; Gemini Live disclosure requires "
+                "cloud_shareable=True."
+            )
+            return False
+
         try:
+            assert_cloud_safe_text(content)
+        except CloudDisclosureError:
+            message = "Cloud Live blocked credential-shaped speech text."
+            self.ui.write_log(f"SYS: {message}")
+            self.ui.show_subtitle(message)
+            return False
+
+        if not self._loop or not self.session:
+            self.ui.show_subtitle(content)
+            return False
+
+        try:
+            self.ui.write_log(
+                "PRIVACY: Sending explicitly cloud-shareable speech text to Gemini Live."
+            )
             asyncio.run_coroutine_threadsafe(
                 self.session.send_client_content(
-                    turns={"parts": [{"text": text}]},
+                    turns={"parts": [{"text": content}]},
                     turn_complete=True
                 ),
                 self._loop
@@ -1307,16 +1349,11 @@ class JarvisLive:
             return False
 
     def _speak_vision_result(self, text: str) -> bool:
-        """Send finished vision text through JARVIS's active voice session."""
+        """Keep locally derived vision output on the local notification path."""
         result = " ".join(str(text or "").split())
         if not result:
             return False
-        directive = (
-            "[INTERNAL VISION OUTPUT] Read the following vision result to the user "
-            "verbatim. Do not add an introduction, commentary, or a tool call. "
-            f"Vision result: {json.dumps(result, ensure_ascii=False)}"
-        )
-        return self.speak(directive)
+        return self.speak(result)
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
@@ -1853,6 +1890,16 @@ class JarvisLive:
             await self.session.send_realtime_input(media=msg)
 
     async def _listen_audio(self):
+        if not getattr(self, "allow_cloud_microphone", False):
+            self.ui.write_log(
+                "PRIVACY: Gemini Live microphone streaming is off; "
+                f"set {CLOUD_MICROPHONE_OPT_IN_ENV}=1 to opt in."
+            )
+            return
+
+        disclosure = "PRIVACY: Microphone audio is now streaming to Gemini Live."
+        self.ui.write_log(disclosure)
+        print(f"[JARVIS] {disclosure}")
         print("[JARVIS] 🎤 Mic started")
         loop = asyncio.get_event_loop()
 
@@ -2106,8 +2153,13 @@ class JarvisLive:
                             pass
 
                     tg.create_task(self._send_realtime())
-                    if not self.external_audio:
+                    if not self.external_audio and self.allow_cloud_microphone:
                         tg.create_task(self._listen_audio())
+                    elif not self.external_audio:
+                        self.ui.write_log(
+                            "PRIVACY: Gemini Live microphone streaming is off; "
+                            f"set {CLOUD_MICROPHONE_OPT_IN_ENV}=1 to opt in."
+                        )
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
                     tg.create_task(self._announce_startup())
@@ -2171,7 +2223,11 @@ def main():
     def runner():
         ui.wait_for_api_key()
         voice_name = _load_voice_name()
-        jarvis = JarvisLive(ui, voice_name)
+        jarvis = JarvisLive(
+            ui,
+            voice_name,
+            allow_cloud_microphone=_cloud_microphone_env_opted_in(),
+        )
         ui.on_quit_requested = jarvis.request_shutdown
 
         # Trial/keyword runtime limiting: set via env `JARVIS_TRIAL_KEYWORD`.
