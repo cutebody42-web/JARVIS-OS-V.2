@@ -28,9 +28,10 @@ _COUNCIL_GROUNDING_RULES = (
     "and never fill gaps by assumption; never invent it or imply meetings, presentations, "
     "appointments, classes, exams, work shifts, deadlines, travel, people, locations, device "
     "state, files, calendar events, task lists, existing tasks, projects, goals, priorities, "
-    "habits or preferences that were not stated. Respect every explicit numeric or time "
-    "constraint and verify arithmetic before proposing a plan. When a useful plan depends on "
-    "missing context, use a conditional or neutral placeholder instead."
+    "sessions, materials, documents, notes, workspaces, resources, habits or preferences that "
+    "were not stated. Respect every explicit numeric or time constraint and verify arithmetic "
+    "before proposing a plan. Unknown context is not a reason to refuse: preserve the stated "
+    "constraints and keep missing objects abstract or conditional."
 )
 
 _SYNTHESIS_GROUNDING_CONTRACT = (
@@ -40,8 +41,10 @@ _SYNTHESIS_GROUNDING_CONTRACT = (
     "recent owner messages. Otherwise keep it UNKNOWN or phrase the advice conditionally. "
     "Never convert a plausible scenario into a claimed meeting, presentation, appointment, "
     "class, exam, shift, deadline, trip, person, location, device state, file, task list, "
-    "existing task, project, goal or priority. Respect explicit numeric and time budgets; "
-    "verify arithmetic and never allocate more time than the owner made available."
+    "existing task, project, goal, priority, session, material, document, note, workspace or "
+    "resource. If the owner supplied no object to work on, refer abstractly to a chosen focus "
+    "instead of inventing one. Respect explicit numeric and time budgets; verify arithmetic "
+    "and never allocate more time than the owner made available."
 )
 
 
@@ -140,7 +143,8 @@ class JarvisCouncil:
                     "routing brief for specialist models. Identify the owner's goal, key "
                     "constraints, uncertainty, and what the final answer must verify. "
                     + _COUNCIL_GROUNDING_RULES + " "
-                    "Do not answer the owner directly. Do not mention model names."
+                    "Explicit constraints from the owner belong in the brief and must not be "
+                    "refused or omitted. Do not answer the owner directly. Do not mention model names."
                 ),
                 tier=ModelTier.FAST,
             )
@@ -165,8 +169,10 @@ class JarvisCouncil:
                     "You are a hidden local JARVIS specialist. Give concise, factual internal "
                     "analysis that another JARVIS layer will synthesize. "
                     + _COUNCIL_GROUNDING_RULES + " "
-                    "Do not introduce yourself, do not address the owner, and do not claim "
-                    "actions occurred."
+                    "If the request does not name the thing being prepared or worked on, keep "
+                    "that thing abstract rather than supplying a generic-sounding session, "
+                    "material, document, note, workspace or resource. Do not introduce yourself, "
+                    "do not address the owner, and do not claim actions occurred."
                 ),
                 tier=ModelTier.STANDARD,
             )
