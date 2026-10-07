@@ -53,6 +53,16 @@ class GroundingContractTests(unittest.TestCase):
         self.assertTrue(quality["certified"])
         self.assertEqual(quality["time_budget_evidence"][0]["implied_total_minutes"], 30)
 
+    def test_quality_gate_accepts_summed_explicit_step_allocations_within_budget(self):
+        quality = _SMOKE.validate_grounding_quality(
+            "1. Spend 10 minutes choosing a focus. "
+            "2. Allocate 15 minutes to work on it. "
+            "3. Use 5 minutes to review."
+        )
+        self.assertTrue(quality["certified"])
+        self.assertEqual(quality["explicit_step_total_minutes"], 30)
+        self.assertEqual(len(quality["explicit_step_time_allocations"]), 3)
+
     def test_quality_gate_rejects_invented_personal_events(self):
         for response, marker in (
             (
@@ -95,6 +105,22 @@ class GroundingContractTests(unittest.TestCase):
                     quality["time_budget_violations"][0]["implied_total_minutes"],
                     quality["time_budget_minutes"],
                 )
+
+    def test_quality_gate_rejects_summed_explicit_step_allocations_over_budget(self):
+        quality = _SMOKE.validate_grounding_quality(
+            "1. Spend 15 minutes choosing a focus. "
+            "2. Allocate 10 minutes to work on it. "
+            "3. Use 10 minutes to review."
+        )
+        self.assertFalse(quality["certified"])
+        self.assertEqual(quality["explicit_step_total_minutes"], 35)
+        self.assertIn("time_budget_inconsistent", quality["failures"])
+        explicit_violation = next(
+            item for item in quality["time_budget_violations"]
+            if item.get("kind") == "explicit_step_allocations"
+        )
+        self.assertEqual(explicit_violation["total_minutes"], 35)
+        self.assertEqual(explicit_violation["budget_minutes"], 30)
 
     def test_quality_gate_requires_exact_three_numbered_steps(self):
         quality = _SMOKE.validate_grounding_quality(
