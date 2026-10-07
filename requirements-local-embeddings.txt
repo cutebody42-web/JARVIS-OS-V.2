@@ -1,0 +1,4 @@
+# Optional owner-local embedding runtime.
+# Models are never downloaded by JARVIS; the owner supplies local model files.
+onnxruntime>=1.23,<2
+tokenizers>=0.22,<1
