@@ -25,7 +25,7 @@ _MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
 _COUNCIL_GROUNDING_RULES = (
     "Ground every personal or situational claim in evidence. In a council call, the current "
     "owner request is the only current-turn evidence. Mark missing personal context as UNKNOWN "
-    "and never fill gaps by assumption. Never invent it or imply meetings, presentations, "
+    "and never fill gaps by assumption; never invent it or imply meetings, presentations, "
     "appointments, classes, exams, work shifts, deadlines, travel, people, locations, device "
     "state, files, calendar events, habits or preferences that were not stated. When a useful "
     "plan depends on missing context, use a conditional or neutral placeholder instead."
