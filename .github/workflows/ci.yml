@@ -54,6 +54,8 @@ jobs:
           tests.test_temporal_memory
           tests.test_vector_index
           tests.test_hybrid_retrieval
+          tests.test_local_embedding
+          tests.test_embedding_memory
 
   frontend:
     runs-on: ubuntu-latest
