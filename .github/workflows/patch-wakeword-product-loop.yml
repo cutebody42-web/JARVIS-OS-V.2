@@ -1,0 +1,47 @@
+name: One-shot wake-word server integration patch
+
+on:
+  push:
+    branches: ["enhance/wakeword-product-loop-v2"]
+    paths:
+      - ".github/workflows/patch-wakeword-product-loop.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enhance/wakeword-product-loop-v2
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply deterministic local Brain patch
+        run: |
+          set -euo pipefail
+          python scripts/patch_wakeword_product_loop.py api/jarvis_local_server.py
+          python scripts/patch_wakeword_product_loop.py api/jarvis_local_server.py --check
+          python -m py_compile api/jarvis_local_server.py core/wake_word_session.py api/wake_word_routes.py
+          git diff --check
+          git diff -- api/jarvis_local_server.py
+
+      - name: Commit only the reviewed server integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add api/jarvis_local_server.py
+          if git diff --cached --quiet; then
+            echo "The deterministic integration patch produced no server change" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Wire wake-word product loop into local Brain API"
+          git push origin HEAD:enhance/wakeword-product-loop-v2
