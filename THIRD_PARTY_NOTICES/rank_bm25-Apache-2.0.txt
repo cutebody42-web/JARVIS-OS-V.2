@@ -1,0 +1,13 @@
+rank_bm25
+Copyright and upstream attribution retained from https://github.com/dorianbrown/rank_bm25
+Pinned upstream commit: 47aa3ddf8dc1ebeb7ef4e65f2b4536af44594099
+License: Apache License 2.0
+
+The unmodified upstream ranking implementation is stored at:
+  core/native/rank_bm25/rank_bm25.py
+
+The complete Apache-2.0 license text is stored at:
+  core/native/rank_bm25/LICENSE-APACHE-2.0
+
+JARVIS-owned hybrid retrieval, filtering, fusion and temporal-memory integration
+live outside the upstream snapshot and are not represented as upstream code.
