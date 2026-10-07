@@ -26,6 +26,40 @@ _CORE_FIELDS = ("goal", "stated_constraints", "unknowns", "verify")
 _CORE_LABEL = re.compile(
     r"(?im)^\s*(?:\d+[.)]\s*)?(GOAL|STATED_CONSTRAINTS|UNKNOWNS|VERIFY):\s*(.*)$"
 )
+_NEGATIVE_EVIDENCE = re.compile(
+    r"\b(?:do\s+not|don't|never|without|no|none|unknown)\b",
+    re.IGNORECASE,
+)
+_EVIDENCE_SENSITIVE_OBJECTS = (
+    ("calendar_or_schedule", re.compile(r"\b(?:calendar|schedule)\b", re.IGNORECASE)),
+    (
+        "task_inventory",
+        re.compile(
+            r"\b(?:task\s+list|to-?do\s+list|tasks?|projects?|goals?|priorities)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("reminders", re.compile(r"\breminders?\b", re.IGNORECASE)),
+    (
+        "personal_event",
+        re.compile(
+            r"\b(?:events?|meeting|presentation|appointment|class|exam|shift|interview|"
+            r"flight|deadline|trip|travel)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "artifact_or_resource",
+        re.compile(
+            r"\b(?:files?|materials?|documents?|notes?|slides?|workspace|resources?|session)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "situational_state",
+        re.compile(r"\b(?:people|person|location|device\s+state|habits?|preferences?)\b", re.IGNORECASE),
+    ),
+)
 
 _COUNCIL_GROUNDING_RULES = (
     "Ground every personal or situational claim in evidence. In a council call, the current "
@@ -33,10 +67,10 @@ _COUNCIL_GROUNDING_RULES = (
     "and never fill gaps by assumption; never invent it or imply meetings, presentations, "
     "appointments, classes, exams, work shifts, deadlines, travel, people, locations, device "
     "state, files, calendar events, task lists, existing tasks, projects, goals, priorities, "
-    "sessions, materials, documents, notes, workspaces, resources, habits or preferences that "
-    "were not stated. Respect every explicit numeric or time constraint and verify arithmetic "
-    "before proposing a plan. Unknown context is not a reason to refuse: preserve the stated "
-    "constraints and keep missing objects abstract or conditional."
+    "sessions, materials, documents, notes, workspaces, resources, reminders, habits or "
+    "preferences that were not stated. Respect every explicit numeric or time constraint and "
+    "verify arithmetic before proposing a plan. Unknown context is not a reason to refuse: "
+    "preserve the stated constraints and keep missing objects abstract or conditional."
 )
 
 _SYNTHESIS_GROUNDING_CONTRACT = (
@@ -46,10 +80,10 @@ _SYNTHESIS_GROUNDING_CONTRACT = (
     "recent owner messages. Otherwise keep it UNKNOWN or phrase the advice conditionally. "
     "Never convert a plausible scenario into a claimed meeting, presentation, appointment, "
     "class, exam, shift, deadline, trip, person, location, device state, file, task list, "
-    "existing task, project, goal, priority, session, material, document, note, workspace or "
-    "resource. If the owner supplied no object to work on, refer abstractly to a chosen focus "
-    "instead of inventing one. Respect explicit numeric and time budgets; verify arithmetic "
-    "and never allocate more time than the owner made available."
+    "existing task, project, goal, priority, session, material, document, note, workspace, "
+    "resource, calendar item or reminder. If the owner supplied no object to work on, refer "
+    "abstractly to a chosen focus instead of inventing one. Respect explicit numeric and time "
+    "budgets; verify arithmetic and never allocate more time than the owner made available."
 )
 
 
@@ -92,30 +126,69 @@ def _parse_core_brief(raw_text: str) -> dict[str, str]:
             fields[label_map[label.upper()]] = normalized
 
     if not fields and text:
-        # Preserve useful free-form reasoning as the goal instead of discarding it.
         fields["goal"] = _brief_value(text)
     return fields
+
+
+def _sentence_has_positive_evidence(text: str, pattern: re.Pattern) -> bool:
+    for sentence in re.split(r"(?<=[.!?])\s+|[\r\n]+", text):
+        if not pattern.search(sentence):
+            continue
+        # Conservative by design: a sentence that explicitly negates/forbids an
+        # object does not establish that the object exists in owner context.
+        if _NEGATIVE_EVIDENCE.search(sentence):
+            continue
+        return True
+    return False
+
+
+def unsupported_evidence_objects(owner_evidence: str, candidate: str) -> tuple[str, ...]:
+    """Return evidence-sensitive object classes asserted without positive owner evidence.
+
+    This is deliberately conservative. False positives only remove a hidden council note;
+    they never delete owner evidence or block the normal single-model conversation route.
+    """
+    unsupported = []
+    for name, pattern in _EVIDENCE_SENSITIVE_OBJECTS:
+        if not pattern.search(candidate):
+            continue
+        if _sentence_has_positive_evidence(owner_evidence, pattern):
+            continue
+        unsupported.append(name)
+    return tuple(unsupported)
+
+
+def _safe_reasoning_field(value: str, owner: str, fallback: str) -> str:
+    if not value or unsupported_evidence_objects(owner, value):
+        return fallback
+    return value
 
 
 def _normalize_core_brief(raw_text: str, owner_request: str) -> str:
     """Build a deterministic coordinator envelope around probabilistic Core reasoning.
 
-    The owner request is authoritative evidence. Keeping it inside the normalized brief
-    guarantees that explicit constraints survive even if a small local coordinator omits
-    or misclassifies them. The model still contributes goal/unknown/verification reasoning.
+    The owner request is authoritative evidence. Model-extracted constraints are intentionally
+    *not* trusted as constraints: the exact owner request is retained instead. The model may
+    contribute goal/unknown/verification reasoning only when it does not introduce an
+    evidence-sensitive object absent from the owner request.
     """
     fields = _parse_core_brief(raw_text)
     owner = " ".join(owner_request.split()).strip()
-    extracted_constraints = fields.get("stated_constraints", "")
-    if extracted_constraints.lower() in {"none", "unknown", "n/a", "na"}:
-        extracted_constraints = ""
 
-    goal = fields.get("goal") or "Interpret the authoritative owner request without adding facts."
-    unknowns = fields.get("unknowns") or "Anything not stated in the authoritative owner request is UNKNOWN."
-    verify = fields.get("verify") or "Verify every explicit owner constraint and add no unsupported personal context."
-    constraints = (
-        (extracted_constraints + "; ") if extracted_constraints else ""
-    ) + "AUTHORITATIVE_OWNER_REQUEST: " + owner
+    goal = _safe_reasoning_field(
+        fields.get("goal", ""),
+        owner,
+        "Interpret the authoritative owner request without adding facts.",
+    )
+    unknowns = fields.get("unknowns") or (
+        "Anything not stated in the authoritative owner request is UNKNOWN."
+    )
+    verify = _safe_reasoning_field(
+        fields.get("verify", ""),
+        owner,
+        "Verify every explicit owner constraint and add no unsupported personal context.",
+    )
+    constraints = "AUTHORITATIVE_OWNER_REQUEST: " + owner
 
     normalized = (
         f"GOAL: {goal}\n"
@@ -137,6 +210,8 @@ class CouncilResult:
     core_brief: str
     notes: tuple[CouncilNote, ...]
     models: tuple[str, ...]
+    owner_request: str = ""
+    rejected_notes: tuple[CouncilNote, ...] = ()
 
 
 class JarvisCouncil:
@@ -176,8 +251,6 @@ class JarvisCouncil:
 
     @staticmethod
     def _expert_candidates(task: TaskKind, snapshot: HardwareSnapshot) -> list[str]:
-        # The 1B coordinator stays loaded; specialists are added only when the
-        # current machine has enough free system memory to keep them useful.
         if snapshot.system_pressure >= 0.88 or snapshot.available_ram_gb < 3.5:
             return []
 
@@ -259,9 +332,10 @@ class JarvisCouncil:
                     "analysis that another JARVIS layer will synthesize. "
                     + _COUNCIL_GROUNDING_RULES + " "
                     "If the request does not name the thing being prepared or worked on, keep "
-                    "that thing abstract rather than supplying a generic-sounding session, "
-                    "material, document, note, workspace or resource. Do not introduce yourself, "
-                    "do not address the owner, and do not claim actions occurred."
+                    "that thing abstract as a chosen focus. Do not replace missing context with "
+                    "a calendar, tasks, reminders, a session, materials, documents, notes, a "
+                    "workspace or resources. Do not introduce yourself, do not address the owner, "
+                    "and do not claim actions occurred."
                 ),
                 tier=ModelTier.STANDARD,
             )
@@ -273,33 +347,30 @@ class JarvisCouncil:
             raise ValueError("message must be non-empty")
         if not isinstance(task, TaskKind):
             raise ValueError("task must be a supported TaskKind")
+        clean = message.strip()
         try:
             snapshot = self.profiler.capture()
-            core_brief = self._core_brief(message.strip(), task)
+            core_brief = self._core_brief(clean, task)
         except Exception:
-            # Council enrichment must never make the single-model route unusable.
             return None
 
         candidates = self._expert_candidates(task, snapshot)
         manual = self.manual_model
-        # Manual selection adds an expert but must obey the same memory and
-        # pressure gate as automatic selection. It never displaces the core.
         experts_allowed = snapshot.system_pressure < 0.88 and snapshot.available_ram_gb >= 3.5
         if experts_allowed and manual and manual not in {CORE_MODEL, *candidates}:
             candidates.insert(0, manual)
 
-        # Preserve order while deduplicating, then cap concurrent specialists.
         selected = tuple(dict.fromkeys(candidates))[: self.max_parallel_experts]
         if not selected:
-            return CouncilResult(core_brief, (), (CORE_MODEL,))
+            return CouncilResult(core_brief, (), (CORE_MODEL,), owner_request=clean)
 
-        notes: list[CouncilNote] = []
+        raw_notes: list[CouncilNote] = []
         with ThreadPoolExecutor(
             max_workers=len(selected),
             thread_name_prefix="jarvis-expert",
         ) as pool:
             futures = {
-                pool.submit(self._consult_one, model, message.strip(), task, core_brief): model
+                pool.submit(self._consult_one, model, clean, task, core_brief): model
                 for model in selected
             }
             for future in as_completed(futures):
@@ -308,13 +379,23 @@ class JarvisCouncil:
                 except Exception:
                     continue
                 if note.text:
-                    notes.append(note)
+                    raw_notes.append(note)
 
-        notes.sort(key=lambda item: selected.index(item.model))
+        raw_notes.sort(key=lambda item: selected.index(item.model))
+        accepted: list[CouncilNote] = []
+        rejected: list[CouncilNote] = []
+        for note in raw_notes:
+            if unsupported_evidence_objects(clean, note.text):
+                rejected.append(note)
+            else:
+                accepted.append(note)
+
         return CouncilResult(
             core_brief,
-            tuple(notes),
-            (CORE_MODEL, *tuple(note.model for note in notes)),
+            tuple(accepted),
+            (CORE_MODEL, *tuple(note.model for note in raw_notes)),
+            owner_request=clean,
+            rejected_notes=tuple(rejected),
         )
 
     @staticmethod
@@ -327,7 +408,12 @@ class JarvisCouncil:
         ]
         if result.notes:
             parts.append(
-                "Hidden local specialist notes:\n"
+                "Hidden local specialist notes (grounding-filtered):\n"
                 + "\n\n".join(note.text for note in result.notes)
+            )
+        if result.rejected_notes:
+            parts.append(
+                "Grounding filter: one or more hidden specialist notes were omitted because "
+                "they introduced evidence-sensitive objects absent from positive owner evidence."
             )
         return "\n\n".join(parts)
