@@ -46,7 +46,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libegl1
       - run: pip install -r requirements.txt
       - run: alembic upgrade head
-      - run: python -m unittest -v tests.test_phase1_decoupling tests.test_hosted_api tests.test_core_resilience tests.test_temporal_memory tests.test_vector_index
+      - run: >-
+          python -m unittest -v
+          tests.test_phase1_decoupling
+          tests.test_hosted_api
+          tests.test_core_resilience
+          tests.test_temporal_memory
+          tests.test_vector_index
+          tests.test_hybrid_retrieval
 
   frontend:
     runs-on: ubuntu-latest
