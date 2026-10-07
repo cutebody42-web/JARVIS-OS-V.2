@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import math
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
@@ -217,7 +216,12 @@ class LocalOnnxEmbeddingProvider:
             raise ValueError("Embedding input must be non-empty text up to 20000 characters.")
         return clean
 
-    def _inputs(self, tokenizer: Any, texts: Sequence[str], input_names: set[str]) -> dict[str, np.ndarray]:
+    def _inputs(
+        self,
+        tokenizer: Any,
+        texts: Sequence[str],
+        input_names: set[str],
+    ) -> tuple[dict[str, np.ndarray], np.ndarray]:
         encoded = [tokenizer.encode(text) for text in texts]
         ids: list[list[int]] = []
         type_ids: list[list[int]] = []
@@ -227,7 +231,11 @@ class LocalOnnxEmbeddingProvider:
                 raise LocalEmbeddingError("Tokenizer produced an empty embedding input.")
             ids.append([int(value) for value in token_ids])
             raw_types = list(getattr(item, "type_ids", ()))[: len(token_ids)]
-            type_ids.append([int(value) for value in raw_types] if len(raw_types) == len(token_ids) else [0] * len(token_ids))
+            type_ids.append(
+                [int(value) for value in raw_types]
+                if len(raw_types) == len(token_ids)
+                else [0] * len(token_ids)
+            )
 
         width = max(len(row) for row in ids)
         batch_ids = np.full((len(ids), width), self._manifest.pad_token_id, dtype=np.int64)
@@ -243,7 +251,7 @@ class LocalOnnxEmbeddingProvider:
             payload["attention_mask"] = attention
         if "token_type_ids" in input_names:
             payload["token_type_ids"] = batch_types
-        return payload
+        return payload, attention
 
     def _pool(self, output: np.ndarray, attention: np.ndarray) -> np.ndarray:
         if output.ndim == 2:
@@ -277,10 +285,7 @@ class LocalOnnxEmbeddingProvider:
         clean = [self._validate_text(text) for text in texts]
         session, tokenizer = self._load()
         input_names = {getattr(item, "name", "") for item in session.get_inputs()}
-        payload = self._inputs(tokenizer, clean, input_names)
-        attention = payload.get("attention_mask")
-        if attention is None:
-            attention = np.ones_like(payload["input_ids"], dtype=np.int64)
+        payload, attention = self._inputs(tokenizer, clean, input_names)
         output_name = self._manifest.output_name
         requested_outputs = [output_name] if output_name else None
         try:
