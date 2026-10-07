@@ -18,6 +18,8 @@ import numpy as np
 
 _MANIFEST_NAME = "jarvis-embedding.json"
 _ALLOWED_INPUTS = {"input_ids", "attention_mask", "token_type_ids"}
+_MAX_BATCH = 32
+_MAX_HIDDEN_ELEMENTS = 16_777_216
 
 
 class LocalEmbeddingError(RuntimeError):
@@ -188,6 +190,8 @@ class LocalOnnxEmbeddingProvider:
         try:
             tokenizer = tokenizer_factory(self._manifest.tokenizer_file)
             session = session_factory(self._manifest.model_file)
+            input_names = {getattr(item, "name", "") for item in session.get_inputs()}
+            output_names = [getattr(item, "name", "") for item in session.get_outputs()]
         except LocalEmbeddingError:
             raise
         except Exception as exc:
@@ -195,11 +199,9 @@ class LocalOnnxEmbeddingProvider:
                 f"Local embedding runtime failed to load ({type(exc).__name__})."
             ) from None
 
-        input_names = {getattr(item, "name", "") for item in session.get_inputs()}
         unknown = input_names - _ALLOWED_INPUTS
         if "input_ids" not in input_names or unknown:
             raise LocalEmbeddingError("Unsupported ONNX embedding input contract.")
-        output_names = [getattr(item, "name", "") for item in session.get_outputs()]
         if not output_names or any(not name for name in output_names):
             raise LocalEmbeddingError("ONNX embedding model exposes no usable output.")
         if self._manifest.output_name and self._manifest.output_name not in output_names:
@@ -224,20 +226,31 @@ class LocalOnnxEmbeddingProvider:
         texts: Sequence[str],
         input_names: set[str],
     ) -> tuple[dict[str, np.ndarray], np.ndarray]:
-        encoded = [tokenizer.encode(text) for text in texts]
+        try:
+            encoded = [tokenizer.encode(text) for text in texts]
+        except Exception as exc:
+            raise LocalEmbeddingError(
+                f"Local tokenizer failed ({type(exc).__name__})."
+            ) from None
+
         ids: list[list[int]] = []
         type_ids: list[list[int]] = []
-        for item in encoded:
-            token_ids = list(getattr(item, "ids", ()))[: self._manifest.max_length]
-            if not token_ids:
-                raise LocalEmbeddingError("Tokenizer produced an empty embedding input.")
-            ids.append([int(value) for value in token_ids])
-            raw_types = list(getattr(item, "type_ids", ()))[: len(token_ids)]
-            type_ids.append(
-                [int(value) for value in raw_types]
-                if len(raw_types) == len(token_ids)
-                else [0] * len(token_ids)
-            )
+        try:
+            for item in encoded:
+                token_ids = list(getattr(item, "ids", ()))[: self._manifest.max_length]
+                if not token_ids:
+                    raise LocalEmbeddingError("Tokenizer produced an empty embedding input.")
+                ids.append([int(value) for value in token_ids])
+                raw_types = list(getattr(item, "type_ids", ()))[: len(token_ids)]
+                type_ids.append(
+                    [int(value) for value in raw_types]
+                    if len(raw_types) == len(token_ids)
+                    else [0] * len(token_ids)
+                )
+        except LocalEmbeddingError:
+            raise
+        except (TypeError, ValueError, OverflowError):
+            raise LocalEmbeddingError("Tokenizer produced invalid token ids.") from None
 
         width = max(len(row) for row in ids)
         batch_ids = np.full((len(ids), width), self._manifest.pad_token_id, dtype=np.int64)
@@ -282,8 +295,10 @@ class LocalOnnxEmbeddingProvider:
     def embed_texts(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
         if isinstance(texts, (str, bytes)) or not isinstance(texts, Sequence):
             raise ValueError("texts must be a sequence of strings.")
-        if not 1 <= len(texts) <= 64:
-            raise ValueError("Embedding batch size must be between 1 and 64.")
+        if not 1 <= len(texts) <= _MAX_BATCH:
+            raise ValueError(f"Embedding batch size must be between 1 and {_MAX_BATCH}.")
+        if len(texts) * self._manifest.max_length * self._manifest.dimension > _MAX_HIDDEN_ELEMENTS:
+            raise ValueError("Embedding request exceeds the local inference memory budget.")
         clean = [self._validate_text(text) for text in texts]
         session, tokenizer = self._load()
         input_names = {getattr(item, "name", "") for item in session.get_inputs()}
