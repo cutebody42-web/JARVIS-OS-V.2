@@ -15,6 +15,7 @@ from pathlib import Path
 import platform
 from typing import Mapping
 
+from core.browser_semantics import BrowserSemanticObserver
 from core.local_stt import FasterWhisperRuntime, LocalSTTError
 from core.mcp_discovery import MCPDiscoveryRegistry, MCPDiscoveryRuntime, MCPDiscoveryError
 from core.temporal_memory import TemporalMemoryStore
@@ -49,6 +50,7 @@ class NEXUSIntegrationHub:
         self._mcp = None
         self._uia = None
         self._memory = None
+        self._browser = None
 
     def _module_available(self, name: str) -> bool:
         try:
@@ -72,18 +74,11 @@ class NEXUSIntegrationHub:
         stt_configured = bool(stt_path and stt_path.exists() and stt_path.is_dir())
 
         mcp_installed = self._module_available("mcp")
-        mcp_configured = False
-        mcp_detail = ""
-        raw_mcp = self._env.get("JARVIS_MCP_DISCOVERY_JSON", "").strip()
-        if raw_mcp:
-            # Registry validation normally reads the process environment. The
-            # hub does not mutate global environment just to report status, so
-            # non-empty configuration is marked configured here and fully
-            # validated when mcp_discovery() is explicitly requested.
-            mcp_configured = True
+        mcp_configured = bool(self._env.get("JARVIS_MCP_DISCOVERY_JSON", "").strip())
 
         uia_installed = self._module_available("pywinauto")
         uia_available = self._platform == "Windows" and uia_installed
+        playwright_installed = self._module_available("playwright")
 
         return (
             IntegrationState(
@@ -100,7 +95,7 @@ class NEXUSIntegrationHub:
                 configured=mcp_configured,
                 active=self._mcp is not None,
                 provider="modelcontextprotocol/python-sdk",
-                detail=mcp_detail or ("configured" if mcp_configured else "Set JARVIS_MCP_DISCOVERY_JSON."),
+                detail=("configured" if mcp_configured else "Set JARVIS_MCP_DISCOVERY_JSON."),
             ),
             IntegrationState(
                 "windows_uia",
@@ -109,6 +104,14 @@ class NEXUSIntegrationHub:
                 active=self._uia is not None,
                 provider="pywinauto-uia",
                 detail=("Windows UIA ready." if uia_available else "Requires Windows and pywinauto."),
+            ),
+            IntegrationState(
+                "browser_semantics",
+                available=playwright_installed,
+                configured=playwright_installed,
+                active=self._browser is not None,
+                provider="playwright-dom",
+                detail=("Semantic DOM observer ready." if playwright_installed else "Requires Playwright."),
             ),
             IntegrationState(
                 "temporal_memory",
@@ -133,8 +136,6 @@ class NEXUSIntegrationHub:
             raw = self._env.get("JARVIS_MCP_DISCOVERY_JSON", "").strip()
             if not raw:
                 raise MCPDiscoveryError("JARVIS_MCP_DISCOVERY_JSON is not configured.")
-            # Parse the same bounded schema as MCPDiscoveryRegistry without
-            # altering process-global environment.
             import json
             try:
                 payload = json.loads(raw)
@@ -165,6 +166,13 @@ class NEXUSIntegrationHub:
                 raise RuntimeError("Windows UIA integration is not available on this host.")
             self._uia = observer
         return self._uia
+
+    def browser_semantics(self) -> BrowserSemanticObserver:
+        if self._browser is None:
+            if not self._module_available("playwright"):
+                raise RuntimeError("Playwright browser integration is not installed.")
+            self._browser = BrowserSemanticObserver()
+        return self._browser
 
     def temporal_memory(self) -> TemporalMemoryStore:
         if self._memory is None:
