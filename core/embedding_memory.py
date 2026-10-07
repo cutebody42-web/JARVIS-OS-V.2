@@ -7,6 +7,7 @@ material only and never grant action authority.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Sequence
 
@@ -33,27 +34,47 @@ class TemporalEmbeddingMemory:
             raise TypeError("provider.info must be EmbeddingInfo")
         if not 1 <= info.dimension <= 8192:
             raise ValueError("embedding provider dimension is unsupported")
+        if not isinstance(info.model_id, str) or not 1 <= len(info.model_id.strip()) <= 160:
+            raise ValueError("embedding provider model_id is invalid")
+        if not isinstance(info.engine, str) or not 1 <= len(info.engine.strip()) <= 80:
+            raise ValueError("embedding provider engine is invalid")
+        if not isinstance(info.local_only, bool) or not info.local_only:
+            raise ValueError("temporal embedding provider must be local-only")
         self.store = store
         self.provider = provider
-        self._vector_status = store.enable_vector_index(
+        self.info = info
+        initialized = store.enable_vector_index(
             info.dimension,
             prefer_native=prefer_native,
             extension_path=extension_path,
         )
+        # The initial count becomes stale after indexing, so status only exposes
+        # stable backend compatibility metadata here.
+        self._vector_status = {
+            key: value for key, value in initialized.items() if key != "count"
+        }
         self._hybrid = TemporalHybridRetriever(store)
 
     @staticmethod
     def _claim_text(claim: TemporalClaim) -> str:
         return f"{claim.subject} {claim.predicate} {claim.value}"
 
+    def _validate_vector(self, vector: Sequence[float]) -> None:
+        if isinstance(vector, (str, bytes, bytearray)) or len(vector) != self.info.dimension:
+            raise ValueError("embedding provider returned an unexpected dimension")
+        for value in vector:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("embedding provider returned a non-numeric value")
+            if not math.isfinite(float(value)):
+                raise ValueError("embedding provider returned a non-finite value")
+
     def status(self) -> dict[str, object]:
-        info = self.provider.info
         return {
             "configured": True,
-            "engine": info.engine,
-            "model_id": info.model_id,
-            "dimension": info.dimension,
-            "normalized": info.normalized,
+            "engine": self.info.engine,
+            "model_id": self.info.model_id,
+            "dimension": self.info.dimension,
+            "normalized": self.info.normalized,
             "network_required": False,
             "vector_index": dict(self._vector_status),
         }
@@ -61,8 +82,7 @@ class TemporalEmbeddingMemory:
     def index_claim(self, claim_id: str) -> None:
         claim = self.store.get(claim_id)
         vector = self.provider.embed(self._claim_text(claim))
-        if len(vector) != self.provider.info.dimension:
-            raise ValueError("embedding provider returned an unexpected dimension")
+        self._validate_vector(vector)
         self.store.index_claim_embedding(claim.claim_id, vector)
 
     def index_claims(self, claim_ids: Sequence[str], *, batch_size: int = 32) -> int:
@@ -80,9 +100,10 @@ class TemporalEmbeddingMemory:
             vectors = self.provider.embed_texts([self._claim_text(claim) for claim in claims])
             if len(vectors) != len(claims):
                 raise ValueError("embedding provider returned an unexpected batch size")
+            # Validate the complete batch before writing any entry from it.
+            for vector in vectors:
+                self._validate_vector(vector)
             for claim, vector in zip(claims, vectors):
-                if len(vector) != self.provider.info.dimension:
-                    raise ValueError("embedding provider returned an unexpected dimension")
                 self.store.index_claim_embedding(claim.claim_id, vector)
                 indexed += 1
         return indexed
@@ -106,6 +127,7 @@ class TemporalEmbeddingMemory:
         limit: int = 20,
     ) -> tuple[SemanticClaimMatch, ...]:
         vector = self.provider.embed(query)
+        self._validate_vector(vector)
         return self.store.semantic_search(
             vector,
             active_only=active_only,
@@ -123,6 +145,7 @@ class TemporalEmbeddingMemory:
         semantic_weight: float = 0.6,
     ) -> tuple[HybridClaimMatch, ...]:
         vector = self.provider.embed(query)
+        self._validate_vector(vector)
         return self._hybrid.hybrid_search(
             query,
             vector,
