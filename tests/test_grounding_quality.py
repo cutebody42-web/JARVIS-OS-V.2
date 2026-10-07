@@ -32,6 +32,11 @@ class GroundingContractTests(unittest.TestCase):
         self.assertIn("project", context)
         self.assertIn("goal", context)
         self.assertIn("priority", context)
+        self.assertIn("session", context)
+        self.assertIn("material", context)
+        self.assertIn("document", context)
+        self.assertIn("workspace", context)
+        self.assertIn("resource", context)
         self.assertIn("numeric and time budgets", context)
         self.assertIn("never allocate more time", context)
 
@@ -77,6 +82,12 @@ class GroundingContractTests(unittest.TestCase):
                 "1. Review tomorrow's task list. 2. Draft your projects. 3. Rank your priorities.",
                 "claimed_task_inventory",
             ),
+            (
+                "1. Prepare materials for tomorrow's session. "
+                "2. Review relevant documents beforehand. "
+                "3. Ensure workspace is ready.",
+                "claimed_preparation_context",
+            ),
         ):
             with self.subTest(response=response):
                 quality = _SMOKE.validate_grounding_quality(response)
@@ -92,6 +103,16 @@ class GroundingContractTests(unittest.TestCase):
         )
         self.assertFalse(quality["certified"])
         self.assertIn("claimed_task_inventory", quality["unsupported_assumption_markers"])
+
+    def test_quality_gate_rejects_previous_real_artifact_regression(self):
+        quality = _SMOKE.validate_grounding_quality(
+            "1. Prepare materials for tomorrow's session. "
+            "2. Review relevant documents beforehand. "
+            "3. Ensure workspace is ready. "
+            "Total time: 30 minutes (flexible allocation)."
+        )
+        self.assertFalse(quality["certified"])
+        self.assertIn("claimed_preparation_context", quality["unsupported_assumption_markers"])
 
     def test_quality_gate_rejects_impossible_per_step_time(self):
         for phrase in ("twenty minutes per action", "20 minutes for each step"):
@@ -122,11 +143,29 @@ class GroundingContractTests(unittest.TestCase):
         self.assertEqual(explicit_violation["total_minutes"], 35)
         self.assertEqual(explicit_violation["budget_minutes"], 30)
 
+    def test_quality_gate_rejects_ordinal_step_allocations_over_budget(self):
+        quality = _SMOKE.validate_grounding_quality(
+            "1. Work on a chosen focus for the first fifteen minutes. "
+            "2. Continue for the next ten minutes. "
+            "3. Review for the final ten minutes."
+        )
+        self.assertFalse(quality["certified"])
+        self.assertEqual(quality["explicit_step_total_minutes"], 35)
+        self.assertIn("time_budget_inconsistent", quality["failures"])
+
     def test_quality_gate_requires_exact_three_numbered_steps(self):
         quality = _SMOKE.validate_grounding_quality(
             "Choose one focus, work on it, then review what remains."
         )
         self.assertFalse(quality["certified"])
+        self.assertIn("missing_exact_three_numbered_steps", quality["failures"])
+
+    def test_quality_gate_rejects_duplicate_numbered_steps(self):
+        quality = _SMOKE.validate_grounding_quality(
+            "1. Choose a focus. 1. Check it. 2. Work on it. 3. Review it."
+        )
+        self.assertFalse(quality["certified"])
+        self.assertEqual(quality["numbered_steps_seen"], ["1", "1", "2", "3"])
         self.assertIn("missing_exact_three_numbered_steps", quality["failures"])
 
     def test_quality_gate_enforces_word_budget(self):
