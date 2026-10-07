@@ -58,6 +58,13 @@ _UNSUPPORTED_ASSUMPTION_PATTERNS = (
             re.IGNORECASE,
         ),
     ),
+    (
+        "claimed_task_inventory",
+        re.compile(
+            r"\b(?:your|tomorrow(?:'s)?)\s+(?:task\s+list|to-?do\s+list|tasks?|projects?|goals?|priorities)\b",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 _MINUTE_WORDS = {
@@ -205,7 +212,7 @@ def validate_grounding_quality(response_text: str) -> dict:
 
     return {
         "certified": not failures,
-        "scope": "thirty-minute-planning-grounding-probe-v2",
+        "scope": "thirty-minute-planning-grounding-probe-v3",
         "word_count": word_count,
         "word_limit": 80,
         "numbered_steps_seen": sorted(step_markers),
