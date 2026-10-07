@@ -52,6 +52,45 @@ class TemporalMemoryTests(unittest.TestCase):
             self.assertEqual(len(result), 1)
             self.assertEqual(result[0].value, "structured UI observation")
 
+    def test_semantic_index_is_native_core_with_exact_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = TemporalMemoryStore(Path(td) / "memory.db")
+            status = store.enable_vector_index(3, prefer_native=False)
+            self.assertEqual(status["backend"], "python-exact")
+            self.assertTrue(status["in_process"])
+
+            near = store.add_claim(
+                subject="jarvis", predicate="memory", value="near", source="test:semantic",
+                verified=True,
+            )
+            far = store.add_claim(
+                subject="jarvis", predicate="memory", value="far", source="test:semantic",
+                verified=True,
+            )
+            store.index_claim_embedding(near.claim_id, [0.1, 0.1, 0.1])
+            store.index_claim_embedding(far.claim_id, [1.0, 1.0, 1.0])
+
+            matches = store.semantic_search([0.0, 0.0, 0.0], verified_only=True)
+            self.assertEqual([item.claim.claim_id for item in matches], [near.claim_id, far.claim_id])
+            self.assertLess(matches[0].distance, matches[1].distance)
+
+    def test_semantic_search_filters_superseded_claims_against_ledger(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = TemporalMemoryStore(Path(td) / "memory.db")
+            store.enable_vector_index(2, prefer_native=False)
+            old = store.add_claim(
+                subject="device", predicate="state", value="old", source="test:semantic",
+                verified=True,
+            )
+            store.index_claim_embedding(old.claim_id, [0.0, 0.0])
+            replacement = store.supersede(
+                old.claim_id, value="new", source="test:semantic", verified=True,
+            )
+            store.index_claim_embedding(replacement.claim_id, [0.2, 0.2])
+
+            active = store.semantic_search([0.0, 0.0], active_only=True)
+            self.assertEqual([item.claim.claim_id for item in active], [replacement.claim_id])
+
     def test_double_supersede_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
             store = TemporalMemoryStore(Path(td) / "memory.db")
