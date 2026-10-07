@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+import json
 import re
 import threading
 
@@ -21,6 +22,10 @@ from core.providers.ollama import OllamaProvider
 
 CORE_MODEL = "jarvis-core-1b"
 _MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
+_CORE_FIELDS = ("goal", "stated_constraints", "unknowns", "verify")
+_CORE_LABEL = re.compile(
+    r"(?im)^\s*(?:\d+[.)]\s*)?(GOAL|STATED_CONSTRAINTS|UNKNOWNS|VERIFY):\s*(.*)$"
+)
 
 _COUNCIL_GROUNDING_RULES = (
     "Ground every personal or situational claim in evidence. In a council call, the current "
@@ -46,6 +51,79 @@ _SYNTHESIS_GROUNDING_CONTRACT = (
     "instead of inventing one. Respect explicit numeric and time budgets; verify arithmetic "
     "and never allocate more time than the owner made available."
 )
+
+
+def _brief_value(value) -> str:
+    if isinstance(value, str):
+        return " ".join(value.split()).strip()
+    if isinstance(value, (list, tuple)):
+        items = [" ".join(str(item).split()).strip() for item in value]
+        return "; ".join(item for item in items if item)
+    if value is None:
+        return ""
+    return " ".join(str(value).split()).strip()
+
+
+def _parse_core_brief(raw_text: str) -> dict[str, str]:
+    """Best-effort parser for tiny-model output; policy is enforced after parsing."""
+    text = raw_text.strip()
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        value = None
+
+    fields: dict[str, str] = {}
+    if isinstance(value, dict):
+        for key in _CORE_FIELDS:
+            normalized = _brief_value(value.get(key))
+            if normalized:
+                fields[key] = normalized
+        return fields
+
+    label_map = {
+        "GOAL": "goal",
+        "STATED_CONSTRAINTS": "stated_constraints",
+        "UNKNOWNS": "unknowns",
+        "VERIFY": "verify",
+    }
+    for label, body in _CORE_LABEL.findall(text):
+        normalized = _brief_value(body)
+        if normalized:
+            fields[label_map[label.upper()]] = normalized
+
+    if not fields and text:
+        # Preserve useful free-form reasoning as the goal instead of discarding it.
+        fields["goal"] = _brief_value(text)
+    return fields
+
+
+def _normalize_core_brief(raw_text: str, owner_request: str) -> str:
+    """Build a deterministic coordinator envelope around probabilistic Core reasoning.
+
+    The owner request is authoritative evidence. Keeping it inside the normalized brief
+    guarantees that explicit constraints survive even if a small local coordinator omits
+    or misclassifies them. The model still contributes goal/unknown/verification reasoning.
+    """
+    fields = _parse_core_brief(raw_text)
+    owner = " ".join(owner_request.split()).strip()
+    extracted_constraints = fields.get("stated_constraints", "")
+    if extracted_constraints.lower() in {"none", "unknown", "n/a", "na"}:
+        extracted_constraints = ""
+
+    goal = fields.get("goal") or "Interpret the authoritative owner request without adding facts."
+    unknowns = fields.get("unknowns") or "Anything not stated in the authoritative owner request is UNKNOWN."
+    verify = fields.get("verify") or "Verify every explicit owner constraint and add no unsupported personal context."
+    constraints = (
+        (extracted_constraints + "; ") if extracted_constraints else ""
+    ) + "AUTHORITATIVE_OWNER_REQUEST: " + owner
+
+    normalized = (
+        f"GOAL: {goal}\n"
+        f"STATED_CONSTRAINTS: {constraints}\n"
+        f"UNKNOWNS: {unknowns}\n"
+        f"VERIFY: {verify}"
+    )
+    return normalized[:5000]
 
 
 @dataclass(frozen=True)
@@ -139,31 +217,28 @@ class JarvisCouncil:
             ModelRequest(
                 prompt=(
                     "INTERNAL COORDINATOR TASK — do not answer the owner.\n"
-                    "Read the OWNER REQUEST below and emit a routing brief using exactly these "
-                    "four field labels, each once:\n"
-                    "GOAL: <what the owner is asking for, without adding facts>\n"
-                    "STATED_CONSTRAINTS: <copy all explicit limits such as counts, time budgets, "
-                    "formats, or prohibitions; use NONE only if truly absent>\n"
-                    "UNKNOWNS: <missing personal/situational facts that matter, or NONE>\n"
-                    "VERIFY: <what the final answer must check before returning>\n\n"
+                    "Read the OWNER REQUEST and return one JSON object with exactly four string "
+                    "keys: goal, stated_constraints, unknowns, verify. Do not wrap it in markdown. "
+                    "Copy explicit counts, time budgets, output-shape requirements and prohibitions "
+                    "into stated_constraints. Put missing personal/situational facts in unknowns. "
                     "Never greet, apologize, refuse, ask a question, offer more help, or answer "
-                    "the owner directly. Missing context belongs under UNKNOWNS and is never a "
-                    "reason to refuse the routing task.\n\n"
+                    "the owner directly. Missing context is never a reason to refuse.\n\n"
                     "OWNER REQUEST:\n" + message
                 ),
                 system_instruction=(
-                    "You are the hidden JARVIS Core coordinator. Produce a compact internal "
-                    "routing brief for specialist models. Identify the owner's goal, key "
-                    "constraints, uncertainty, and what the final answer must verify. "
+                    "You are the hidden JARVIS Core coordinator. Produce compact internal routing "
+                    "reasoning for specialist models. Identify the owner's goal, key constraints, "
+                    "uncertainty, and what the final answer must verify. "
                     + _COUNCIL_GROUNDING_RULES + " "
-                    "Explicit constraints from the owner belong in the brief and must not be "
-                    "refused or omitted. Output only the requested internal routing fields. "
-                    "Do not answer the owner directly. Do not mention model names."
+                    "Explicit constraints from the owner belong in the JSON and must not be "
+                    "refused or omitted. Output only the requested JSON object. Do not mention "
+                    "model names."
                 ),
                 tier=ModelTier.FAST,
+                json_output=True,
             )
         )
-        return response.text.strip()[:5000]
+        return _normalize_core_brief(response.text, message)
 
     def _consult_one(
         self,
