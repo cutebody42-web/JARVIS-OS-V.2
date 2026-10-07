@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parent.parent
 STATUS_PATH = ROOT / "tmp" / "jarvis_status.json"
@@ -14,7 +14,7 @@ def write_status(data: dict) -> None:
     try:
         _ensure_dir()
         payload = {**data}
-        payload.setdefault("timestamp", datetime.utcnow().isoformat() + "Z")
+        payload.setdefault("timestamp", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
         STATUS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except Exception:
         pass
