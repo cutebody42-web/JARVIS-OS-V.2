@@ -28,12 +28,16 @@ class GroundingContractTests(unittest.TestCase):
         self.assertIn("Never convert a plausible scenario", context)
         self.assertIn("meeting", context)
         self.assertIn("presentation", context)
+        self.assertIn("task list", context)
+        self.assertIn("project", context)
+        self.assertIn("goal", context)
+        self.assertIn("priority", context)
         self.assertIn("numeric and time budgets", context)
         self.assertIn("never allocate more time", context)
 
     def test_quality_gate_accepts_grounded_three_step_response(self):
         quality = _SMOKE.validate_grounding_quality(
-            "1. Pick one priority for the thirty minutes. "
+            "1. Pick one focus for the thirty minutes. "
             "2. Spend most of the time preparing it. "
             "3. Use the final minutes to review and note the next action."
         )
@@ -59,12 +63,25 @@ class GroundingContractTests(unittest.TestCase):
                 "1. List priorities. 2. Prepare your slides. 3. Review the result.",
                 "invented_presentation_work",
             ),
+            (
+                "1. Review tomorrow's task list. 2. Draft your projects. 3. Rank your priorities.",
+                "claimed_task_inventory",
+            ),
         ):
             with self.subTest(response=response):
                 quality = _SMOKE.validate_grounding_quality(response)
                 self.assertFalse(quality["certified"])
                 self.assertIn(marker, quality["unsupported_assumption_markers"])
                 self.assertIn("unsupported_personal_assumption", quality["failures"])
+
+    def test_quality_gate_rejects_previous_real_task_list_regression(self):
+        quality = _SMOKE.validate_grounding_quality(
+            "1. Review tomorrow's task list to identify highest priority items. "
+            "2. Allocate 15 minutes to draft outlines for those tasks. "
+            "3. Reserve remaining time for final review and resource preparation."
+        )
+        self.assertFalse(quality["certified"])
+        self.assertIn("claimed_task_inventory", quality["unsupported_assumption_markers"])
 
     def test_quality_gate_rejects_impossible_per_step_time(self):
         for phrase in ("twenty minutes per action", "20 minutes for each step"):
@@ -81,7 +98,7 @@ class GroundingContractTests(unittest.TestCase):
 
     def test_quality_gate_requires_exact_three_numbered_steps(self):
         quality = _SMOKE.validate_grounding_quality(
-            "Choose one priority, work on it, then review what remains."
+            "Choose one focus, work on it, then review what remains."
         )
         self.assertFalse(quality["certified"])
         self.assertIn("missing_exact_three_numbered_steps", quality["failures"])
