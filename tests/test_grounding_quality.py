@@ -28,6 +28,8 @@ class GroundingContractTests(unittest.TestCase):
         self.assertIn("Never convert a plausible scenario", context)
         self.assertIn("meeting", context)
         self.assertIn("presentation", context)
+        self.assertIn("numeric and time budgets", context)
+        self.assertIn("never allocate more time", context)
 
     def test_quality_gate_accepts_grounded_three_step_response(self):
         quality = _SMOKE.validate_grounding_quality(
@@ -38,6 +40,14 @@ class GroundingContractTests(unittest.TestCase):
         self.assertTrue(quality["certified"])
         self.assertEqual(quality["numbered_steps_seen"], ["1", "2", "3"])
         self.assertEqual(quality["unsupported_assumption_markers"], [])
+        self.assertEqual(quality["time_budget_violations"], [])
+
+    def test_quality_gate_accepts_consistent_per_step_time(self):
+        quality = _SMOKE.validate_grounding_quality(
+            "1. Pick a focus. 2. Work on it. 3. Review it. Spend ten minutes per step."
+        )
+        self.assertTrue(quality["certified"])
+        self.assertEqual(quality["time_budget_evidence"][0]["implied_total_minutes"], 30)
 
     def test_quality_gate_rejects_invented_personal_events(self):
         for response, marker in (
@@ -56,6 +66,19 @@ class GroundingContractTests(unittest.TestCase):
                 self.assertIn(marker, quality["unsupported_assumption_markers"])
                 self.assertIn("unsupported_personal_assumption", quality["failures"])
 
+    def test_quality_gate_rejects_impossible_per_step_time(self):
+        for phrase in ("twenty minutes per action", "20 minutes for each step"):
+            with self.subTest(phrase=phrase):
+                quality = _SMOKE.validate_grounding_quality(
+                    f"1. Pick a focus. 2. Work on it. 3. Review it. Spend {phrase}."
+                )
+                self.assertFalse(quality["certified"])
+                self.assertIn("time_budget_inconsistent", quality["failures"])
+                self.assertGreater(
+                    quality["time_budget_violations"][0]["implied_total_minutes"],
+                    quality["time_budget_minutes"],
+                )
+
     def test_quality_gate_requires_exact_three_numbered_steps(self):
         quality = _SMOKE.validate_grounding_quality(
             "Choose one priority, work on it, then review what remains."
@@ -72,6 +95,7 @@ class GroundingContractTests(unittest.TestCase):
     def test_real_probe_explicitly_requests_machine_checkable_shape(self):
         self.assertIn("exactly three short numbered planning steps", _SMOKE.PROMPT)
         self.assertIn("Do not assume my calendar, events or preferences", _SMOKE.PROMPT)
+        self.assertIn("total no more than thirty minutes", _SMOKE.PROMPT)
         self.assertIn("under eighty words", _SMOKE.PROMPT)
 
 
