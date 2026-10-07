@@ -22,6 +22,19 @@ class RoutedProviderError(RuntimeError):
     pass
 
 
+_CONVERSATIONAL_EVIDENCE_CONTRACT = (
+    "For conversational responses, personal or situational claims must be grounded in the "
+    "current owner request, the current-session conversation, or explicitly supplied durable "
+    "synchronized continuity. Missing context stays UNKNOWN or conditional. Do not invent "
+    "unstated meetings, events, calendar entries, task lists, existing tasks, projects, goals, "
+    "priorities, people, locations, files, sessions, materials, documents, notes, workspaces, "
+    "resources, device state, habits or preferences. If the owner did not name the object to "
+    "work on, keep it abstract (for example, a chosen focus) instead of supplying a plausible "
+    "object. Respect explicit numeric and time constraints and verify arithmetic before "
+    "presenting a plan."
+)
+
+
 @dataclass(frozen=True)
 class RouteAttempt:
     provider: ProviderKind
@@ -89,14 +102,20 @@ class RoutedModelProvider:
         return GeminiProvider(fast_model=choice.model, standard_model=choice.model)
 
     def _with_persona_instruction(self, request: ModelRequest) -> ModelRequest:
+        application_parts = []
         application = request.system_instruction.strip()
+        if application:
+            application_parts.append(application)
+        if not request.json_output:
+            application_parts.append(_CONVERSATIONAL_EVIDENCE_CONTRACT)
+        application_contract = "\n\n".join(application_parts)
         persona = self.persona.system_instruction.strip()
         combined = (
             "APPLICATION CONTRACT (must be preserved):\n"
-            + application
+            + application_contract
             + "\n\nTRUSTED PERSONA PROFILE:\n"
             + persona
-            if application
+            if application_contract
             else persona
         )
         return ModelRequest(

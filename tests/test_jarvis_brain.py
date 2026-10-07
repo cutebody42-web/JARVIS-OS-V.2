@@ -128,7 +128,6 @@ class JarvisIdentityTests(unittest.TestCase):
                 self.assertIs(classify_intent(message), BrainIntent.ACTION)
 
 
-
 class ConversationContinuityTests(unittest.TestCase):
     def test_respond_uses_direct_model_path_and_preserves_history_across_lanes(self):
         captured = []
@@ -162,6 +161,11 @@ class ConversationContinuityTests(unittest.TestCase):
         self.assertEqual(brain.identity, "JARVIS")
         self.assertIn("Owner: help me plan tomorrow", captured[1].prompt)
         self.assertIn("JARVIS: first", captured[1].prompt)
+        for request in captured:
+            self.assertIn("personal or situational claims must be grounded", request.system_instruction)
+            self.assertIn("task lists", request.system_instruction)
+            self.assertIn("numeric and time constraints", request.system_instruction)
+
 
 class LocalFirstRoutingTests(unittest.TestCase):
     def test_cloud_is_skipped_when_owner_disables_it(self):
