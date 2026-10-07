@@ -1,0 +1,14 @@
+name: rank_bm25
+source: https://github.com/dorianbrown/rank_bm25.git
+upstream_ref: master
+upstream_commit: 47aa3ddf8dc1ebeb7ef4e65f2b4536af44594099
+upstream_commit_date: 2024-10-08T12:30:42Z
+license_expression: Apache-2.0
+import_mode: pinned-source-assimilation
+purpose: embedded lexical BM25 ranking for hybrid JARVIS temporal-memory retrieval
+local_changes:
+  - "Upstream rank_bm25.py is preserved as the pinned intake snapshot."
+  - "JARVIS wraps it behind a core-owned hybrid retrieval contract; no upstream runtime service is used."
+update_policy:
+  mode: manual-review
+  security_and_compatibility_gate: required
