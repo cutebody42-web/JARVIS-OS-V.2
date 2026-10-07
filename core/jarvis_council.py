@@ -22,6 +22,24 @@ from core.providers.ollama import OllamaProvider
 CORE_MODEL = "jarvis-core-1b"
 _MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
 
+_COUNCIL_GROUNDING_RULES = (
+    "Ground every personal or situational claim in evidence. In a council call, the current "
+    "owner request is the only current-turn evidence. Never invent or imply meetings, "
+    "presentations, appointments, classes, exams, work shifts, deadlines, travel, people, "
+    "locations, device state, files, calendar events, habits or preferences that were not "
+    "stated. Missing details remain UNKNOWN. When a useful plan depends on missing context, "
+    "use a conditional or neutral placeholder instead of filling the gap."
+)
+
+_SYNTHESIS_GROUNDING_CONTRACT = (
+    "Grounding contract for synthesis: hidden council notes are analysis, not evidence. "
+    "A personal or situational fact may appear in the final answer only when it is supported "
+    "by the current owner request or by separately supplied durable synchronized memory or "
+    "recent owner messages. Otherwise keep it UNKNOWN or phrase the advice conditionally. "
+    "Never convert a plausible scenario into a claimed meeting, presentation, appointment, "
+    "class, exam, shift, deadline, trip, person, location, device state or file."
+)
+
 
 @dataclass(frozen=True)
 class CouncilNote:
@@ -117,9 +135,7 @@ class JarvisCouncil:
                     "You are the hidden JARVIS Core coordinator. Produce a compact internal "
                     "routing brief for specialist models. Identify the owner's goal, key "
                     "constraints, uncertainty, and what the final answer must verify. "
-                    "Use only facts stated in the owner request; this council call has no "
-                    "independent access to the owner's calendar, habits, identity or history. "
-                    "Mark missing personal context as UNKNOWN and never fill gaps by assumption. "
+                    + _COUNCIL_GROUNDING_RULES + " "
                     "Do not answer the owner directly. Do not mention model names."
                 ),
                 tier=ModelTier.FAST,
@@ -143,11 +159,10 @@ class JarvisCouncil:
                 ),
                 system_instruction=(
                     "You are a hidden local JARVIS specialist. Give concise, factual internal "
-                    "analysis that another JARVIS layer will synthesize. Treat the owner request "
-                    "as the only trusted personal context in this specialist call. Any unstated "
-                    "calendar, habit, identity, preference or energy pattern is UNKNOWN; never "
-                    "invent it. Do not introduce yourself, do not address the owner, and do not "
-                    "claim actions occurred."
+                    "analysis that another JARVIS layer will synthesize. "
+                    + _COUNCIL_GROUNDING_RULES + " "
+                    "Do not introduce yourself, do not address the owner, and do not claim "
+                    "actions occurred."
                 ),
                 tier=ModelTier.STANDARD,
             )
@@ -208,6 +223,7 @@ class JarvisCouncil:
         if result is None:
             return ""
         parts = [
+            _SYNTHESIS_GROUNDING_CONTRACT,
             "Hidden JARVIS Core routing brief:\n" + result.core_brief,
         ]
         if result.notes:

@@ -3,7 +3,8 @@
 
 Requires an already-running Ollama with JARVIS Core and the fast expert. This
 script does not download weights, mock providers, attach owner memory, execute
-tools, or certify physical hardware or intelligence quality.
+tools, or certify physical hardware. It does enforce one narrow, deterministic
+grounding-quality contract for the production planning probe.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import hashlib
 import json
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -25,9 +27,35 @@ from core.jarvis_council import CORE_MODEL
 
 EXPERT_MODEL = "jarvis-brain-fast"
 PROMPT = (
-    "I have thirty minutes to prepare for tomorrow. Give me three short planning "
-    "steps using only that information. Do not assume my calendar or preferences. "
-    "Keep the final answer under eighty words."
+    "I have thirty minutes to prepare for tomorrow. Return exactly three short numbered "
+    "planning steps (1., 2., 3.) using only that information. Do not assume my calendar, "
+    "events or preferences. Keep the final answer under eighty words."
+)
+
+_UNSUPPORTED_ASSUMPTION_PATTERNS = (
+    (
+        "claimed_personal_event",
+        re.compile(
+            r"\b(?:your|tomorrow(?:'s)?)\s+(?:meeting|presentation|appointment|class|exam|"
+            r"shift|interview|flight|deadline)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "claimed_known_event",
+        re.compile(
+            r"\b(?:before|after)\s+(?:the|your)\s+(?:meeting|presentation|appointment|class|"
+            r"exam|shift|interview|flight|deadline)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "invented_presentation_work",
+        re.compile(
+            r"\b(?:prepare|review|rehearse|finish)\s+(?:your\s+)?(?:slides|presentation)\b",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 
@@ -79,6 +107,44 @@ def validate_inference(response_text, council_results, route_attempts) -> dict:
         "council_models": list(result.models),
         "route_attempts": attempts,
         "core_and_expert_completed": True,
+    }
+
+
+def validate_grounding_quality(response_text: str) -> dict:
+    """Evaluate the narrow planning probe without asking another model to grade it.
+
+    The gate intentionally certifies only properties that can be observed
+    deterministically: the requested numbered shape, the explicit word budget,
+    and absence of a small set of personalized event assumptions that caused the
+    prior production failure. It is not a general intelligence benchmark.
+    """
+    if not isinstance(response_text, str) or not response_text.strip():
+        raise RuntimeError("Cannot evaluate grounding quality for an empty response.")
+
+    text = response_text.strip()
+    word_count = len(re.findall(r"\S+", text))
+    step_markers = set(re.findall(r"(?<!\d)([123])[.)](?=\s)", text))
+    assumption_markers = [
+        name for name, pattern in _UNSUPPORTED_ASSUMPTION_PATTERNS
+        if pattern.search(text)
+    ]
+
+    failures = []
+    if word_count > 80:
+        failures.append("word_limit_exceeded")
+    if step_markers != {"1", "2", "3"}:
+        failures.append("missing_exact_three_numbered_steps")
+    if assumption_markers:
+        failures.append("unsupported_personal_assumption")
+
+    return {
+        "certified": not failures,
+        "scope": "thirty-minute-planning-grounding-probe-v1",
+        "word_count": word_count,
+        "word_limit": 80,
+        "numbered_steps_seen": sorted(step_markers),
+        "unsupported_assumption_markers": assumption_markers,
+        "failures": failures,
     }
 
 
@@ -144,7 +210,14 @@ def run_inference(base_url: str, report: dict) -> None:
         report["route_attempts"] = observed_routes(brain.last_attempts)
         report["identity"] = brain.identity
         report["lane"] = brain.lane.value
+
     report.update(validate_inference(response, council.results, brain.last_attempts))
+    quality = validate_grounding_quality(response)
+    report["intelligence_quality"] = quality
+    report["intelligence_quality_certified"] = quality["certified"]
+    if not quality["certified"]:
+        failures = ", ".join(quality["failures"]) or "unknown quality failure"
+        raise RuntimeError(f"JARVIS grounding quality gate failed: {failures}")
 
 
 def main(argv=None) -> int:
