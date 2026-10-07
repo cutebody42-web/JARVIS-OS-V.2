@@ -5,8 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jarvis-mark-xxxix"
 version = "0.1.0"
-description = "JARVIS local Gemini Live desktop assistant"
+description = "JARVIS local-first NEXUS personal AI runtime"
 requires-python = ">=3.11"
+
+[project.optional-dependencies]
+local-voice = ["faster-whisper>=1,<2"]
+mcp = ["mcp>=2,<3"]
+extended = ["faster-whisper>=1,<2", "mcp>=2,<3"]
 
 [project.scripts]
 jarvis = "main:cli_main"
