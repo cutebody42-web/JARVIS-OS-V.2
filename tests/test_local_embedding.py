@@ -111,6 +111,7 @@ class LocalEmbeddingTests(unittest.TestCase):
             self.assertIsNone(session.calls[0][0])
             self.assertEqual(provider.info.model_id, "owner/test-embed")
             self.assertEqual(provider.info.dimension, 3)
+            self.assertTrue(provider.info.local_only)
 
     def test_runtime_rejects_unknown_model_inputs_and_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as td:
@@ -135,7 +136,7 @@ class LocalEmbeddingTests(unittest.TestCase):
             with self.assertRaises(LocalEmbeddingError):
                 provider.embed("hello")
 
-    def test_runtime_bounds_input_and_batch_size(self):
+    def test_runtime_bounds_input_batch_and_memory(self):
         with tempfile.TemporaryDirectory() as td:
             model = _make_model(Path(td))
             provider = LocalOnnxEmbeddingProvider(
@@ -148,7 +149,18 @@ class LocalEmbeddingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 provider.embed_texts([])
             with self.assertRaises(ValueError):
-                provider.embed_texts(["x"] * 65)
+                provider.embed_texts(["x"] * 33)
+
+        with tempfile.TemporaryDirectory() as td:
+            model = _make_model(Path(td), dimension=8192, max_length=8192)
+            provider = LocalOnnxEmbeddingProvider(
+                model,
+                session_factory=lambda _: _Session(dimension=8192),
+                tokenizer_factory=lambda _: _Tokenizer(),
+            )
+            with self.assertRaises(ValueError):
+                provider.embed("bounded local inference")
+            self.assertFalse(provider.loaded)
 
 
 if __name__ == "__main__":
