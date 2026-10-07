@@ -1,13 +1,14 @@
 """Hybrid lexical + semantic retrieval for NEXUS temporal memory.
 
 The lexical scorer is assimilated from the pinned Apache-2.0 rank_bm25
-snapshot under ``core/native/rank_bm25``.  JARVIS owns the retrieval contract,
+snapshot under ``core/native/rank_bm25``. JARVIS owns the retrieval contract,
 filtering, fusion and temporal-ledger semantics around that implementation.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import re
 from typing import Sequence
 
@@ -36,6 +37,15 @@ def _tokens(text: str) -> list[str]:
     return [item.casefold() for item in _TOKEN.findall(text)]
 
 
+def _weight(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a non-negative finite number")
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0:
+        raise ValueError(f"{name} must be a non-negative finite number")
+    return number
+
+
 class TemporalHybridRetriever:
     """Bounded in-process retrieval over the authoritative temporal ledger.
 
@@ -53,7 +63,11 @@ class TemporalHybridRetriever:
     ) -> None:
         if not isinstance(store, TemporalMemoryStore):
             raise TypeError("store must be a TemporalMemoryStore")
-        if isinstance(lexical_candidate_limit, bool) or not 1 <= lexical_candidate_limit <= 1000:
+        if (
+            isinstance(lexical_candidate_limit, bool)
+            or not isinstance(lexical_candidate_limit, int)
+            or not 1 <= lexical_candidate_limit <= 1000
+        ):
             raise ValueError("lexical_candidate_limit must be between 1 and 1000")
         if isinstance(rrf_k, bool) or not isinstance(rrf_k, int) or not 1 <= rrf_k <= 1000:
             raise ValueError("rrf_k must be between 1 and 1000")
@@ -86,7 +100,16 @@ class TemporalHybridRetriever:
         )
         if not claims:
             return ()
-        corpus = [_tokens(self._claim_text(claim)) for claim in claims]
+
+        corpus: list[list[str]] = []
+        for claim in claims:
+            text = self._claim_text(claim)
+            tokens = _tokens(text)
+            # Temporal claim fields cannot be empty, but punctuation-only text is
+            # legal. Ensure the assimilated BM25 implementation never receives
+            # a zero-length document/corpus that could make avgdl zero.
+            corpus.append(tokens or [text.casefold()])
+
         # BM25Plus keeps IDF positive and behaves predictably for tiny personal
         # corpora where a useful token may appear in more than half the claims.
         ranker = BM25Plus(corpus)
@@ -118,14 +141,13 @@ class TemporalHybridRetriever:
     ) -> tuple[HybridClaimMatch, ...]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
-        for name, value in (("lexical_weight", lexical_weight), ("semantic_weight", semantic_weight)):
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) < 0.0:
-                raise ValueError(f"{name} must be a non-negative number")
-        total_weight = float(lexical_weight) + float(semantic_weight)
+        lexical_weight = _weight(lexical_weight, "lexical_weight")
+        semantic_weight = _weight(semantic_weight, "semantic_weight")
+        total_weight = lexical_weight + semantic_weight
         if total_weight <= 0.0:
             raise ValueError("at least one retrieval weight must be positive")
-        lexical_weight = float(lexical_weight) / total_weight
-        semantic_weight = float(semantic_weight) / total_weight
+        lexical_weight /= total_weight
+        semantic_weight /= total_weight
 
         candidate_limit = min(100, max(limit * 4, limit))
         lexical = self.lexical_search(query, verified_only=verified_only, limit=candidate_limit)
