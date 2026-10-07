@@ -63,6 +63,19 @@ class HybridRetrievalTests(unittest.TestCase):
             result = TemporalHybridRetriever(store).lexical_search("الذاكرة المحلية")
             self.assertEqual(result[0].claim.claim_id, arabic.claim_id)
 
+    def test_punctuation_only_claim_does_not_create_zero_length_corpus_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = TemporalMemoryStore(Path(td) / "memory.db")
+            store.add_claim(
+                subject="---",
+                predicate="...",
+                value="!!!",
+                source="test:punctuation",
+                verified=True,
+            )
+            result = TemporalHybridRetriever(store).lexical_search("normal query")
+            self.assertEqual(result, ())
+
     def test_hybrid_search_fuses_vector_and_lexical_rank_without_mixing_raw_scales(self):
         with tempfile.TemporaryDirectory() as td:
             store = TemporalMemoryStore(Path(td) / "memory.db")
@@ -111,7 +124,11 @@ class HybridRetrievalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 retriever.hybrid_search("query", [0.0, 0.0], lexical_weight=0, semantic_weight=0)
             with self.assertRaises(ValueError):
+                retriever.hybrid_search("query", [0.0, 0.0], lexical_weight=float("nan"))
+            with self.assertRaises(ValueError):
                 retriever.lexical_search("query", limit=0)
+            with self.assertRaises(ValueError):
+                TemporalHybridRetriever(store, lexical_candidate_limit="100")
 
 
 if __name__ == "__main__":
