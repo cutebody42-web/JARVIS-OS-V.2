@@ -57,6 +57,7 @@ jobs:
           tests.test_local_embedding
           tests.test_embedding_memory
           tests.test_model_repair_engine
+          tests.test_model_repair_workflow
 
   frontend:
     runs-on: ubuntu-latest
