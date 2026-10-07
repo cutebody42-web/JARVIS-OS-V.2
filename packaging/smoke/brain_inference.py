@@ -61,7 +61,19 @@ _UNSUPPORTED_ASSUMPTION_PATTERNS = (
     (
         "claimed_task_inventory",
         re.compile(
-            r"\b(?:your|tomorrow(?:'s)?)\s+(?:task\s+list|to-?do\s+list|tasks?|projects?|goals?|priorities)\b",
+            r"\b(?:your|tomorrow(?:'s)?)\s+"
+            r"(?:(?:core|current|existing|planned|relevant|highest[- ]priority)\s+){0,2}"
+            r"(?:task\s+list|to-?do\s+list|tasks?|projects?|goals?|priorities)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "claimed_work_object",
+        re.compile(
+            r"\b(?:review|prepare|organize|rank|prioritize|draft|finish|check|rehearse|work\s+on)\s+"
+            r"(?:your\s+)?(?:(?:core|current|existing|planned|relevant|available)\s+){0,2}"
+            r"(?:tasks?|projects?|goals?|priorities|materials?|documents?|notes?|workspace|"
+            r"resources?|session)\b",
             re.IGNORECASE,
         ),
     ),
@@ -236,36 +248,68 @@ def validate_inference(response_text, council_results, route_attempts) -> dict:
 
 
 def validate_core_brief_quality(core_brief: str) -> dict:
-    """Certify that JARVIS Core performed its internal coordinator role."""
+    """Certify that deterministic Core normalization preserved the owner contract."""
     if not isinstance(core_brief, str) or not core_brief.strip():
         raise RuntimeError("Cannot evaluate an empty JARVIS Core brief.")
 
     text = core_brief.strip()
-    labels_seen = re.findall(
-        r"(?im)^(GOAL|STATED_CONSTRAINTS|UNKNOWNS|VERIFY):",
+    matches = re.findall(
+        r"(?im)^(GOAL|STATED_CONSTRAINTS|UNKNOWNS|VERIFY):\s*(.*)$",
         text,
     )
+    labels_seen = [label for label, _ in matches]
+    fields = {label: value.strip() for label, value in matches}
     refusal_markers = [
         pattern.pattern for pattern in _CORE_REFUSAL_PATTERNS
         if pattern.search(text)
     ]
-    has_time_budget = bool(re.search(r"\b(?:30|thirty)\b", text, re.IGNORECASE))
+    constraints = fields.get("STATED_CONSTRAINTS", "")
+    lower_constraints = constraints.lower()
+    has_authoritative_request = "authoritative_owner_request:" in lower_constraints
+    has_time_budget = bool(re.search(r"\b(?:30|thirty)\b", constraints, re.IGNORECASE))
+    has_step_shape = bool(
+        re.search(r"\b(?:3|three)\b", constraints, re.IGNORECASE)
+        and re.search(r"\bnumbered\b", constraints, re.IGNORECASE)
+        and re.search(r"\bsteps?\b", constraints, re.IGNORECASE)
+    )
+    has_word_budget = bool(
+        re.search(r"\b(?:80|eighty)\b", constraints, re.IGNORECASE)
+        and re.search(r"\bwords?\b", constraints, re.IGNORECASE)
+    )
+    has_grounding_prohibition = (
+        "calendar" in lower_constraints
+        and "events" in lower_constraints
+        and "preferences" in lower_constraints
+        and bool(re.search(r"\b(?:do\s+not|don't)\s+assume\b", constraints, re.IGNORECASE))
+    )
 
     failures = []
     if labels_seen != list(_CORE_REQUIRED_LABELS):
         failures.append("core_brief_protocol_mismatch")
     if refusal_markers:
         failures.append("core_brief_refusal")
+    if not has_authoritative_request:
+        failures.append("core_brief_missing_authoritative_request")
     if not has_time_budget:
         failures.append("core_brief_omitted_time_budget")
+    if not has_step_shape:
+        failures.append("core_brief_omitted_output_shape")
+    if not has_word_budget:
+        failures.append("core_brief_omitted_word_budget")
+    if not has_grounding_prohibition:
+        failures.append("core_brief_omitted_grounding_prohibition")
 
     return {
         "certified": not failures,
-        "scope": "core-coordinator-routing-brief-v1",
+        "scope": "core-coordinator-routing-brief-v2",
         "required_labels": list(_CORE_REQUIRED_LABELS),
         "labels_seen": labels_seen,
         "refusal_markers": refusal_markers,
+        "authoritative_request_preserved": has_authoritative_request,
         "time_budget_preserved": has_time_budget,
+        "output_shape_preserved": has_step_shape,
+        "word_budget_preserved": has_word_budget,
+        "grounding_prohibition_preserved": has_grounding_prohibition,
         "failures": failures,
     }
 
@@ -315,7 +359,7 @@ def validate_grounding_quality(response_text: str) -> dict:
 
     return {
         "certified": not failures,
-        "scope": "thirty-minute-planning-grounding-probe-v6",
+        "scope": "thirty-minute-planning-grounding-probe-v7",
         "word_count": word_count,
         "word_limit": 80,
         "numbered_steps_seen": step_markers,
