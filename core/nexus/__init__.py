@@ -10,6 +10,7 @@ from .conflict_resolver import (
     materialize_pn_counter,
 )
 from .event_store import ClockRelation, EventStore, SyncEvent, compare_vector_clocks
+from .integration_hub import IntegrationState, NEXUSIntegrationHub
 from .merge_applier import ApplyResult, ApplyStatus, MergeApplier
 from .sync_daemon import (
     PROTOCOL_VERSION,
@@ -67,6 +68,7 @@ __all__ = [
     "EntitySnapshot",
     "DeviceSigner",
     "EventStore",
+    "IntegrationState",
     "MergeAction",
     "MergeApplier",
     "MergeDecision",
@@ -75,6 +77,7 @@ __all__ = [
     "MergePolicyRegistry",
     "MergePolicySpec",
     "MEDIA_TYPE",
+    "NEXUSIntegrationHub",
     "NexusSyncNode",
     "PAIRING_VERSION",
     "PairingManager",
