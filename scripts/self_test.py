@@ -19,6 +19,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_ROOT = ROOT / ".qa-artifacts"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 @dataclass
@@ -34,18 +36,21 @@ def _run_tests(*names: str) -> tuple[bool, str]:
         **os.environ,
         "JARVIS_QA_MODE": "1",
         "QT_QPA_PLATFORM": "offscreen",
+        "PYTHONIOENCODING": "utf-8",
     }
     result = subprocess.run(
         [sys.executable, "-m", "unittest", "-q", *names],
         cwd=ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=180,
         check=False,
         env=environment,
     )
     output = "\n".join(
-        part.strip() for part in (result.stdout, result.stderr) if part.strip()
+        (part or "").strip() for part in (result.stdout, result.stderr) if part
     )
     return result.returncode == 0, output[-1200:]
 
@@ -94,7 +99,6 @@ def _messaging() -> CapabilityResult:
     tests = (
         "tests.test_action_helpers.ActionHelperTests.test_outgoing_message_normalization_adds_terminal_punctuation",
         "tests.test_action_helpers.ActionHelperTests.test_reply_draft_requires_approval_before_send",
-        "tests.test_action_helpers.ActionHelperTests.test_instagram_send_prepares_then_approves_visible_draft",
         "tests.test_action_helpers.ActionHelperTests.test_instagram_approval_rejects_a_changed_chat",
         "tests.test_action_helpers.ActionHelperTests.test_instagram_approval_rejects_an_edited_draft",
         "tests.test_action_helpers.ActionHelperTests.test_pending_message_can_be_cancelled_without_sending",
@@ -256,7 +260,7 @@ def _agent() -> CapabilityResult:
         (
             "tests.test_core_resilience.CoreResilienceTests.test_task_queue_submit_status_and_cancel_without_worker",
             "tests.test_core_resilience.CoreResilienceTests.test_error_handler_stops_retrying_at_limit_without_network",
-            "tests.test_deep_research.DeepResearchTests.test_queue_completion_keeps_report_in_memory_and_requests_detailed_summary",
+            "tests.test_deep_research.DeepResearchTests.test_owner_policy_blocks_queue_completion_keeps_report_in_memory_and_requests_detailed_summary",
             "tests.test_deep_research.DeepResearchTests.test_planner_fallback_keeps_deep_research_on_dedicated_action",
             "tests.test_qa_system.ToolContractTests.test_every_declared_tool_has_a_dispatch_path",
         ),

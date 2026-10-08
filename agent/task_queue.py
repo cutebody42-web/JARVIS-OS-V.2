@@ -5,7 +5,10 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Any
+from core.console import configure_utf8_console
 from memory.task_history import record_task
+
+configure_utf8_console()
 
 
 class TaskStatus(Enum):

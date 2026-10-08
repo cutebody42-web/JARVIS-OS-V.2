@@ -1,5 +1,9 @@
 """Single action invocation boundary: schema -> authority -> adapter -> receipt."""
 
+from core.console import configure_utf8_console
+
+configure_utf8_console()
+
 from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
