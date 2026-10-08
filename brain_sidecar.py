@@ -52,6 +52,7 @@ def _serve_companion(app, host: str, port: int, brain_host: LocalBrainHost) -> N
         port=port,
         log_level="warning",
         access_log=False,
+        log_config=None,
     )
     server = uvicorn.Server(config)
     brain_host.set_companion_listener(lambda: _companion_server_listening(server))
@@ -137,6 +138,7 @@ def main(argv=None) -> int:
         port=args.port,
         log_level="warning",
         access_log=False,
+        log_config=None,
     )
     return 0
 
