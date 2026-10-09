@@ -1,6 +1,9 @@
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.temporal_memory import TemporalMemoryError, TemporalMemoryStore
 
@@ -98,6 +101,106 @@ class TemporalMemoryTests(unittest.TestCase):
             store.supersede(first.claim_id, value="two", source="test:source")
             with self.assertRaises(TemporalMemoryError):
                 store.supersede(first.claim_id, value="three", source="test:source")
+
+    def test_supersede_rejects_inverted_validity_without_changing_history(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = TemporalMemoryStore(Path(td) / "memory.db")
+            first = store.add_claim(
+                subject="device",
+                predicate="state",
+                value="online",
+                source="test:source",
+                valid_from="2026-10-07T10:00:00Z",
+            )
+            with self.assertRaisesRegex(TemporalMemoryError, "cannot predate"):
+                store.supersede(
+                    first.claim_id,
+                    value="offline",
+                    source="test:source",
+                    observed_at="2026-10-07T09:59:59Z",
+                )
+            self.assertTrue(store.get(first.claim_id).active)
+            self.assertEqual([item.claim_id for item in store.history(subject="device")], [first.claim_id])
+
+    def test_state_path_must_be_absolute_and_outside_source(self):
+        with self.assertRaisesRegex(TemporalMemoryError, "absolute"):
+            TemporalMemoryStore(Path("relative-temporal.db"))
+        source_path = Path(__file__).resolve().parents[1] / "forbidden-temporal.db"
+        with self.assertRaisesRegex(TemporalMemoryError, "outside application source"):
+            TemporalMemoryStore(source_path)
+        self.assertFalse(source_path.exists())
+
+    def test_symlinked_state_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            actual = root / "actual"
+            actual.mkdir()
+            redirected = root / "redirected"
+            try:
+                redirected.symlink_to(actual, target_is_directory=True)
+            except OSError:
+                self.skipTest("Symbolic links are unavailable on this account")
+            with self.assertRaisesRegex(TemporalMemoryError, "symlinks|redirected"):
+                TemporalMemoryStore(redirected / "memory.db")
+            self.assertFalse((actual / "memory.db").exists())
+
+    def test_claim_and_storage_quotas_fail_before_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = TemporalMemoryStore(Path(td) / "memory.db")
+            store.MAX_CLAIMS = 1
+            first = store.add_claim(subject="one", predicate="p", value="v", source="test:quota")
+            with self.assertRaisesRegex(TemporalMemoryError, "claim quota"):
+                store.add_claim(subject="two", predicate="p", value="v", source="test:quota")
+            self.assertEqual(store.get(first.claim_id).value, "v")
+
+            store.MAX_CLAIMS = store.__class__.MAX_CLAIMS
+            with patch.object(
+                store,
+                "_state_storage_bytes",
+                return_value=store.MAX_STORAGE_BYTES - store.WRITE_RESERVE_BYTES + 1,
+            ):
+                with self.assertRaisesRegex(TemporalMemoryError, "storage budget"):
+                    store.add_claim(subject="three", predicate="p", value="v", source="test:quota")
+            self.assertEqual(len(store.history(subject="three")), 0)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX private-mode contract")
+    def test_posix_state_directory_and_database_are_private(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td) / "temporal"
+            store = TemporalMemoryStore(directory / "memory.db")
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(store.path.stat().st_mode), 0o600)
+
+    @unittest.skipUnless(os.name == "nt", "Windows ACL contract")
+    def test_windows_state_acl_allows_only_owner_and_system(self):
+        import win32api
+        import win32con
+        import win32security
+
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td) / "temporal"
+            store = TemporalMemoryStore(directory / "memory.db")
+            token = win32security.OpenProcessToken(
+                win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+            )
+            owner = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+            system = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid, None)
+            expected = {
+                win32security.ConvertSidToStringSid(owner),
+                win32security.ConvertSidToStringSid(system),
+            }
+            for path in (directory, store.path):
+                descriptor = win32security.GetNamedSecurityInfo(
+                    str(path),
+                    win32security.SE_FILE_OBJECT,
+                    win32security.DACL_SECURITY_INFORMATION,
+                )
+                acl = descriptor.GetSecurityDescriptorDacl()
+                trustees = {
+                    win32security.ConvertSidToStringSid(acl.GetAce(index)[2])
+                    for index in range(acl.GetAceCount())
+                }
+                self.assertEqual(trustees, expected)
 
 
 if __name__ == "__main__":

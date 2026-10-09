@@ -50,10 +50,11 @@ The manifest may only point to files inside the selected model directory. Dimens
 
 ```python
 from core.embedding_memory import TemporalEmbeddingMemory
+from core.app_paths import user_data_dir
 from core.local_embedding import LocalOnnxEmbeddingProvider
 from core.temporal_memory import TemporalMemoryStore
 
-store = TemporalMemoryStore("memory.sqlite")
+store = TemporalMemoryStore(user_data_dir() / "memory" / "temporal.sqlite")
 provider = LocalOnnxEmbeddingProvider(r"D:\AI\models\my-embedding-model")
 memory = TemporalEmbeddingMemory(store, provider)
 
@@ -73,3 +74,5 @@ hybrid = memory.hybrid_search_text("physics circuits")
 ## Authority and privacy
 
 Embeddings are retrieval evidence only. They do not grant permission, dispatch actions, modify the Sovereign Owner Kernel, or bypass the Action Gateway. Model inference occurs against owner-supplied local files. The status contract explicitly reports `network_required: false`.
+
+Durable temporal state requires an absolute path on a local fixed disk, outside the application source tree. JARVIS rejects redirected paths and protects the database, WAL, shared-memory, and vector-index files as owner-private state.

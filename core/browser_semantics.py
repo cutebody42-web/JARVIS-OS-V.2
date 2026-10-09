@@ -56,9 +56,47 @@ _OBSERVE_SCRIPT = r"""
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'main', 'nav', 'header', 'footer', 'form', 'label', 'summary'
   ].join(',');
-  const all = Array.from(document.querySelectorAll(selector));
+  const clip = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : '';
+  const boundedText = (element, limit) => {
+    if (!element || limit <= 0) return '';
+    const textWalker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const pieces = [];
+    let length = 0;
+    let visitedTextNodes = 0;
+    while (length < limit && visitedTextNodes < 128) {
+      const node = textWalker.nextNode();
+      if (!node) break;
+      visitedTextNodes += 1;
+      const raw = typeof node.nodeValue === 'string' ? node.nodeValue : '';
+      if (!raw) continue;
+      const parent = node.parentElement;
+      if (!parent || ['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(parent.tagName)) continue;
+      const textStyle = window.getComputedStyle(parent);
+      if (
+        textStyle.visibility === 'hidden' || textStyle.display === 'none' ||
+        Number(textStyle.opacity || '1') <= 0 || parent.getClientRects().length === 0
+      ) continue;
+      const piece = raw.slice(0, limit - length);
+      pieces.push(piece);
+      length += piece.length;
+    }
+    return pieces.join('');
+  };
+  // Walk at most a fixed number of elements. A bulk selector collection would
+  // first retain every match on an adversarial page before maxNodes applies.
+  const scanLimit = Math.min(20000, Math.max(1000, maxNodes * 50));
+  const root = document.documentElement;
+  const walker = root
+    ? document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+    : null;
   const out = [];
-  for (const el of all) {
+  let visited = 0;
+  let truncated = false;
+  while (walker && visited < scanLimit && out.length <= maxNodes) {
+    const el = walker.nextNode();
+    if (!el) break;
+    visited += 1;
+    if (!el.matches(selector)) continue;
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
     const visible = !!(
@@ -67,29 +105,46 @@ _OBSERVE_SCRIPT = r"""
       Number(style.opacity || '1') > 0
     );
     if (!includeHidden && !visible) continue;
-    const aria = el.getAttribute('aria-label') || '';
-    const labelledBy = el.getAttribute('aria-labelledby') || '';
+    const aria = clip(el.getAttribute('aria-label') || '', 500);
+    const labelledBy = clip(el.getAttribute('aria-labelledby') || '', 2048);
     let labelled = '';
     if (labelledBy) {
-      labelled = labelledBy.split(/\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ');
+      let labelCount = 0;
+      for (const id of labelledBy.split(/\s+/)) {
+        if (!id || labelCount >= 16 || labelled.length >= 500) break;
+        const part = boundedText(document.getElementById(id), 500 - labelled.length);
+        labelled = clip(labelled ? `${labelled} ${part}` : part, 500);
+        labelCount += 1;
+      }
     }
-    const alt = el.getAttribute('alt') || '';
-    const placeholder = el.getAttribute('placeholder') || '';
-    const name = aria || labelled || alt || placeholder || '';
+    const alt = clip(el.getAttribute('alt') || '', 500);
+    const placeholder = clip(el.getAttribute('placeholder') || '', 500);
+    const name = clip(aria || labelled || alt || placeholder || '', 500);
     out.push({
-      tag: (el.tagName || '').toLowerCase(),
-      role: el.getAttribute('role') || '',
+      tag: clip((el.tagName || '').toLowerCase(), 40),
+      role: clip(el.getAttribute('role') || '', 100),
       name,
-      text: el.innerText || el.textContent || '',
-      inputType: el.getAttribute('type') || '',
-      href: el instanceof HTMLAnchorElement ? (el.href || '') : '',
+      text: boundedText(el, 1000),
+      inputType: clip(el.getAttribute('type') || '', 80),
+      href: el instanceof HTMLAnchorElement ? clip(el.href || '', 2048) : '',
       disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       visible,
       rect: {x: rect.x, y: rect.y, width: rect.width, height: rect.height}
     });
-    if (out.length >= maxNodes + 1) break;
   }
-  return {url: location.href, title: document.title || '', nodes: out};
+  if (out.length > maxNodes) {
+    truncated = true;
+  } else if (walker && visited >= scanLimit) {
+    // One bounded look-ahead distinguishes an exhausted tree from a page that
+    // exceeded the scan budget. Conservatively mark any unobserved tail.
+    truncated = walker.nextNode() !== null;
+  }
+  return {
+    url: clip(location.href, 4096),
+    title: clip(document.title || '', 500),
+    nodes: out,
+    truncated
+  };
 }
 """
 
@@ -137,7 +192,7 @@ class BrowserSemanticObserver:
         raw_nodes = payload.get("nodes", [])
         if not isinstance(raw_nodes, list):
             raw_nodes = []
-        truncated = len(raw_nodes) > max_nodes
+        truncated = payload.get("truncated") is True or len(raw_nodes) > max_nodes
         nodes: list[DOMElementSnapshot] = []
         for raw in raw_nodes[:max_nodes]:
             if not isinstance(raw, dict):

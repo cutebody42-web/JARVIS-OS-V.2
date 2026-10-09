@@ -118,7 +118,10 @@ def main(argv=None) -> int:
     args = _parser().parse_args(arguments)
     if not 1024 <= args.port <= 65535:
         raise ValueError("--port must be between 1024 and 65535")
-    ui_token = _read_ui_token(sys.stdin.buffer)
+    bootstrap_stream = getattr(sys.stdin, "buffer", None)
+    if bootstrap_stream is None:
+        raise ValueError("JARVIS Brain requires its private UI token bootstrap pipe.")
+    ui_token = _read_ui_token(bootstrap_stream)
 
     gateway = resolve_companion_gateway()
     host = LocalBrainHost(

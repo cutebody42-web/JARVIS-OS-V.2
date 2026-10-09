@@ -8,8 +8,11 @@ execution remains behind the separate Owner Kernel policy boundary.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
+from itertools import islice
 import platform
+import re
 from typing import Any, Callable
 
 
@@ -35,6 +38,7 @@ class UIAElementSnapshot:
     enabled: bool | None
     visible: bool | None
     rectangle: UIARect | None
+    sensitive: bool = False
 
 
 @dataclass(frozen=True)
@@ -50,7 +54,10 @@ class UIAWindowSnapshot:
 def _clean_text(value: Any, limit: int = 500) -> str:
     if not isinstance(value, str):
         return ""
-    return value.replace("\x00", "")[:limit]
+    return "".join(
+        character if ord(character) >= 32 and ord(character) != 127 else " "
+        for character in value[:limit]
+    )
 
 
 def _safe_call(obj: Any, name: str, default=None):
@@ -59,6 +66,26 @@ def _safe_call(obj: Any, name: str, default=None):
         return value() if callable(value) else value
     except Exception:
         return default
+
+
+def _password_state(wrapper: Any, info: Any) -> bool:
+    """Read the UIA password property without requesting the control value.
+
+    pywinauto's UIAWrapper does not expose an ``is_password()`` method.  The
+    authoritative flag lives on the wrapped IUIAutomationElement as
+    ``CurrentIsPassword``.  Keep a wrapper-method fallback for compatible test
+    and alternate providers, but never mistake an unavailable property for a
+    non-sensitive control.
+    """
+    try:
+        element = getattr(info, "element", None)
+    except Exception:
+        element = None
+    value = _safe_call(element, "CurrentIsPassword")
+    if value is None:
+        value = _safe_call(wrapper, "is_password")
+    # An inaccessible COM property must not expose a potentially secret name.
+    return not isinstance(value, (bool, int)) or value != 0
 
 
 def _rect(wrapper: Any) -> UIARect | None:
@@ -76,7 +103,7 @@ def _pid(wrapper: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         element_info = getattr(wrapper, "element_info", None)
         value = getattr(element_info, "process_id", None)
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 class WindowsUIAObserver:
@@ -119,12 +146,16 @@ class WindowsUIAObserver:
     @staticmethod
     def _element(wrapper: Any) -> UIAElementSnapshot:
         info = getattr(wrapper, "element_info", None)
+        password = _password_state(wrapper, info)
         control_type = _clean_text(getattr(info, "control_type", ""), 120)
         automation_id = _clean_text(getattr(info, "automation_id", ""), 300)
         class_name = _clean_text(getattr(info, "class_name", ""), 300)
-        name = _clean_text(getattr(info, "name", ""), 500)
-        if not name:
-            name = _clean_text(_safe_call(wrapper, "window_text", ""), 500)
+        if password:
+            name = "[redacted sensitive control]"
+        else:
+            name = _clean_text(getattr(info, "name", ""), 500)
+            if not name:
+                name = _clean_text(_safe_call(wrapper, "window_text", ""), 500)
         enabled = _safe_call(wrapper, "is_enabled")
         visible = _safe_call(wrapper, "is_visible")
         return UIAElementSnapshot(
@@ -136,15 +167,58 @@ class WindowsUIAObserver:
             enabled=enabled if isinstance(enabled, bool) else None,
             visible=visible if isinstance(visible, bool) else None,
             rectangle=_rect(wrapper),
+            sensitive=password,
         )
+
+    @staticmethod
+    def _bounded_descendants(window: Any, limit: int) -> tuple[tuple[Any, ...], bool]:
+        """Breadth-first UIA walk that never retains more than limit + 1 nodes."""
+        queue: deque[Any] = deque()
+        output: list[Any] = []
+        truncated = False
+
+        def extend_children(node: Any, budget: int) -> None:
+            nonlocal truncated
+            children = getattr(node, "children", None)
+            if not callable(children):
+                raise WindowsUIAError("UIA control does not expose bounded child enumeration.")
+            try:
+                iterator = iter(children())
+                batch = list(islice(iterator, max(0, budget) + 1))
+            except WindowsUIAError:
+                raise
+            except Exception as exc:
+                raise WindowsUIAError(
+                    f"UIA child enumeration failed ({type(exc).__name__})."
+                ) from None
+            if len(batch) > budget:
+                truncated = True
+                batch = batch[:budget]
+            queue.extend(batch)
+
+        extend_children(window, limit + 1)
+        while queue and len(output) < limit:
+            item = queue.popleft()
+            output.append(item)
+            remaining = limit + 1 - len(output) - len(queue)
+            if remaining > 0:
+                extend_children(item, remaining)
+        if queue:
+            truncated = True
+        return tuple(output), truncated
 
     def snapshot_windows(
         self,
         *,
         title_contains: str | None = None,
+        process_id: int | None = None,
+        allow_all_windows: bool = False,
+        include_hidden: bool = False,
         max_windows: int = 40,
         max_controls_per_window: int = 300,
     ) -> tuple[UIAWindowSnapshot, ...]:
+        if self._platform != "Windows":
+            raise WindowsUIAError("Windows UIA observation is available on Windows only.")
         if isinstance(max_windows, bool) or not isinstance(max_windows, int) or not 1 <= max_windows <= 100:
             raise ValueError("max_windows must be between 1 and 100.")
         if (
@@ -153,35 +227,76 @@ class WindowsUIAObserver:
             or not 1 <= max_controls_per_window <= 1000
         ):
             raise ValueError("max_controls_per_window must be between 1 and 1000.")
+        if not isinstance(allow_all_windows, bool) or not isinstance(include_hidden, bool):
+            raise ValueError("UIA scope flags must be boolean.")
+        if process_id is not None and (
+            isinstance(process_id, bool) or not isinstance(process_id, int) or process_id <= 0
+        ):
+            raise ValueError("process_id must be a positive integer.")
         needle = None
         if title_contains is not None:
-            if not isinstance(title_contains, str) or len(title_contains) > 300:
+            if (
+                not isinstance(title_contains, str)
+                or not title_contains.strip()
+                or len(title_contains) > 300
+            ):
                 raise ValueError("Invalid title filter.")
-            needle = title_contains.casefold()
+            needle = title_contains.strip().casefold()
+        if process_id is None and needle is None and not allow_all_windows:
+            raise ValueError(
+                "UIA observation requires an exact process_id, a non-empty title filter, "
+                "or explicit allow_all_windows=True."
+            )
 
         desktop = self._desktop()
+        provider_filters: dict[str, Any] = {"visible_only": not include_hidden}
+        if process_id is not None:
+            provider_filters["process"] = process_id
+        if needle is not None:
+            provider_filters["title_re"] = "(?i).*" + re.escape(title_contains.strip()) + ".*"
         try:
-            windows = list(desktop.windows())[:max_windows]
+            windows = iter(desktop.windows(**provider_filters))
         except Exception as exc:
             raise WindowsUIAError(f"UIA window enumeration failed ({type(exc).__name__}).") from None
 
         snapshots: list[UIAWindowSnapshot] = []
-        for window in windows:
+        scanned = 0
+        scan_limit = min(400, max_windows * 4)
+        while True:
+            try:
+                window = next(windows)
+            except StopIteration:
+                break
+            except Exception as exc:
+                raise WindowsUIAError(
+                    f"UIA window enumeration failed ({type(exc).__name__})."
+                ) from None
+            scanned += 1
+            if scanned > scan_limit:
+                raise WindowsUIAError(
+                    "UIA provider scan exceeds the explicit bound; narrow the scope."
+                )
             title = _clean_text(_safe_call(window, "window_text", ""), 500)
             if needle is not None and needle not in title.casefold():
                 continue
-            try:
-                descendants = list(window.descendants())
-            except Exception:
-                descendants = []
-            controls = tuple(self._element(item) for item in descendants[:max_controls_per_window])
+            window_pid = _pid(window)
+            if process_id is not None and window_pid != process_id:
+                continue
+            if len(snapshots) >= max_windows:
+                raise WindowsUIAError(
+                    "UIA window result exceeds the explicit bound; narrow the scope."
+                )
+            descendants, truncated = self._bounded_descendants(
+                window, max_controls_per_window
+            )
+            controls = tuple(self._element(item) for item in descendants)
             handle = getattr(window, "handle", None)
             snapshots.append(UIAWindowSnapshot(
                 title=title,
                 handle=handle if isinstance(handle, int) and not isinstance(handle, bool) else None,
-                process_id=_pid(window),
+                process_id=window_pid,
                 rectangle=_rect(window),
                 controls=controls,
-                truncated=len(descendants) > max_controls_per_window,
+                truncated=truncated,
             ))
         return tuple(snapshots)

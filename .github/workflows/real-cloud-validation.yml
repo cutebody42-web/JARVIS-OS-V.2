@@ -357,12 +357,12 @@ jobs:
       - name: Generate Windows icons
         working-directory: web
         shell: pwsh
-        run: npx --yes @tauri-apps/cli@2.12.0 icon src-tauri/jarvis-icon.svg
+        run: npx --no-install tauri icon src-tauri/jarvis-icon.svg
 
       - name: Build real NSIS installer
         working-directory: web
         shell: pwsh
-        run: npx --yes @tauri-apps/cli@2.12.0 build --bundles nsis
+        run: npx --no-install tauri build --bundles nsis
 
       - name: Silent-install and launch desktop product
         shell: pwsh
@@ -496,7 +496,7 @@ jobs:
         working-directory: web
         env:
           CI: "true"
-        run: npx --yes @tauri-apps/cli@2.12.0 android init
+        run: npx --no-install tauri android init
 
       - name: Pin generated SDK to API 36
         working-directory: web
@@ -511,7 +511,7 @@ jobs:
         working-directory: web
         env:
           CI: "true"
-        run: npx --yes @tauri-apps/cli@2.12.0 android build --debug --apk --target x86_64
+        run: npx --no-install tauri android build --debug --apk --target x86_64
 
       - name: Collect emulator APK
         shell: bash

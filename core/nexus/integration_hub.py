@@ -42,15 +42,72 @@ class NEXUSIntegrationHub:
         environment: Mapping[str, str] | None = None,
         platform_name: str | None = None,
     ) -> None:
-        root = Path(data_root or os.environ.get("JARVIS_DATA_ROOT", "~/.jarvis")).expanduser()
-        self.data_root = root.resolve()
         self._env = dict(os.environ if environment is None else environment)
+        root_value: str | Path
+        if data_root is not None:
+            root_value = data_root
+        else:
+            configured_root = self._environment_text("JARVIS_DATA_ROOT")
+            root_value = configured_root or "~/.jarvis"
+        # Validate the eventual built-in ledger path without creating it.  This
+        # also rejects relative, UNC/network, source-tree and redirected roots.
+        default_memory = TemporalMemoryStore.validate_path(
+            Path(root_value).expanduser() / "memory" / "temporal.db"
+        )
+        self.data_root = default_memory.parents[1]
+        configured_memory = self._environment_text("JARVIS_TEMPORAL_MEMORY_PATH")
+        self._memory_path = TemporalMemoryStore.validate_path(
+            Path(configured_memory).expanduser() if configured_memory else default_memory
+        )
         self._platform = platform_name or platform.system()
         self._speech = None
         self._mcp = None
         self._uia = None
         self._memory = None
         self._browser = None
+
+    def _environment_text(self, name: str) -> str:
+        value = self._env.get(name, "")
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be text.")
+        return value.strip()
+
+    @staticmethod
+    def _local_read_path(value: str, *, variable: str) -> Path:
+        if not value or "\x00" in value or value.replace("/", "\\").startswith("\\\\"):
+            raise ValueError(f"{variable} must be a local absolute path.")
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError(f"{variable} must be an absolute path.")
+        absolute = candidate.absolute()
+        try:
+            resolved = absolute.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"{variable} cannot be resolved safely.") from exc
+        if resolved != absolute:
+            raise ValueError(f"{variable} must not traverse filesystem links.")
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                drive_type = ctypes.windll.kernel32.GetDriveTypeW(str(Path(resolved.anchor)))
+            except (AttributeError, OSError, ValueError) as exc:
+                raise ValueError(f"{variable} must use a local fixed drive.") from exc
+            if drive_type != 3:
+                raise ValueError(f"{variable} must use a local fixed drive.")
+        return resolved
+
+    def _mcp_registry(self) -> MCPDiscoveryRegistry:
+        try:
+            raw = self._environment_text("JARVIS_MCP_DISCOVERY_JSON")
+        except ValueError as exc:
+            raise MCPDiscoveryError("MCP discovery configuration must be text.") from exc
+        if not raw:
+            raise MCPDiscoveryError("JARVIS_MCP_DISCOVERY_JSON is not configured.")
+        registry = MCPDiscoveryRegistry.from_json(raw)
+        if not registry.snapshot():
+            raise MCPDiscoveryError("MCP discovery has no configured servers.")
+        return registry
 
     def _module_available(self, name: str) -> bool:
         try:
@@ -60,13 +117,12 @@ class NEXUSIntegrationHub:
 
     @property
     def stt_model_path(self) -> Path | None:
-        value = self._env.get("JARVIS_STT_MODEL_PATH", "").strip()
-        return Path(value).expanduser().resolve() if value else None
+        value = self._environment_text("JARVIS_STT_MODEL_PATH")
+        return self._local_read_path(value, variable="JARVIS_STT_MODEL_PATH") if value else None
 
     @property
     def temporal_memory_path(self) -> Path:
-        value = self._env.get("JARVIS_TEMPORAL_MEMORY_PATH", "").strip()
-        return (Path(value).expanduser() if value else self.data_root / "memory" / "temporal.db").resolve()
+        return self._memory_path
 
     def status(self) -> tuple[IntegrationState, ...]:
         stt_path = self.stt_model_path
@@ -74,7 +130,11 @@ class NEXUSIntegrationHub:
         stt_configured = bool(stt_path and stt_path.exists() and stt_path.is_dir())
 
         mcp_installed = self._module_available("mcp")
-        mcp_configured = bool(self._env.get("JARVIS_MCP_DISCOVERY_JSON", "").strip())
+        try:
+            registry = self._mcp_registry()
+        except MCPDiscoveryError:
+            registry = None
+        mcp_configured = registry is not None
 
         uia_installed = self._module_available("pywinauto")
         uia_available = self._platform == "Windows" and uia_installed
@@ -95,7 +155,11 @@ class NEXUSIntegrationHub:
                 configured=mcp_configured,
                 active=self._mcp is not None,
                 provider="modelcontextprotocol/python-sdk",
-                detail=("configured" if mcp_configured else "Set JARVIS_MCP_DISCOVERY_JSON."),
+                detail=(
+                    f"{len(registry.snapshot())} server(s) configured."
+                    if registry is not None
+                    else "Set JARVIS_MCP_DISCOVERY_JSON to a valid bounded server list."
+                ),
             ),
             IntegrationState(
                 "windows_uia",
@@ -133,30 +197,7 @@ class NEXUSIntegrationHub:
 
     def mcp_discovery(self) -> MCPDiscoveryRuntime:
         if self._mcp is None:
-            raw = self._env.get("JARVIS_MCP_DISCOVERY_JSON", "").strip()
-            if not raw:
-                raise MCPDiscoveryError("JARVIS_MCP_DISCOVERY_JSON is not configured.")
-            import json
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise MCPDiscoveryError("MCP discovery configuration is not valid JSON.") from exc
-            if not isinstance(payload, list) or len(payload) > 32:
-                raise MCPDiscoveryError("MCP discovery configuration must be a bounded list.")
-            from core.mcp_discovery import MCPDiscoveryServer
-            servers = []
-            for item in payload:
-                if not isinstance(item, dict) or set(item) - {"server_id", "url", "allow_remote"}:
-                    raise MCPDiscoveryError("Invalid MCP discovery server entry.")
-                try:
-                    servers.append(MCPDiscoveryServer(
-                        server_id=item["server_id"],
-                        url=item["url"],
-                        allow_remote=item.get("allow_remote", False) is True,
-                    ))
-                except (KeyError, TypeError, ValueError):
-                    raise MCPDiscoveryError("Invalid MCP discovery server entry.") from None
-            self._mcp = MCPDiscoveryRuntime(MCPDiscoveryRegistry(tuple(servers)))
+            self._mcp = MCPDiscoveryRuntime(self._mcp_registry())
         return self._mcp
 
     def windows_uia(self) -> WindowsUIAObserver:

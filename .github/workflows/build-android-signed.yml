@@ -17,39 +17,40 @@ permissions:
   contents: read
 
 jobs:
-  signed-release:
-    runs-on: ubuntu-latest
+  build-release:
+    # A production dispatch may select only main. Pull requests receive a
+    # throwaway key and never receive the owner's production signing secrets.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
+    outputs:
+      unsigned-artifact-digest: ${{ steps.unsigned-transfer.outputs.artifact-digest }}
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-      ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-      ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: "21"
 
-      - name: Install Android platform and signing tools
+      - name: Install Android platform and verification tools
         shell: bash
         run: |
           set -euo pipefail
@@ -64,6 +65,7 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
           "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
           test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/zipalign"
 
       - name: Resolve Android NDK
         shell: bash
@@ -85,13 +87,14 @@ jobs:
 
       - name: Install Rust Android target
         run: |
+          set -euo pipefail
           rustup update stable
           rustup default stable
           rustup target add aarch64-linux-android
           rustc --version
           cargo --version
 
-      - name: Install web dependencies
+      - name: Install locked web dependencies
         working-directory: web
         run: npm ci
 
@@ -99,7 +102,7 @@ jobs:
         working-directory: web
         env:
           CI: "true"
-        run: npx --yes @tauri-apps/cli@2.12.0 android init
+        run: npx --no-install tauri android init
 
       - name: Pin generated Android SDK to tested platform
         working-directory: web
@@ -111,44 +114,28 @@ jobs:
             sed -i -E 's/targetSdk([[:space:]]*=[[:space:]]*)[0-9]+/targetSdk\1 36/g' "$file"
           done
 
-      - name: Prepare isolated signing key and Gradle config
+      - name: Prepare throwaway pull-request signing contract
+        if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
-          KEYSTORE="$RUNNER_TEMP/jarvis-android-release.jks"
+          umask 077
+          KEYSTORE="$RUNNER_TEMP/jarvis-android-ci-contract.jks"
           PROPERTIES="$GITHUB_WORKSPACE/web/src-tauri/gen/android/keystore.properties"
           GRADLE="$GITHUB_WORKSPACE/web/src-tauri/gen/android/app/build.gradle.kts"
-
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            KEY_ALIAS="jarvis-ci-contract"
-            KEY_PASSWORD="jarvis-ci-contract-password"
-            STORE_PASSWORD="jarvis-ci-contract-password"
-            keytool -genkeypair -noprompt \
-              -keystore "$KEYSTORE" \
-              -storetype JKS \
-              -storepass "$STORE_PASSWORD" \
-              -keypass "$KEY_PASSWORD" \
-              -alias "$KEY_ALIAS" \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 3650 \
-              -dname "CN=JARVIS CI Signing Contract, OU=CI, O=JARVIS, C=US"
-            SIGNING_KIND="ephemeral-ci-contract"
-          else
-            for name in ANDROID_KEY_BASE64 ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_STORE_PASSWORD ANDROID_CERT_SHA256; do
-              if [ -z "${!name:-}" ]; then
-                echo "Required production signing secret $name is missing" >&2
-                exit 1
-              fi
-            done
-            printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$KEYSTORE"
-            KEY_ALIAS="$ANDROID_KEY_ALIAS"
-            KEY_PASSWORD="$ANDROID_KEY_PASSWORD"
-            STORE_PASSWORD="$ANDROID_STORE_PASSWORD"
-            SIGNING_KIND="production-keystore"
-          fi
-
-          test -s "$KEYSTORE"
+          KEY_ALIAS="jarvis-ci-contract"
+          KEY_PASSWORD="jarvis-ci-contract-password"
+          STORE_PASSWORD="jarvis-ci-contract-password"
+          keytool -genkeypair -noprompt \
+            -keystore "$KEYSTORE" \
+            -storetype JKS \
+            -storepass "$STORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
+            -alias "$KEY_ALIAS" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=JARVIS CI Signing Contract, OU=CI, O=JARVIS, C=US"
           export KEYSTORE PROPERTIES KEY_ALIAS KEY_PASSWORD STORE_PASSWORD
           python - <<'PY'
           import os
@@ -170,60 +157,320 @@ jobs:
               encoding="utf-8",
           )
           PY
-
           python scripts/configure_android_signing.py "$GRADLE"
-          keytool -list -keystore "$KEYSTORE" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
-          echo "JARVIS_SIGNING_KIND=$SIGNING_KIND" >> "$GITHUB_ENV"
 
-      - name: Build signed release APK
+      - name: Build release APK
         working-directory: web
         env:
           CI: "true"
-        run: npx --yes @tauri-apps/cli@2.12.0 android build --apk --target aarch64
+        run: npx --no-install tauri android build --apk --target aarch64
 
-      - name: Verify APK signature and certificate identity
+      - name: Verify pull-request signing contract
+        if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/android-signed
-          APK="$(find web/src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' ! -iname '*debug*' | head -n 1)"
-          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-            echo "Signed release APK was not produced" >&2
+          OUTPUT_DIR="web/src-tauri/gen/android/app/build/outputs/apk"
+          mapfile -d '' -t APKS < <(
+            find "$OUTPUT_DIR" -type f -name '*-release.apk' ! -iname '*debug*' -print0 | sort -z
+          )
+          if [ "${#APKS[@]}" -ne 1 ] || [ -L "${APKS[0]:-}" ]; then
+            echo "Expected exactly one regular CI-signed release APK, found ${#APKS[@]}" >&2
+            exit 1
+          fi
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "${APKS[0]}"
+
+      - name: Collect unsigned production input
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          OUTPUT_DIR="web/src-tauri/gen/android/app/build/outputs/apk"
+          mapfile -d '' -t APKS < <(
+            find "$OUTPUT_DIR" -type f -name '*-release-unsigned.apk' ! -iname '*debug*' -print0 | sort -z
+          )
+          if [ "${#APKS[@]}" -ne 1 ] || [ -L "${APKS[0]:-}" ]; then
+            echo "Expected exactly one regular unsigned release APK, found ${#APKS[@]}" >&2
+            exit 1
+          fi
+          APK="${APKS[0]}"
+          if "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$APK" >/dev/null 2>&1; then
+            echo "Production build input was unexpectedly signed on the build runner" >&2
             exit 1
           fi
 
+          STAGING="$RUNNER_TEMP/jarvis-android-unsigned"
+          install -d -m 700 "$STAGING"
+          cp -- "$APK" "$STAGING/JARVIS-Companion-release-unsigned.apk"
+          chmod 600 "$STAGING/JARVIS-Companion-release-unsigned.apk"
+          (
+            cd "$STAGING"
+            sha256sum JARVIS-Companion-release-unsigned.apk > SHA256SUMS
+            chmod 600 SHA256SUMS
+          )
+
+      - name: Transfer unsigned APK to isolated signer
+        id: unsigned-transfer
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: JARVIS-Android-Unsigned-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/jarvis-android-unsigned/JARVIS-Companion-release-unsigned.apk
+            ${{ runner.temp }}/jarvis-android-unsigned/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
+  production-sign:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: android-production-signing
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install exact Android signing and analysis tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
-          VERIFY_OUTPUT="$($APKSIGNER verify --verbose --print-certs "$APK")"
-          printf '%s\n' "$VERIFY_OUTPUT"
-          CERT_SHA="$(printf '%s\n' "$VERIFY_OUTPUT" | awk -F': ' '/Signer #1 certificate SHA-256 digest/ {print $2; exit}' | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
-          if [ -z "$CERT_SHA" ]; then
-            echo "Could not extract signer certificate SHA-256" >&2
+          ZIPALIGN="$ANDROID_HOME/build-tools/36.0.0/zipalign"
+          APKANALYZER="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+          if [ ! -x "$SDKMANAGER" ] || [ ! -x "$APKANALYZER" ]; then
+            echo "Android command-line tools are unavailable" >&2
             exit 1
           fi
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "build-tools;36.0.0"
+          if [ ! -x "$APKSIGNER" ] || [ ! -x "$ZIPALIGN" ]; then
+            echo "Android build-tools 36.0.0 are unavailable" >&2
+            exit 1
+          fi
+          echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
+          echo "ZIPALIGN=$ZIPALIGN" >> "$GITHUB_ENV"
+          echo "APKANALYZER=$APKANALYZER" >> "$GITHUB_ENV"
 
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            EXPECTED="$(printf '%s' "$ANDROID_CERT_SHA256" | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
-            if [ "$CERT_SHA" != "$EXPECTED" ]; then
-              echo "APK signer certificate does not match ANDROID_CERT_SHA256" >&2
+      - name: Download unsigned APK without executing application code
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: JARVIS-Android-Unsigned-${{ github.run_id }}
+          path: unsigned
+
+      - name: Validate unsigned release identity before exposing secrets
+        id: validate-unsigned
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRANSFER="$GITHUB_WORKSPACE/unsigned"
+          INPUT="$TRANSFER/JARVIS-Companion-release-unsigned.apk"
+          CHECKSUMS="$TRANSFER/SHA256SUMS"
+
+          mapfile -d '' -t ENTRIES < <(
+            find "$TRANSFER" -mindepth 1 -maxdepth 1 -print0 | sort -z
+          )
+          if [ "${#ENTRIES[@]}" -ne 2 ]; then
+            echo "Unsigned transfer must contain exactly the APK and SHA256SUMS" >&2
+            exit 1
+          fi
+          for entry in "${ENTRIES[@]}"; do
+            case "$entry" in
+              "$INPUT"|"$CHECKSUMS") ;;
+              *)
+                echo "Unexpected unsigned-transfer entry: $entry" >&2
+                exit 1
+                ;;
+            esac
+          done
+          for file in "$INPUT" "$CHECKSUMS"; do
+            if [ ! -f "$file" ] || [ -L "$file" ]; then
+              echo "Unsigned-transfer entry is not a regular non-link file: $file" >&2
               exit 1
             fi
+          done
+
+          APK_SIZE="$(stat -c '%s' -- "$INPUT")"
+          if ! [[ "$APK_SIZE" =~ ^[0-9]+$ ]] || [ "$APK_SIZE" -le 0 ] || [ "$APK_SIZE" -gt 536870912 ]; then
+            echo "Unsigned APK size is outside the accepted 1..536870912 byte range" >&2
+            exit 1
           fi
 
-          cp "$APK" artifacts/android-signed/JARVIS-Companion-release.apk
-          sha256sum artifacts/android-signed/JARVIS-Companion-release.apk | awk '{print "sha256="$1}' > artifacts/android-signed/build-info.txt
+          # 64 hex bytes, two spaces, the fixed APK name, and one newline.
+          if [ "$(stat -c '%s' -- "$CHECKSUMS")" -ne 104 ] || [ "$(awk 'END { print NR }' "$CHECKSUMS")" != "1" ]; then
+            echo "SHA256SUMS must contain exactly one record" >&2
+            exit 1
+          fi
+          CHECKSUM_LINE="$(sed -n '1p' "$CHECKSUMS")"
+          EXPECTED_SHA="${CHECKSUM_LINE%%  *}"
+          if ! [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]] || [ "$CHECKSUM_LINE" != "$EXPECTED_SHA  JARVIS-Companion-release-unsigned.apk" ]; then
+            echo "SHA256SUMS has an invalid or unsafe record" >&2
+            exit 1
+          fi
+          ACTUAL_SHA="$(sha256sum "$INPUT" | awk '{print $1}')"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "Unsigned APK transfer checksum does not match" >&2
+            exit 1
+          fi
+          if "$APKSIGNER" verify "$INPUT" >/dev/null 2>&1; then
+            echo "Production input must be unsigned before isolated signing" >&2
+            exit 1
+          fi
+
+          PACKAGE_ID="$("$APKANALYZER" manifest application-id "$INPUT" | tr -d '\r\n')"
+          DEBUGGABLE="$("$APKANALYZER" manifest debuggable "$INPUT" | tr -d '\r\n')"
+          VERSION_NAME="$("$APKANALYZER" manifest version-name "$INPUT" | tr -d '\r\n')"
+          VERSION_CODE="$("$APKANALYZER" manifest version-code "$INPUT" | tr -d '\r\n')"
+          FILES_LIST="$("$APKANALYZER" files list "$INPUT")"
+          ABIS="$(printf '%s\n' "$FILES_LIST" | awk -F/ '$2 == "lib" && NF >= 4 && $3 != "" && $NF != "" { print $3 }' | LC_ALL=C sort -u)"
+          if [ "$PACKAGE_ID" != "ai.jarvis.app" ] || [ "$DEBUGGABLE" != "false" ]; then
+            echo "Unsigned APK has an unexpected package ID or is debuggable" >&2
+            exit 1
+          fi
+          if [ "$VERSION_NAME" != "2.0.0" ] || [ "$VERSION_CODE" != "2000000" ]; then
+            echo "Unsigned APK has an unexpected version identity" >&2
+            exit 1
+          fi
+          if [ "$ABIS" != "arm64-v8a" ]; then
+            echo "Unsigned APK must contain only arm64-v8a native libraries" >&2
+            exit 1
+          fi
+
+          echo "sha256=$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
+          echo "Validated ai.jarvis.app 2.0.0 (2000000), arm64-v8a, non-debuggable"
+
+      - name: Sign and verify on isolated runner
+        id: production-sign
+        shell: bash
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in ANDROID_KEY_BASE64 ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_STORE_PASSWORD ANDROID_CERT_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "Required production signing secret $name is missing" >&2
+              exit 1
+            fi
+          done
+
+          INPUT="$GITHUB_WORKSPACE/unsigned/JARVIS-Companion-release-unsigned.apk"
+          KEYSTORE="$RUNNER_TEMP/jarvis-android-release.jks"
+          ALIGNED="$RUNNER_TEMP/JARVIS-Companion-release-aligned.apk"
+          OUTPUT="$GITHUB_WORKSPACE/artifacts/android-signed/JARVIS-Companion-release.apk"
+          SIGNING_SUCCEEDED=0
+          cleanup() {
+            rm -f -- "$KEYSTORE" "$ALIGNED"
+            if [ "$SIGNING_SUCCEEDED" -ne 1 ]; then
+              rm -f -- "$OUTPUT"
+            fi
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$(dirname "$OUTPUT")"
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          test -s "$KEYSTORE"
+
+          "$ZIPALIGN" -P 16 -f 4 "$INPUT" "$ALIGNED"
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_STORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --v4-signing-enabled false \
+            --out "$OUTPUT" \
+            "$ALIGNED"
+
+          VERIFY_OUTPUT="$("$APKSIGNER" verify --verbose --print-certs "$OUTPUT")"
+          printf '%s\n' "$VERIFY_OUTPUT"
+          CERT_SHA="$(printf '%s\n' "$VERIFY_OUTPUT" | awk -F': ' '/Signer #1 certificate SHA-256 digest/ {print $2; exit}' | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          EXPECTED="$(printf '%s' "$ANDROID_CERT_SHA256" | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          if ! [[ "$CERT_SHA" =~ ^[a-f0-9]{64}$ ]] || ! [[ "$EXPECTED" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "APK signer certificate fingerprint is malformed" >&2
+            exit 1
+          fi
+          if [ "$CERT_SHA" != "$EXPECTED" ]; then
+            echo "APK signer certificate does not match ANDROID_CERT_SHA256" >&2
+            exit 1
+          fi
+
+          echo "certificate_sha256=$CERT_SHA" >> "$GITHUB_OUTPUT"
+          SIGNING_SUCCEEDED=1
+
+      - name: Revalidate signed release identity and record provenance
+        shell: bash
+        env:
+          EXPECTED_CERT_SHA256: ${{ steps.production-sign.outputs.certificate_sha256 }}
+          UNSIGNED_SHA256: ${{ steps.validate-unsigned.outputs.sha256 }}
+          TRANSFER_ARTIFACT_SHA256: ${{ needs.build-release.outputs.unsigned-artifact-digest }}
+        run: |
+          set -euo pipefail
+          OUTPUT="$GITHUB_WORKSPACE/artifacts/android-signed/JARVIS-Companion-release.apk"
+          if [ ! -f "$OUTPUT" ] || [ -L "$OUTPUT" ]; then
+            echo "Signed release APK is missing or redirected" >&2
+            exit 1
+          fi
+          "$ZIPALIGN" -c -P 16 4 "$OUTPUT"
+          VERIFY_OUTPUT="$("$APKSIGNER" verify --verbose --print-certs "$OUTPUT")"
+          CERT_SHA="$(printf '%s\n' "$VERIFY_OUTPUT" | awk -F': ' '/Signer #1 certificate SHA-256 digest/ {print $2; exit}' | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          if ! [[ "$EXPECTED_CERT_SHA256" =~ ^[a-f0-9]{64}$ ]] || [ "$CERT_SHA" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "Post-sign certificate verification failed" >&2
+            exit 1
+          fi
+
+          PACKAGE_ID="$("$APKANALYZER" manifest application-id "$OUTPUT" | tr -d '\r\n')"
+          DEBUGGABLE="$("$APKANALYZER" manifest debuggable "$OUTPUT" | tr -d '\r\n')"
+          VERSION_NAME="$("$APKANALYZER" manifest version-name "$OUTPUT" | tr -d '\r\n')"
+          VERSION_CODE="$("$APKANALYZER" manifest version-code "$OUTPUT" | tr -d '\r\n')"
+          FILES_LIST="$("$APKANALYZER" files list "$OUTPUT")"
+          ABIS="$(printf '%s\n' "$FILES_LIST" | awk -F/ '$2 == "lib" && NF >= 4 && $3 != "" && $NF != "" { print $3 }' | LC_ALL=C sort -u)"
+          if [ "$PACKAGE_ID" != "ai.jarvis.app" ] || [ "$DEBUGGABLE" != "false" ]; then
+            echo "Signed APK has an unexpected package ID or is debuggable" >&2
+            exit 1
+          fi
+          if [ "$VERSION_NAME" != "2.0.0" ] || [ "$VERSION_CODE" != "2000000" ]; then
+            echo "Signed APK has an unexpected version identity" >&2
+            exit 1
+          fi
+          if [ "$ABIS" != "arm64-v8a" ]; then
+            echo "Signed APK must contain only arm64-v8a native libraries" >&2
+            exit 1
+          fi
+
+          SIGNED_SHA="$(sha256sum "$OUTPUT" | awk '{print $1}')"
           {
-            echo "commit=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "sha256=$SIGNED_SHA"
+            echo "unsigned_sha256=$UNSIGNED_SHA256"
+            echo "transfer_artifact_sha256=$TRANSFER_ARTIFACT_SHA256"
+            echo "commit=${{ github.sha }}"
             echo "shell=tauri-mobile"
-            echo "architecture=aarch64"
+            echo "architecture=arm64-v8a"
+            echo "package_id=$PACKAGE_ID"
+            echo "version_name=$VERSION_NAME"
+            echo "version_code=$VERSION_CODE"
             echo "build_type=release"
+            echo "debuggable=false"
             echo "signature_verified=true"
-            echo "signing_kind=$JARVIS_SIGNING_KIND"
+            echo "signing_kind=production-keystore-isolated-runner"
             echo "certificate_sha256=$CERT_SHA"
-          } >> artifacts/android-signed/build-info.txt
+            echo "android_build_tools=36.0.0"
+          } > "$GITHUB_WORKSPACE/artifacts/android-signed/build-info.txt"
 
       - name: Upload production signed Android release
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: JARVIS-Android-Signed-Release
           path: |

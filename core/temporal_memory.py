@@ -16,9 +16,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 import uuid
 
@@ -27,10 +29,220 @@ from core.vector_index import VectorIndex
 
 _CLAIM_ID = re.compile(r"[a-f0-9]{32}")
 _SOURCE_ID = re.compile(r"[A-Za-z0-9_.:/@-]{1,240}")
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+_STATE_SIDECARS = ("", "-wal", "-shm", "-journal")
+
+# Temporal memory is intentionally a small, owner-local evidence ledger.  These
+# limits keep malformed/imported content from turning it into an unbounded disk
+# sink.  The SQLite page limit is also applied to every connection below.
+DEFAULT_MAX_CLAIMS = 100_000
+DEFAULT_MAX_STORAGE_BYTES = 512 * 1024 * 1024
+DEFAULT_WRITE_RESERVE_BYTES = 128 * 1024
 
 
 class TemporalMemoryError(RuntimeError):
     pass
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _looks_like_unc(value: str) -> bool:
+    normalized = value.replace("/", "\\")
+    return normalized.startswith("\\\\")
+
+
+def _reject_indirect_components(path: Path) -> None:
+    """Reject symlinks and Windows junctions in every existing component."""
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink() or _is_reparse_point(current):
+            raise TemporalMemoryError(
+                "Temporal memory state must not traverse symlinks or reparse points."
+            )
+
+
+def _reject_non_local_path(path: Path) -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        drive_type = ctypes.windll.kernel32.GetDriveTypeW(str(Path(path.anchor)))
+    except (AttributeError, OSError, ValueError) as exc:
+        raise TemporalMemoryError(
+            "Could not verify that temporal memory uses a local fixed drive."
+        ) from exc
+    # DRIVE_FIXED is the only location certified for durable owner state.
+    if drive_type != 3:
+        raise TemporalMemoryError("Temporal memory must use a local fixed drive.")
+
+
+def _validated_state_path(value: str | Path) -> Path:
+    try:
+        raw = os.fspath(value)
+    except TypeError as exc:
+        raise TemporalMemoryError("Temporal memory path must be filesystem text.") from exc
+    if not isinstance(raw, str) or not raw or "\x00" in raw or _looks_like_unc(raw):
+        raise TemporalMemoryError("Temporal memory requires a local absolute path.")
+    try:
+        candidate = Path(raw).expanduser()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise TemporalMemoryError("Temporal memory path is invalid.") from exc
+    if not candidate.is_absolute():
+        raise TemporalMemoryError("Temporal memory requires an absolute path.")
+    absolute = candidate.absolute()
+    _reject_indirect_components(absolute)
+    try:
+        resolved = absolute.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise TemporalMemoryError("Temporal memory path cannot be resolved safely.") from exc
+    if resolved != absolute:
+        raise TemporalMemoryError(
+            "Temporal memory state must not be redirected through filesystem links."
+        )
+    if resolved == _SOURCE_ROOT or resolved.is_relative_to(_SOURCE_ROOT):
+        raise TemporalMemoryError("Temporal memory state must be outside application source.")
+    _reject_non_local_path(resolved)
+    return resolved
+
+
+def _harden_windows_path(path: Path, *, directory: bool) -> None:
+    """Allow only the current Windows user and LocalSystem to access state."""
+    try:
+        import ntsecuritycon
+        import win32api
+        import win32con
+        import win32security
+
+        token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+        )
+        owner = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        system = win32security.CreateWellKnownSid(
+            win32security.WinLocalSystemSid, None
+        )
+        inheritance = (
+            win32security.CONTAINER_INHERIT_ACE
+            | win32security.OBJECT_INHERIT_ACE
+            if directory
+            else 0
+        )
+        acl = win32security.ACL()
+        for sid in (owner, system):
+            acl.AddAccessAllowedAceEx(
+                win32security.ACL_REVISION_DS,
+                inheritance,
+                ntsecuritycon.FILE_ALL_ACCESS,
+                sid,
+            )
+        win32security.SetNamedSecurityInfo(
+            str(path),
+            win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION
+            | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            acl,
+            None,
+        )
+    except (ImportError, OSError, AttributeError) as exc:
+        raise TemporalMemoryError(
+            "Could not establish private Windows temporal-memory state."
+        ) from exc
+
+
+def _prepare_private_directory(path: Path) -> None:
+    _reject_indirect_components(path)
+    try:
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise TemporalMemoryError("Could not create temporal-memory state directory.") from exc
+    _reject_indirect_components(path)
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise TemporalMemoryError("Temporal-memory state directory is inaccessible.") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise TemporalMemoryError("Temporal-memory state parent must be a directory.")
+    if os.name == "posix":
+        if info.st_uid != os.geteuid():
+            raise TemporalMemoryError("Temporal-memory state directory must be owner-controlled.")
+        try:
+            path.chmod(0o700)
+        except OSError as exc:
+            raise TemporalMemoryError("Could not make temporal-memory state private.") from exc
+        if stat.S_IMODE(path.stat().st_mode) != 0o700:
+            raise TemporalMemoryError("Temporal-memory directory must use mode 0700.")
+    elif os.name == "nt":
+        _harden_windows_path(path, directory=True)
+    else:
+        raise TemporalMemoryError(
+            "Temporal-memory persistence is not certified on this platform."
+        )
+
+
+def _protect_private_file(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise TemporalMemoryError("Temporal-memory state file disappeared.") from None
+    except OSError as exc:
+        raise TemporalMemoryError("Temporal-memory state file is inaccessible.") from exc
+    if (
+        path.is_symlink()
+        or _is_reparse_point(path)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+    ):
+        raise TemporalMemoryError(
+            "Temporal-memory state must be a single-link regular local file."
+        )
+    if os.name == "posix":
+        try:
+            path.chmod(0o600)
+        except OSError as exc:
+            raise TemporalMemoryError("Could not make temporal-memory file private.") from exc
+        if stat.S_IMODE(path.stat().st_mode) != 0o600:
+            raise TemporalMemoryError("Temporal-memory files must use mode 0600.")
+    elif os.name == "nt":
+        _harden_windows_path(path, directory=False)
+    else:
+        raise TemporalMemoryError(
+            "Temporal-memory persistence is not certified on this platform."
+        )
+
+
+def _prepare_private_file(path: Path) -> None:
+    if path.exists() or path.is_symlink() or _is_reparse_point(path):
+        _protect_private_file(path)
+        return
+    flags = os.O_CREAT | os.O_RDWR
+    if os.name == "posix":
+        flags |= os.O_NOFOLLOW
+    elif os.name == "nt":
+        flags |= os.O_BINARY | getattr(os, "O_NOINHERIT", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise TemporalMemoryError("Could not create temporal-memory state file.") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise TemporalMemoryError(
+                "Temporal-memory state must be a single-link regular local file."
+            )
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+    _protect_private_file(path)
 
 
 @dataclass(frozen=True)
@@ -117,23 +329,104 @@ class TemporalMemoryStore:
     claim and closes the previous claim's validity interval atomically.
     """
 
+    MAX_CLAIMS = DEFAULT_MAX_CLAIMS
+    MAX_STORAGE_BYTES = DEFAULT_MAX_STORAGE_BYTES
+    WRITE_RESERVE_BYTES = DEFAULT_WRITE_RESERVE_BYTES
+
+    @staticmethod
+    def validate_path(path: str | Path) -> Path:
+        """Return a canonical owner-local state path without creating it."""
+        return _validated_state_path(path)
+
     def __init__(self, path: str | Path) -> None:
-        db_path = Path(path).expanduser()
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.path = db_path
+        self.path = self.validate_path(path)
+        _prepare_private_directory(self.path.parent)
+        _prepare_private_file(self.path)
         self._vector_index: VectorIndex | None = None
+        self._assert_storage_budget(self.WRITE_RESERVE_BYTES)
         self._initialize()
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(str(self.path), timeout=10.0)
+    @staticmethod
+    def _file_family(path: Path) -> tuple[Path, ...]:
+        return tuple(Path(str(path) + suffix) for suffix in _STATE_SIDECARS)
+
+    @classmethod
+    def _protect_file_family(cls, path: Path) -> None:
+        for candidate in cls._file_family(path):
+            if candidate.exists() or candidate.is_symlink() or _is_reparse_point(candidate):
+                _protect_private_file(candidate)
+
+    def _state_storage_bytes(self) -> int:
+        total = 0
+        # The shared-memory file is fixed-size coordination state, while the DB
+        # and active WAL are the durable/growing portions of this budget.
+        for candidate in (self.path, Path(str(self.path) + "-wal")):
+            if candidate.exists() or candidate.is_symlink() or _is_reparse_point(candidate):
+                _protect_private_file(candidate)
+                try:
+                    total += candidate.stat().st_size
+                except OSError as exc:
+                    raise TemporalMemoryError(
+                        "Could not measure temporal-memory storage usage."
+                    ) from exc
+        return total
+
+    def _assert_storage_budget(self, reserve: int = 0) -> None:
+        maximum = self.MAX_STORAGE_BYTES
+        if (
+            isinstance(maximum, bool)
+            or not isinstance(maximum, int)
+            or not 1024 * 1024 <= maximum <= DEFAULT_MAX_STORAGE_BYTES
+        ):
+            raise TemporalMemoryError("Temporal-memory storage budget is invalid.")
+        if isinstance(reserve, bool) or not isinstance(reserve, int) or reserve < 0:
+            raise TemporalMemoryError("Temporal-memory write reserve is invalid.")
+        if self._state_storage_bytes() + reserve > maximum:
+            raise TemporalMemoryError("Temporal-memory storage budget is exhausted.")
+
+    def _assert_write_capacity(self, conn: sqlite3.Connection) -> None:
+        maximum = self.MAX_CLAIMS
+        if (
+            isinstance(maximum, bool)
+            or not isinstance(maximum, int)
+            or not 1 <= maximum <= DEFAULT_MAX_CLAIMS
+        ):
+            raise TemporalMemoryError("Temporal-memory claim quota is invalid.")
+        self._assert_storage_budget(self.WRITE_RESERVE_BYTES)
+        count = int(conn.execute("SELECT COUNT(*) FROM temporal_claims").fetchone()[0])
+        if count >= maximum:
+            raise TemporalMemoryError("Temporal-memory claim quota is exhausted.")
+
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 10000")
+        conn.execute("PRAGMA synchronous = FULL")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA mmap_size = 0")
+        conn.execute("PRAGMA wal_autocheckpoint = 256")
+        journal_limit = min(16 * 1024 * 1024, max(1024 * 1024, self.MAX_STORAGE_BYTES // 16))
+        conn.execute(f"PRAGMA journal_size_limit = {journal_limit}")
+        page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
+        maximum_pages = max(1, self.MAX_STORAGE_BYTES // page_size)
+        conn.execute(f"PRAGMA max_page_count = {maximum_pages}")
+        if hasattr(conn, "setlimit"):
+            conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1024 * 1024)
+            conn.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 128 * 1024)
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        self._protect_file_family(self.path)
         try:
+            conn = sqlite3.connect(str(self.path), timeout=10.0)
+        except sqlite3.Error as exc:
+            raise TemporalMemoryError("Could not open temporal-memory state.") from exc
+        try:
+            self._configure_connection(conn)
             yield conn
         finally:
             conn.close()
+            self._protect_file_family(self.path)
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -165,6 +458,7 @@ class TemporalMemoryStore:
                 """
             )
             conn.commit()
+        self._assert_storage_budget()
 
     @staticmethod
     def _row(row: sqlite3.Row) -> TemporalClaim:
@@ -215,6 +509,8 @@ class TemporalMemoryStore:
         claim_id = uuid.uuid4().hex
         created = _utc_now()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_write_capacity(conn)
             conn.execute(
                 """
                 INSERT INTO temporal_claims(
@@ -262,6 +558,10 @@ class TemporalMemoryStore:
         if not _SOURCE_ID.fullmatch(source):
             raise ValueError("source contains unsupported characters.")
         observed = _iso(observed_at, default_now=True)
+        if observed < old.valid_from:
+            raise TemporalMemoryError(
+                "A replacement claim cannot predate the claim it supersedes."
+            )
         score = _confidence(confidence)
         if not isinstance(verified, bool):
             raise ValueError("verified must be boolean.")
@@ -271,6 +571,7 @@ class TemporalMemoryStore:
 
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._assert_write_capacity(conn)
             current = conn.execute(
                 "SELECT valid_to, superseded_by FROM temporal_claims WHERE claim_id = ?",
                 (claim_id,),
@@ -393,13 +694,17 @@ class TemporalMemoryStore:
         The database is deliberately separate from the temporal ledger so a
         vector index can be rebuilt without changing claim history.
         """
-        vector_path = self.path.with_name(self.path.name + ".vectors")
-        self._vector_index = VectorIndex(
-            vector_path,
-            dimension=dimension,
-            prefer_native=prefer_native,
-            extension_path=extension_path,
-        )
+        vector_path = self.validate_path(self.path.with_name(self.path.name + ".vectors"))
+        _prepare_private_file(vector_path)
+        try:
+            self._vector_index = VectorIndex(
+                vector_path,
+                dimension=dimension,
+                prefer_native=prefer_native,
+                extension_path=extension_path,
+            )
+        finally:
+            self._protect_file_family(vector_path)
         return self._vector_index.status()
 
     def index_claim_embedding(
@@ -410,16 +715,20 @@ class TemporalMemoryStore:
         if self._vector_index is None:
             raise TemporalMemoryError("Vector index is not enabled.")
         claim = self.get(claim_id)
-        self._vector_index.upsert(
-            claim.claim_id,
-            embedding,
-            payload={
-                "subject": claim.subject,
-                "predicate": claim.predicate,
-                "source": claim.source,
-                "verified": claim.verified,
-            },
-        )
+        self._protect_file_family(self._vector_index.path)
+        try:
+            self._vector_index.upsert(
+                claim.claim_id,
+                embedding,
+                payload={
+                    "subject": claim.subject,
+                    "predicate": claim.predicate,
+                    "source": claim.source,
+                    "verified": claim.verified,
+                },
+            )
+        finally:
+            self._protect_file_family(self._vector_index.path)
 
     def semantic_search(
         self,
@@ -436,7 +745,11 @@ class TemporalMemoryStore:
 
         # Ask for extra candidates because stale/superseded entries are filtered
         # against the authoritative temporal ledger below.
-        matches = self._vector_index.search(embedding, limit=min(100, limit * 4))
+        self._protect_file_family(self._vector_index.path)
+        try:
+            matches = self._vector_index.search(embedding, limit=min(100, limit * 4))
+        finally:
+            self._protect_file_family(self._vector_index.path)
         results: list[SemanticClaimMatch] = []
         for match in matches:
             try:

@@ -7,6 +7,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+if __package__:
+    from .sqlalchemy_app_control import ensure_sqlalchemy_import
+else:
+    from sqlalchemy_app_control import ensure_sqlalchemy_import
+
 ROOT = Path(__file__).resolve().parent.parent
 VENV = ROOT / ".venv"
 PYTHON = VENV / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
@@ -31,6 +36,7 @@ def main() -> int:
         run(host_python, "-m", "venv", str(VENV))
     run(str(PYTHON), "-m", "pip", "install", "--upgrade", "pip")
     run(str(PYTHON), "-m", "pip", "install", "-r", "requirements.txt")
+    ensure_sqlalchemy_import(str(PYTHON), root=ROOT)
     run(str(PYTHON), "-m", "pip", "install", "-e", ".")
 
     env_file = ROOT / ".env"

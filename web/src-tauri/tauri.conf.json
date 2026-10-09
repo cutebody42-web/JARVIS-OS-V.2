@@ -39,7 +39,8 @@
     "shortDescription": "One continuous local-first JARVIS",
     "longDescription": "JARVIS is a local-first personal AI with one identity and synchronized desktop/mobile continuity.",
     "android": {
-      "minSdkVersion": 28
+      "minSdkVersion": 28,
+      "versionCode": 2000000
     }
   },
   "plugins": {
