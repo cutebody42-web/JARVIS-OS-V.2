@@ -32,8 +32,6 @@
   },
   "bundle": {
     "active": true,
-    "resources": ["resources/libsodium.dll"],
-    "windows": {"nsis": {"installMode": "currentUser", "installerHooks": "./windows/hooks.nsh"}},
     "targets": "all",
     "category": "Productivity",
     "shortDescription": "One continuous local-first JARVIS",
