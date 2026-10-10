@@ -17,6 +17,7 @@ from enum import Enum
 import json
 import platform
 import subprocess
+import tempfile
 import threading
 from typing import Callable
 
@@ -92,6 +93,7 @@ class WindowsVoiceRuntime:
         self._platform = platform_name or platform.system()
         self._guard = threading.RLock()
         self._process = None
+        self._script_path: str | None = None
         self._state = VoiceState.IDLE
         self._last_error: str | None = None
 
@@ -128,6 +130,18 @@ class WindowsVoiceRuntime:
             self._last_error = None
             self._state = state
             try:
+                script_file = tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    suffix=".ps1",
+                    prefix="jarvis-voice-",
+                    delete=False,
+                )
+                try:
+                    script_file.write(script)
+                finally:
+                    script_file.close()
+                self._script_path = script_file.name
                 process = self._popen(
                     [
                         "powershell.exe",
@@ -136,8 +150,8 @@ class WindowsVoiceRuntime:
                         "-NonInteractive",
                         "-ExecutionPolicy",
                         "Bypass",
-                        "-Command",
-                        script,
+                        "-File",
+                        script_file.name,
                         *args,
                     ],
                     stdin=subprocess.DEVNULL,
@@ -149,6 +163,13 @@ class WindowsVoiceRuntime:
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except OSError as exc:
+                if self._script_path:
+                    try:
+                        import os
+                        os.unlink(self._script_path)
+                    except OSError:
+                        pass
+                    self._script_path = None
                 self._state = VoiceState.ERROR
                 self._last_error = type(exc).__name__
                 raise VoiceRuntimeError("Windows speech runtime could not start.") from None
@@ -168,6 +189,14 @@ class WindowsVoiceRuntime:
             raise VoiceRuntimeError("JARVIS voice operation timed out.") from None
         with self._guard:
             self._process = None
+            script_path = self._script_path
+            self._script_path = None
+        if script_path:
+            try:
+                import os
+                os.unlink(script_path)
+            except OSError:
+                pass
         if process.returncode != 0:
             with self._guard:
                 self._state = VoiceState.ERROR
