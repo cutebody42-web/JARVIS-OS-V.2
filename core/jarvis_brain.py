@@ -494,6 +494,24 @@ class JarvisBrain:
             )
         )
         text = response.text.strip()
+        degraded = text.casefold().replace("\n", " ").strip()
+        if degraded in {
+            "i cannot fulfill your request.",
+            "i cannot fulfill your request. the local brain is offline.",
+        }:
+            response = provider.generate(
+                ModelRequest(
+                    prompt=clean,
+                    system_instruction=(
+                        "Answer the owner's conversational request naturally as JARVIS. "
+                        "The local model is online. Do not claim it is offline and do not "
+                        "invent external actions or personal facts."
+                    ),
+                    tier=tier,
+                    json_output=False,
+                )
+            )
+            text = response.text.strip()
         if not text:
             raise RuntimeError("JARVIS Brain returned an empty response.")
         self._remember_turn(clean, text)
