@@ -6,13 +6,19 @@ hardware-aware routing without importing provider SDK details.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 import threading
 from typing import Callable
 
 from core.hardware_profile import HardwareProfiler
-from core.model_provider import ModelProvider, ModelRequest, ModelResponse, ModelTier
+from core.model_provider import (
+    CloudDisclosureError,
+    ModelProvider,
+    ModelRequest,
+    ModelResponse,
+    ModelTier,
+)
 from core.model_router import ModelRouter, ProviderChoice, ProviderKind, RoutePlan, TaskKind
 from core.model_runtime import ModelRuntime, ModelRuntimeError, RuntimeStatus
 from core.personas.persona_spec import PersonaSpec
@@ -118,12 +124,22 @@ class RoutedModelProvider:
             if application_contract
             else persona
         )
-        return ModelRequest(
-            prompt=request.prompt,
-            system_instruction=combined,
-            tier=request.tier,
-            json_output=request.json_output,
-        )
+        # Preserve classified context until a concrete provider has been
+        # selected.  Reconstructing only the legacy fields here would silently
+        # discard local memory as personas are applied.
+        return replace(request, system_instruction=combined)
+
+    @staticmethod
+    def _request_for_provider(
+        request: ModelRequest,
+        provider: ProviderKind,
+    ) -> ModelRequest:
+        """Apply the privacy boundary before a provider object sees a request."""
+        if provider is ProviderKind.OLLAMA:
+            return request.for_local_provider()
+        if provider is ProviderKind.GEMINI:
+            return request.for_cloud_provider()
+        raise RoutedProviderError("Unsupported routed provider")
 
     def _cloud_only_plan(self, request: ModelRequest) -> RoutePlan:
         if not self.allow_cloud:
@@ -198,12 +214,31 @@ class RoutedModelProvider:
                 else:
                     raise RoutedProviderError("Unsupported routed provider")
 
-                response = provider.generate(routed_request)
+                # The selected provider receives a fresh, fully materialized
+                # request.  A cloud provider never receives local-only context
+                # in either ``prompt`` or the request's ``context`` field.
+                provider_request = self._request_for_provider(
+                    routed_request,
+                    choice.provider,
+                )
+                response = provider.generate(provider_request)
                 if not isinstance(response, ModelResponse):
                     raise RoutedProviderError("Provider returned an invalid response")
                 attempts.append(RouteAttempt(choice.provider, choice.model, choice.reason, "succeeded"))
                 self._record_attempts(attempts)
                 return response
+            except CloudDisclosureError:
+                # This is a policy decision, not a transient provider failure.
+                # Keep the audit value content-free and continue so a later
+                # local route can still handle the unmodified request.
+                attempts.append(
+                    RouteAttempt(
+                        choice.provider,
+                        choice.model,
+                        choice.reason,
+                        "blocked:sensitive_content",
+                    )
+                )
             except Exception as exc:
                 attempts.append(
                     RouteAttempt(

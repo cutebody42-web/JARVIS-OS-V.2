@@ -7,6 +7,7 @@ adapter. They do not claim physical Windows installation or phone biometrics.
 import hashlib
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ from core.nexus.event_store import EventStore
 from core.nexus.owner_approval import OwnerApprovalManager
 from core.update_manager import (
     GitHubReleaseSource, UpdateArtifactError, UpdateClass, UpdatePlan,
-    UpdateState, WindowsReleaseUpdateCoordinator,
+    UpdateState, WindowsReleaseUpdateCoordinator, run_windows_update_helper,
 )
 
 
@@ -86,7 +87,10 @@ class WindowsReleaseUpdateTests(unittest.TestCase):
         folder = self.root / "updates" / stage.checkpoint_id
         self.assertTrue((folder / "candidate.exe").is_file())
         self.assertTrue((folder / "recovery.exe").is_file())
-        self.assertEqual(self.approvals.get(stage.approval_id).action_digest, self.source.new.digest())
+        expected = self.updates._handoff_digest(
+            stage.checkpoint_id, self.source.new, self.source.old, self.sidecar,
+        )
+        self.assertEqual(self.approvals.get(stage.approval_id).action_digest, expected)
 
     def test_success_verifies_the_installed_binary_version_and_commit(self):
         stage = self.ready()
@@ -169,6 +173,149 @@ class WindowsReleaseUpdateTests(unittest.TestCase):
             self.updates.complete_handoff(stage.checkpoint_id, parent_pid=42,
                                          wait_for_exit=lambda _: True, run_installer=lambda _: None,
                                          self_test=lambda *args: True)
+
+    def test_forged_authorized_flag_without_ledger_receipt_is_rejected(self):
+        stage = self.updates.prepare(self.source.new)
+        path = self.root / "updates" / stage.checkpoint_id / "stage.json"
+        metadata = json.loads(path.read_text("utf-8"))
+        metadata["authorized"] = True
+        metadata["sidecar_pid"] = os.getpid()
+        path.write_text(json.dumps(metadata), "utf-8")
+        with self.assertRaises(PermissionError):
+            self.updates.complete_handoff(
+                stage.checkpoint_id,
+                parent_pid=42,
+                wait_for_exit=lambda _: True,
+                run_installer=lambda _: None,
+                self_test=lambda *args: True,
+            )
+
+    def test_authorized_plan_metadata_cannot_be_substituted_after_approval(self):
+        stage = self.ready()
+        path = self.root / "updates" / stage.checkpoint_id / "stage.json"
+        metadata = json.loads(path.read_text("utf-8"))
+        metadata["plan"]["notes"] = "substituted after fingerprint approval"
+        path.write_text(json.dumps(metadata), "utf-8")
+        with self.assertRaises(PermissionError):
+            self.updates.complete_handoff(
+                stage.checkpoint_id,
+                parent_pid=42,
+                wait_for_exit=lambda _: True,
+                run_installer=lambda _: None,
+                self_test=lambda *args: True,
+            )
+
+    def test_authorized_install_target_cannot_be_substituted_after_approval(self):
+        stage = self.ready()
+        path = self.root / "updates" / stage.checkpoint_id / "stage.json"
+        metadata = json.loads(path.read_text("utf-8"))
+        metadata["installed_sidecar"] = str(self.root / "other-program.exe")
+        path.write_text(json.dumps(metadata), "utf-8")
+        with self.assertRaises(PermissionError):
+            self.updates.complete_handoff(
+                stage.checkpoint_id,
+                parent_pid=42,
+                wait_for_exit=lambda _: True,
+                run_installer=lambda _: None,
+                self_test=lambda *args: True,
+            )
+
+    def test_changed_installed_helper_bytes_do_not_consume_owner_approval(self):
+        stage = self.updates.prepare(self.source.new)
+        self.approvals.decide(
+            stage.approval_id, peer_id="phone", approved=True, user_verified=True,
+        )
+        self.sidecar.write_bytes(b"changed after owner approval")
+
+        with patch("core.update_manager.sys.platform", "win32"), \
+                patch("core.update_manager.sys.frozen", True, create=True), \
+                self.assertRaises(PermissionError):
+            self.updates.authorize_handoff(
+                stage.checkpoint_id,
+                approval_id=stage.approval_id,
+                parent_pid=42,
+                launcher=lambda _: None,
+            )
+
+        self.assertFalse(self.approvals.get(stage.approval_id).consumed)
+        helper = self.root / "updates" / stage.checkpoint_id / "jarvis-update-helper.exe"
+        self.assertFalse(helper.exists())
+
+    def test_precreated_helper_hardlink_is_rejected_without_overwrite(self):
+        stage = self.updates.prepare(self.source.new)
+        self.approvals.decide(
+            stage.approval_id, peer_id="phone", approved=True, user_verified=True,
+        )
+        victim = self.root / "do-not-overwrite.bin"
+        victim.write_bytes(b"preserve me")
+        helper = self.root / "updates" / stage.checkpoint_id / "jarvis-update-helper.exe"
+        os.link(victim, helper)
+
+        with patch("core.update_manager.sys.platform", "win32"), \
+                patch("core.update_manager.sys.frozen", True, create=True), \
+                self.assertRaises(UpdateArtifactError):
+            self.updates.authorize_handoff(
+                stage.checkpoint_id,
+                approval_id=stage.approval_id,
+                parent_pid=42,
+                launcher=lambda _: None,
+            )
+
+        self.assertEqual(victim.read_bytes(), b"preserve me")
+        self.assertFalse(self.approvals.get(stage.approval_id).consumed)
+
+    def test_helper_rejects_a_substituted_desktop_parent_pid(self):
+        stage = self.ready()
+        installed = []
+        with self.assertRaises(PermissionError):
+            self.updates.complete_handoff(
+                stage.checkpoint_id,
+                parent_pid=43,
+                wait_for_exit=lambda _: True,
+                run_installer=installed.append,
+                self_test=lambda *args: True,
+            )
+        self.assertEqual(installed, [])
+
+    def test_helper_rejects_changed_copied_executable_bytes(self):
+        stage = self.ready()
+        helper = self.root / "updates" / stage.checkpoint_id / "jarvis-update-helper.exe"
+        helper.write_bytes(b"changed helper")
+        installed = []
+        with self.assertRaises(PermissionError):
+            self.updates.complete_handoff(
+                stage.checkpoint_id,
+                parent_pid=42,
+                wait_for_exit=lambda _: True,
+                run_installer=installed.append,
+                self_test=lambda *args: True,
+            )
+        self.assertEqual(installed, [])
+
+    def test_installed_sidecar_cannot_impersonate_the_staged_helper(self):
+        stage = self.ready()
+        with patch("core.update_manager.sys.platform", "win32"), \
+                patch("core.update_manager.sys.frozen", True, create=True), \
+                patch("core.update_manager.sys.executable", str(self.sidecar)), \
+                self.assertRaises(UpdateArtifactError):
+            run_windows_update_helper(str(self.root), stage.checkpoint_id, 42)
+
+    def test_approval_subclass_is_rejected_before_staging_a_handoff(self):
+        class UnsafeApprovals(OwnerApprovalManager):
+            def _row(self, row):
+                value = OwnerApprovalManager._row(row)
+                return replace(value, state="approved", decided_by="forged")
+
+        approvals = UnsafeApprovals(self.approvals.store)
+        with self.assertRaises(TypeError):
+            WindowsReleaseUpdateCoordinator(
+                self.source,
+                state_dir=self.root,
+                installed_version=self.source.old.version,
+                installed_sidecar=self.sidecar,
+                installed_commit_sha=self.source.old.commit_sha,
+                owner_approvals=approvals,
+            )
 
     def test_authorized_helper_cannot_be_replayed(self):
         stage = self.ready()

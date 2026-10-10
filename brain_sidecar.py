@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
 import sys
@@ -18,14 +20,32 @@ from api.nexus_sync_server import create_sync_app
 from core.companion_gateway import resolve_companion_gateway
 
 
+_UI_TOKEN_FRAME = re.compile(rb"[0-9a-f]{64}\n")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="JARVIS local brain sidecar")
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--ui-token", required=True)
+    parser.add_argument(
+        "--ui-token-stdin",
+        action="store_true",
+        required=True,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--parent-pid", type=int, required=True)
     parser.add_argument("--state-dir")
     parser.add_argument("--cloud-boost", action="store_true")
     return parser
+
+
+def _read_ui_token(stream: io.BufferedIOBase) -> str:
+    """Read the one-shot UI bearer token without putting it in argv or env."""
+    # Read one byte beyond the 65-byte frame. This deliberately waits for EOF,
+    # proving the parent closed its one-shot pipe, and rejects trailing input.
+    frame = stream.read(66)
+    if _UI_TOKEN_FRAME.fullmatch(frame) is None:
+        raise ValueError("JARVIS Brain received an invalid UI token bootstrap frame.")
+    return frame[:-1].decode("ascii")
 
 
 def _watch_parent(parent_pid: int, host: LocalBrainHost) -> None:
@@ -98,12 +118,14 @@ def main(argv=None) -> int:
     args = _parser().parse_args(arguments)
     if not 1024 <= args.port <= 65535:
         raise ValueError("--port must be between 1024 and 65535")
-    if len(args.ui_token) < 32:
-        raise ValueError("--ui-token is too short")
+    bootstrap_stream = getattr(sys.stdin, "buffer", None)
+    if bootstrap_stream is None:
+        raise ValueError("JARVIS Brain requires its private UI token bootstrap pipe.")
+    ui_token = _read_ui_token(bootstrap_stream)
 
     gateway = resolve_companion_gateway()
     host = LocalBrainHost(
-        ui_token=args.ui_token,
+        ui_token=ui_token,
         state_dir=Path(args.state_dir) if args.state_dir else None,
         allow_cloud=args.cloud_boost,
         companion_endpoint=gateway.endpoint if gateway is not None else None,

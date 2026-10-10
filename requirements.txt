@@ -3,6 +3,7 @@
 comtypes; platform_system=="Windows"
 pycaw; platform_system=="Windows"
 pywinauto; platform_system=="Windows"
+pywin32; platform_system=="Windows"
 # Cross-platform deps
 # cryptography 50 currently has no macOS x86_64/Python 3.14 wheel and attempts
 # a local OpenSSL build. Keep using the compatible binary-wheel release.

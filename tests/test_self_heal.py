@@ -1,6 +1,7 @@
 """Bounded autonomous repair policy tests."""
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -86,7 +87,7 @@ class SelfHealTests(unittest.TestCase):
         self.assertEqual(outcome.state, RepairState.HEALED)
         self.assertEqual(outcome.disposition, RepairDisposition.AUTO_APPLY)
 
-    def test_low_risk_patch_can_verify_and_publish_automatically(self):
+    def test_low_risk_patch_stops_for_owner_before_any_mutation(self):
         incident = Incident.create(
             IncidentKind.CODE_FAILURE,
             "format helper failed",
@@ -105,9 +106,12 @@ class SelfHealTests(unittest.TestCase):
             sandbox=sandbox,
             repository_context="test",
         )
-        self.assertEqual(outcome.state, RepairState.APPLIED)
-        self.assertTrue(sandbox.published)
-        self.assertEqual(sandbox.files["core/helper.py"], "new")
+        self.assertEqual(outcome.state, RepairState.AWAITING_OWNER)
+        self.assertEqual(outcome.disposition, RepairDisposition.REQUIRE_OWNER)
+        self.assertFalse(sandbox.applied)
+        self.assertFalse(sandbox.published)
+        self.assertIsNone(sandbox.snapshot)
+        self.assertEqual(sandbox.files["core/helper.py"], "old")
 
     def test_security_path_requires_owner_and_cannot_self_approve(self):
         incident = Incident.create(
@@ -144,16 +148,23 @@ class SelfHealTests(unittest.TestCase):
             "repair view",
             ("frontend",),
         )
-        sandbox = Sandbox({"web/view.tsx": "old"}, verify=False)
-        outcome = SelfHealController().repair_code(
-            incident,
-            engine=Engine(patch),
-            sandbox=sandbox,
-            repository_context="test",
-        )
-        self.assertEqual(outcome.state, RepairState.ROLLED_BACK)
-        self.assertTrue(sandbox.rolled_back)
-        self.assertEqual(sandbox.files["web/view.tsx"], "old")
+        with tempfile.TemporaryDirectory() as tmp:
+            approvals = OwnerApprovalManager(EventStore(Path(tmp) / "state", "desktop"))
+            controller = SelfHealController(owner_approvals=approvals)
+            sandbox = Sandbox({"web/view.tsx": "old"}, verify=False)
+            waiting = controller.repair_code(
+                incident, engine=Engine(patch), sandbox=sandbox, repository_context="test",
+            )
+            approvals.decide(
+                waiting.approval_id, peer_id="phone", approved=True, user_verified=True,
+            )
+            outcome = controller.repair_code(
+                incident, engine=Engine(patch), sandbox=sandbox,
+                repository_context="test", approval_id=waiting.approval_id,
+            )
+            self.assertEqual(outcome.state, RepairState.ROLLED_BACK)
+            self.assertTrue(sandbox.rolled_back)
+            self.assertEqual(sandbox.files["web/view.tsx"], "old")
 
     def test_stale_patch_is_rejected_and_rolled_back(self):
         incident = Incident.create(
@@ -167,15 +178,22 @@ class SelfHealTests(unittest.TestCase):
             "stale repair",
             ("unit",),
         )
-        sandbox = Sandbox({"core/helper.py": "changed already"})
-        outcome = SelfHealController().repair_code(
-            incident,
-            engine=Engine(patch),
-            sandbox=sandbox,
-            repository_context="test",
-        )
-        self.assertEqual(outcome.state, RepairState.FAILED)
-        self.assertTrue(sandbox.rolled_back)
+        with tempfile.TemporaryDirectory() as tmp:
+            approvals = OwnerApprovalManager(EventStore(Path(tmp) / "state", "desktop"))
+            controller = SelfHealController(owner_approvals=approvals)
+            sandbox = Sandbox({"core/helper.py": "changed already"})
+            waiting = controller.repair_code(
+                incident, engine=Engine(patch), sandbox=sandbox, repository_context="test",
+            )
+            approvals.decide(
+                waiting.approval_id, peer_id="phone", approved=True, user_verified=True,
+            )
+            outcome = controller.repair_code(
+                incident, engine=Engine(patch), sandbox=sandbox,
+                repository_context="test", approval_id=waiting.approval_id,
+            )
+            self.assertEqual(outcome.state, RepairState.FAILED)
+            self.assertTrue(sandbox.rolled_back)
 
     def test_forbidden_secret_surface_is_rejected(self):
         incident = Incident.create(
@@ -215,6 +233,36 @@ class SelfHealTests(unittest.TestCase):
         self.assertEqual(outcome.state, RepairState.AWAITING_OWNER)
         self.assertFalse(sandbox.applied)
 
+    def test_model_boolean_cannot_approve_a_low_risk_repair(self):
+        incident = Incident.create(IncidentKind.CODE_FAILURE, "helper bug", "core/helper.py")
+        patch = RepairPatch(
+            incident.id, (edit("core/helper.py", "old", "new"),), "repair helper", ("unit",),
+        )
+        sandbox = Sandbox({"core/helper.py": "old"})
+        outcome = SelfHealController().repair_code(
+            incident, engine=Engine(patch), sandbox=sandbox,
+            repository_context="", owner_approved=True,
+        )
+        self.assertEqual(outcome.state, RepairState.AWAITING_OWNER)
+        self.assertFalse(sandbox.applied)
+
+    def test_injected_policy_cannot_restore_auto_apply(self):
+        class UnsafePolicy:
+            def disposition(self, patch):
+                return RepairDisposition.AUTO_APPLY
+
+        incident = Incident.create(IncidentKind.CODE_FAILURE, "helper bug", "core/helper.py")
+        patch = RepairPatch(
+            incident.id, (edit("core/helper.py", "old", "new"),), "repair helper", ("unit",),
+        )
+        sandbox = Sandbox({"core/helper.py": "old"})
+        outcome = SelfHealController(policy=UnsafePolicy()).repair_code(
+            incident, engine=Engine(patch), sandbox=sandbox, repository_context="",
+        )
+        self.assertEqual(outcome.state, RepairState.AWAITING_OWNER)
+        self.assertEqual(outcome.disposition, RepairDisposition.REQUIRE_OWNER)
+        self.assertFalse(sandbox.applied)
+
     def test_major_repair_requires_an_exact_single_use_owner_approval(self):
         with tempfile.TemporaryDirectory() as tmp:
             approvals = OwnerApprovalManager(EventStore(Path(tmp) / "state", "desktop"))
@@ -247,6 +295,104 @@ class SelfHealTests(unittest.TestCase):
             with self.subTest(path=path):
                 patch = RepairPatch("incident", (edit(path, "old", "new"),), "repair", ("unit",))
                 self.assertEqual(SelfHealPolicy().disposition(patch), RepairDisposition.REQUIRE_OWNER)
+
+    def test_every_repository_change_category_requires_owner_approval(self):
+        paths = (
+            "core/helper.py",             # executable source
+            "models/router.yaml",         # model configuration
+            "skills/personal/SKILL.md",   # skill definition
+            "config/brain-policy.yaml",   # policy/configuration
+            "packaging/windows/setup.nsi",
+            "tests/test_helper.py",
+            "docs/runtime.md",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                patch = RepairPatch(
+                    "incident", (edit(path, "old", "new"),), "candidate", ("unit",),
+                )
+                self.assertEqual(
+                    SelfHealPolicy().disposition(patch),
+                    RepairDisposition.REQUIRE_OWNER,
+                )
+
+    def test_all_repository_categories_stop_before_mutation_even_with_forged_flags(self):
+        class UnsafePolicy:
+            def disposition(self, patch):
+                return RepairDisposition.AUTO_APPLY
+
+        paths = (
+            "core/helper.py",
+            "models/router.yaml",
+            "skills/personal/SKILL.md",
+            "config/brain-policy.yaml",
+            "policy/authority.yaml",
+            "packaging/windows/setup.nsi",
+            "tests/test_helper.py",
+            "docs/runtime.md",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                incident = Incident.create(
+                    IncidentKind.CODE_FAILURE, "candidate", path,
+                )
+                patch = RepairPatch(
+                    incident.id, (edit(path, "old", "new"),), "candidate", ("unit",),
+                )
+                sandbox = Sandbox({path: "old"})
+                outcome = SelfHealController(policy=UnsafePolicy()).repair_code(
+                    incident,
+                    engine=Engine(patch),
+                    sandbox=sandbox,
+                    repository_context="",
+                    owner_approved=True,
+                )
+                self.assertEqual(outcome.state, RepairState.AWAITING_OWNER)
+                self.assertEqual(outcome.disposition, RepairDisposition.REQUIRE_OWNER)
+                self.assertFalse(sandbox.applied)
+                self.assertFalse(sandbox.published)
+                self.assertIsNone(sandbox.snapshot)
+
+    def test_approval_manager_subclass_is_rejected_at_the_promotion_boundary(self):
+        class UnsafeApprovals(OwnerApprovalManager):
+            def _row(self, row):
+                value = OwnerApprovalManager._row(row)
+                return replace(value, state="approved", decided_by="forged")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            approvals = UnsafeApprovals(EventStore(Path(tmp) / "state", "desktop"))
+            with self.assertRaises(TypeError):
+                SelfHealController(owner_approvals=approvals)
+
+    def test_duck_typed_approval_provider_is_rejected(self):
+        class NoopApprovals:
+            def consume(self, *args, **kwargs):
+                return None
+
+        with self.assertRaises(TypeError):
+            SelfHealController(owner_approvals=NoopApprovals())
+
+    def test_repair_patch_subclass_cannot_override_the_approval_digest(self):
+        class ForgedPatch(RepairPatch):
+            def digest(self):
+                return "0" * 64
+
+        incident = Incident.create(
+            IncidentKind.CODE_FAILURE, "helper bug", "core/helper.py",
+        )
+        patch = ForgedPatch(
+            incident.id,
+            (edit("core/helper.py", "old", "new"),),
+            "repair helper",
+            ("unit",),
+        )
+        sandbox = Sandbox({"core/helper.py": "old"})
+        with self.assertRaises(TypeError):
+            SelfHealController().repair_code(
+                incident, engine=Engine(patch), sandbox=sandbox,
+                repository_context="",
+            )
+        self.assertFalse(sandbox.applied)
 
 
 if __name__ == "__main__":

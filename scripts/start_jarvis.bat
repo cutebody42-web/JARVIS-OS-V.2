@@ -31,12 +31,18 @@ goto :deps_done
 :install
 echo [start_jarvis] Installing dependencies ^(one-time or requirements changed^)...
 python -m pip install --upgrade pip
+if errorlevel 1 exit /b 1
 python -m pip install -r requirements.txt
+if errorlevel 1 exit /b 1
 for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 requirements.txt).Hash.ToLower()"`) do (
   echo %%H>.venv\.jarvis_requirements.sha256
 )
 
 :deps_done
+REM Verify every launch so existing environments receive the narrow App Control fallback.
+python scripts\sqlalchemy_app_control.py
+if errorlevel 1 exit /b 1
+
 if not exist ".env" (
   echo [start_jarvis] No .env found - copying .env.example to .env.
   copy /Y .env.example .env >nul

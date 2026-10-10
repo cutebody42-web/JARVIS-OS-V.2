@@ -1,5 +1,6 @@
 """Real SQLite/files, owner consent, crash recovery and concurrent claims."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -161,6 +162,27 @@ class MissionTests(unittest.TestCase):
         with self.assertRaises(BlockingIOError):
             MissionStore(self.tmp.name)
 
+    @unittest.skipUnless(os.name == "nt", "Windows ACL contract")
+    def test_windows_state_acl_is_private_and_protected(self):
+        import win32api
+        import win32con
+        import win32security
+
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        owner = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        system = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid, None)
+        descriptor = win32security.GetNamedSecurityInfo(
+            self.tmp.name,
+            win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION,
+        )
+        acl = descriptor.GetSecurityDescriptorDacl()
+        trustees = {win32security.ConvertSidToStringSid(acl.GetAce(i)[2]) for i in range(acl.GetAceCount())}
+        self.assertEqual(trustees, {
+            win32security.ConvertSidToStringSid(owner),
+            win32security.ConvertSidToStringSid(system),
+        })
+
     def test_limits_and_no_partial_multistep_execution(self):
         self.host.store.MAX_ACTIVE = 1
         self.write()
@@ -237,11 +259,11 @@ h.run("owner", m["id"], m["session_id"], m["version"], ticket_id=t)
     def test_unknown_journal_schema_does_not_run_or_rewrite(self):
         self.host.close()
         import sqlite3
-        with sqlite3.connect(Path(self.tmp.name) / "missions.sqlite") as db:
+        with closing(sqlite3.connect(Path(self.tmp.name) / "missions.sqlite")) as db, db:
             db.execute("PRAGMA user_version=99")
         with self.assertRaises(RuntimeError):
             MissionStore(self.tmp.name)
-        with sqlite3.connect(Path(self.tmp.name) / "missions.sqlite") as db:
+        with closing(sqlite3.connect(Path(self.tmp.name) / "missions.sqlite")) as db:
             self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 99)
 
     def test_attempt_budget_and_unknown_receipt_gap(self):

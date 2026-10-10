@@ -1,9 +1,10 @@
-"""Signed update plans and biometric-gated approval for major JARVIS updates.
+"""Signed update plans and biometric-gated approval for every JARVIS update.
 
-Minor/patch updates may be automated only when they remain inside low-risk
-surfaces and pass verification. Major updates require a one-time approval signed
-by an explicitly trusted companion-device key that is expected to be protected
-by the mobile OS biometric/keychain boundary.
+Candidates may be downloaded, staged, and verified automatically. Installing
+any candidate is a promotion of executable/source/configuration state and
+therefore requires a one-time approval signed by an explicitly trusted
+companion-device key that is expected to be protected by the mobile OS
+biometric/keychain boundary.
 
 The biometric sample itself never leaves the phone and is never stored here.
 """
@@ -20,6 +21,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -187,7 +189,9 @@ class UpdatePolicy:
 
     def requires_owner_approval(self, plan: UpdatePlan) -> bool:
         self.validate_declared_class(plan)
-        return plan.update_class is UpdateClass.MAJOR
+        # Classification determines review depth and release policy, never
+        # whether installation may bypass the owner.
+        return True
 
 
 @dataclass(frozen=True)
@@ -276,6 +280,8 @@ class UpdateApprovalGate:
         *,
         ttl_seconds: int = 180,
     ) -> ApprovalChallenge:
+        if type(plan) is not UpdatePlan:
+            raise TypeError("plan must be an exact UpdatePlan value")
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int):
             raise TypeError("ttl_seconds must be an integer")
         if not 10 <= ttl_seconds <= 600:
@@ -334,7 +340,9 @@ class UpdateApprovalGate:
         plan: UpdatePlan,
         approval: DeviceApproval,
     ) -> bool:
-        if not isinstance(approval, DeviceApproval):
+        if type(plan) is not UpdatePlan:
+            raise TypeError("plan must be an exact UpdatePlan value")
+        if type(approval) is not DeviceApproval:
             raise TypeError("approval must be DeviceApproval")
         if not approval.user_verified:
             raise PermissionError("approval is missing user verification")
@@ -621,6 +629,8 @@ class WindowsReleaseUpdateCoordinator:
                  installed_version: str, installed_sidecar: Path,
                  owner_approvals: OwnerApprovalManager | None = None,
                  installed_commit_sha: str | None = None):
+        if owner_approvals is not None and type(owner_approvals) is not OwnerApprovalManager:
+            raise TypeError("owner_approvals must be OwnerApprovalManager or None")
         self.source = source
         self.directory = Path(state_dir).resolve() / "updates"
         if self.directory.is_symlink() or self.directory.resolve() != self.directory:
@@ -640,6 +650,72 @@ class WindowsReleaseUpdateCoordinator:
         return checkpoint
 
     @staticmethod
+    def _handoff_digest(
+        checkpoint_id: str,
+        plan: UpdatePlan,
+        previous: UpdatePlan,
+        installed_sidecar: Path,
+        *,
+        helper_sha256: str | None = None,
+    ) -> str:
+        """Bind approval to this exact staged install and recovery target."""
+        if not isinstance(checkpoint_id, str) or not re.fullmatch(r"[0-9a-f]{32}", checkpoint_id):
+            raise ValueError("Invalid update checkpoint ID")
+        if type(plan) is not UpdatePlan or type(previous) is not UpdatePlan:
+            raise TypeError("handoff plans must be exact UpdatePlan values")
+        target = Path(installed_sidecar).resolve()
+        if helper_sha256 is None:
+            helper_sha256 = _file_digest(target)
+        if (
+            not isinstance(helper_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", helper_sha256)
+        ):
+            raise ValueError("helper_sha256 must be a lowercase SHA-256 digest")
+        payload = {
+            "action": "windows.release.install.v1",
+            "checkpoint_id": checkpoint_id,
+            "plan_digest": UpdatePlan.digest(plan),
+            "recovery_digest": UpdatePlan.digest(previous),
+            "installed_sidecar": str(target),
+            "helper_sha256": helper_sha256,
+        }
+        return hashlib.sha256(json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _copy_helper_exclusive(source: Path, destination: Path) -> str:
+        """Copy the installed sidecar without following a pre-created target."""
+        if source.is_symlink() or not source.is_file():
+            raise UpdateArtifactError("Installed update helper source is unsafe")
+        created = False
+        digest = hashlib.sha256()
+        try:
+            with source.open("rb") as source_file:
+                with destination.open("xb") as helper_file:
+                    created = True
+                    for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                        helper_file.write(chunk)
+                    helper_file.flush()
+                    os.fsync(helper_file.fileno())
+        except FileExistsError as exc:
+            raise UpdateArtifactError("Update helper path already exists") from exc
+        except Exception:
+            if created:
+                destination.unlink(missing_ok=True)
+            raise
+        copied_digest = digest.hexdigest()
+        if destination.is_symlink() or _file_digest(destination) != copied_digest:
+            destination.unlink(missing_ok=True)
+            raise UpdateArtifactError("Copied update helper failed integrity verification")
+        return copied_digest
+
+    @staticmethod
     def _installer(path: Path, plan: UpdatePlan) -> None:
         if path.is_symlink() or not path.is_file() or _file_digest(path) != plan.artifact_sha256:
             raise UpdateArtifactError("Staged installer is missing or has changed")
@@ -655,6 +731,8 @@ class WindowsReleaseUpdateCoordinator:
                 raise UpdateArtifactError("Installer has an invalid PE signature")
 
     def prepare(self, plan: UpdatePlan) -> UpdateOutcome:
+        if type(plan) is not UpdatePlan:
+            raise TypeError("plan must be an exact UpdatePlan value")
         if plan.update_class is not UpdateClass.MAJOR or plan.artifact_name != "JARVIS-Setup.exe" or not plan.release_tag:
             raise ValueError("Packaged updates require a major pinned Windows release plan")
         if plan.version == self.installed_version and plan.commit_sha == self.installed_commit_sha:
@@ -677,9 +755,15 @@ class WindowsReleaseUpdateCoordinator:
             _atomic_json(checkpoint / "stage.json", metadata)
             approval_id = None
             if self.owner_approvals is not None:
-                approval_id = self.owner_approvals.create(
+                if type(self.owner_approvals) is not OwnerApprovalManager:
+                    raise TypeError("owner_approvals must be OwnerApprovalManager or None")
+                handoff_digest = self._handoff_digest(
+                    checkpoint_id, plan, previous, self.installed_sidecar,
+                )
+                approval_id = OwnerApprovalManager.create(
+                    self.owner_approvals,
                     f"Install JARVIS {plan.version}; recovery {previous.version} is verified",
-                    plan.digest(), ttl_seconds=600,
+                    handoff_digest, ttl_seconds=600,
                 ).approval_id
                 metadata["approval_id"] = approval_id
                 _atomic_json(checkpoint / "stage.json", metadata)
@@ -699,6 +783,8 @@ class WindowsReleaseUpdateCoordinator:
             raise ValueError("Desktop parent PID must be positive")
         if self.owner_approvals is None:
             raise PermissionError("An exact companion fingerprint approval is required")
+        if type(self.owner_approvals) is not OwnerApprovalManager:
+            raise TypeError("owner_approvals must be OwnerApprovalManager or None")
         checkpoint = self._checkpoint(checkpoint_id)
         metadata = json.loads((checkpoint / "stage.json").read_text("utf-8"))
         if metadata.get("authorized"):
@@ -710,13 +796,31 @@ class WindowsReleaseUpdateCoordinator:
         if Path(metadata["installed_sidecar"]).resolve() != self.installed_sidecar:
             raise UpdateArtifactError("Installed sidecar path changed")
         helper = checkpoint / "jarvis-update-helper.exe"
-        shutil.copy2(self.installed_sidecar, helper)
+        helper_sha256 = self._copy_helper_exclusive(self.installed_sidecar, helper)
         # No caller-chosen executable, NSIS flags, shell string, or URL enters the
         # child command; only validated internal state and the desktop PID do.
         command = [str(helper), "--install-update", str(self.directory.parent), checkpoint_id, str(parent_pid)]
-        self.owner_approvals.consume(approval_id, action_digest=plan.digest())
+        handoff_digest = self._handoff_digest(
+            checkpoint_id, plan, previous, self.installed_sidecar,
+            helper_sha256=helper_sha256,
+        )
+        try:
+            approval = OwnerApprovalManager.consume(
+                self.owner_approvals, approval_id, action_digest=handoff_digest,
+            )
+        except Exception:
+            helper.unlink(missing_ok=True)
+            raise
         metadata["authorized"] = True
+        metadata["authorization"] = {
+            "approval_id": approval.approval_id,
+            "action_digest": approval.action_digest,
+            "decided_by": approval.decided_by,
+            "consumed": approval.consumed,
+        }
         metadata["sidecar_pid"] = os.getpid()
+        metadata["parent_pid"] = parent_pid
+        metadata["helper_sha256"] = helper_sha256
         _atomic_json(checkpoint / "stage.json", metadata)
         try:
             if launcher is None:
@@ -726,7 +830,12 @@ class WindowsReleaseUpdateCoordinator:
                 launcher(command)
         except Exception as exc:
             metadata["authorized"] = False
+            metadata.pop("authorization", None)
+            metadata.pop("sidecar_pid", None)
+            metadata.pop("parent_pid", None)
+            metadata.pop("helper_sha256", None)
             _atomic_json(checkpoint / "stage.json", metadata)
+            helper.unlink(missing_ok=True)
             return UpdateOutcome(UpdateState.FAILED,
                                  f"Could not launch update helper ({type(exc).__name__}); request a fresh approval.", checkpoint_id)
         return UpdateOutcome(UpdateState.APPLYING,
@@ -743,9 +852,75 @@ class WindowsReleaseUpdateCoordinator:
             raise PermissionError("Update helper has no owner-authorized handoff")
         if (checkpoint / "outcome.json").exists():
             raise PermissionError("Update helper has already completed")
+        authorized_parent_pid = metadata.get("parent_pid")
+        if (
+            not isinstance(parent_pid, int)
+            or isinstance(parent_pid, bool)
+            or parent_pid <= 0
+            or authorized_parent_pid != parent_pid
+        ):
+            raise PermissionError("Update helper parent PID does not match the authorized handoff")
         plan = UpdatePlan.from_dict(metadata["plan"])
         previous = UpdatePlan.from_dict(metadata["previous"])
         target = Path(metadata["installed_sidecar"])
+        helper = checkpoint / "jarvis-update-helper.exe"
+        helper_sha256 = metadata.get("helper_sha256")
+        if (
+            not isinstance(helper_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", helper_sha256)
+            or helper.is_symlink()
+            or not helper.is_file()
+            or _file_digest(helper) != helper_sha256
+        ):
+            raise PermissionError("Update helper executable has changed since authorization")
+        handoff_digest = self._handoff_digest(
+            checkpoint_id, plan, previous, target,
+            helper_sha256=helper_sha256,
+        )
+        authorization = metadata.get("authorization")
+        if not isinstance(authorization, dict) or set(authorization) != {
+            "approval_id", "action_digest", "decided_by", "consumed",
+        }:
+            raise PermissionError("Update helper has no exact owner-approval receipt")
+        if (
+            not isinstance(authorization["approval_id"], str)
+            or authorization["action_digest"] != handoff_digest
+            or not isinstance(authorization["decided_by"], str)
+            or not authorization["decided_by"]
+            or authorization["consumed"] is not True
+        ):
+            raise PermissionError("Update helper approval is not bound to this exact plan")
+        approval_root = self.directory.parent / "nexus"
+        approval_db = approval_root / "local.db"
+        if (
+            approval_root.is_symlink()
+            or approval_root.resolve() != approval_root
+            or approval_db.is_symlink()
+            or not approval_db.is_file()
+        ):
+            raise PermissionError("Update helper cannot verify the owner-approval ledger")
+        db = None
+        try:
+            db = sqlite3.connect(approval_db.as_uri() + "?mode=ro", uri=True)
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT action_digest, state, decided_by, consumed "
+                "FROM nexus_owner_approvals WHERE approval_id=?",
+                (authorization["approval_id"],),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise PermissionError("Update helper cannot verify the owner-approval ledger") from exc
+        finally:
+            if db is not None:
+                db.close()
+        if (
+            row is None
+            or row["action_digest"] != handoff_digest
+            or row["state"] != "approved"
+            or row["decided_by"] != authorization["decided_by"]
+            or int(row["consumed"]) != 1
+        ):
+            raise PermissionError("Update helper approval receipt is invalid")
         if target.resolve() != self.installed_sidecar:
             raise UpdateArtifactError("Update helper target changed")
         # A process-exclusive claim prevents a second helper from installing the
@@ -805,12 +980,21 @@ def run_windows_update_helper(state_dir: str, checkpoint_id: str, parent_pid: in
     """Execute only a staged, authorized NSIS handoff after desktop shutdown."""
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         raise UpdateArtifactError("Update helper requires the packaged Windows executable")
-    import psutil
-
     root = Path(state_dir).resolve()
     checkpoint = root / "updates" / checkpoint_id
     if not re.fullmatch(r"[0-9a-f]{32}", checkpoint_id):
         raise ValueError("Invalid update checkpoint ID")
+    expected_helper = checkpoint / "jarvis-update-helper.exe"
+    running_executable = Path(sys.executable)
+    if (
+        running_executable.is_symlink()
+        or not running_executable.is_file()
+        or running_executable.resolve() != expected_helper.resolve()
+    ):
+        raise UpdateArtifactError("Update handoff must run from its staged helper executable")
+
+    import psutil
+
     metadata = json.loads((checkpoint / "stage.json").read_text("utf-8"))
     coordinator = WindowsReleaseUpdateCoordinator(
         GitHubReleaseSource(), state_dir=root,
@@ -865,6 +1049,10 @@ class UpdateManager:
         approval_gate: UpdateApprovalGate | None = None,
         owner_approvals: OwnerApprovalManager | None = None,
     ):
+        if approval_gate is not None and type(approval_gate) is not UpdateApprovalGate:
+            raise TypeError("approval_gate must be UpdateApprovalGate or None")
+        if owner_approvals is not None and type(owner_approvals) is not OwnerApprovalManager:
+            raise TypeError("owner_approvals must be OwnerApprovalManager or None")
         self.installer = installer
         self.policy = policy or UpdatePolicy()
         self.approval_gate = approval_gate
@@ -874,6 +1062,11 @@ class UpdateManager:
 
     def prepare(self, plan: UpdatePlan) -> UpdateOutcome:
         """Verify a candidate before asking the owner to approve installation."""
+        if type(plan) is not UpdatePlan:
+            raise TypeError("plan must be an exact UpdatePlan value")
+        # Custom policies may tighten release validation, but cannot weaken the
+        # built-in classification floor.
+        UpdatePolicy().validate_declared_class(plan)
         self.policy.validate_declared_class(plan)
         digest = plan.digest()
         try:
@@ -895,34 +1088,51 @@ class UpdateManager:
         if prepared.state is UpdateState.FAILED:
             return prepared
         checkpoint = prepared.checkpoint_id
-        if self.policy.requires_owner_approval(plan):
+        if (
+            UpdatePolicy().requires_owner_approval(plan)
+            or self.policy.requires_owner_approval(plan)
+        ):
             if self.owner_approvals is not None:
+                if type(self.owner_approvals) is not OwnerApprovalManager:
+                    raise TypeError("owner_approvals must be OwnerApprovalManager or None")
                 if approval_id is None:
                     request_id = self._approval_requests.get(plan.digest())
-                    if request_id is None or self.owner_approvals.get(request_id).state != "pending":
-                        request_id = self.owner_approvals.create(
-                            f"Install JARVIS major update {plan.version}",
+                    if (
+                        request_id is None
+                        or OwnerApprovalManager.get(
+                            self.owner_approvals, request_id,
+                        ).state != "pending"
+                    ):
+                        request_id = OwnerApprovalManager.create(
+                            self.owner_approvals,
+                            f"Install JARVIS update {plan.version}",
                             plan.digest(), ttl_seconds=300,
                         ).approval_id
                         self._approval_requests[plan.digest()] = request_id
                     return UpdateOutcome(
                         UpdateState.AWAITING_APPROVAL,
-                        "Major update requires fingerprint/biometric approval on the paired phone.",
+                        "Update requires explicit fingerprint/biometric approval on the paired phone.",
                         checkpoint_id=checkpoint,
                         approval_id=request_id,
                     )
-                self.owner_approvals.consume(
-                    approval_id,
+                OwnerApprovalManager.consume(
+                    self.owner_approvals, approval_id,
                     action_digest=plan.digest(),
                 )
             else:
                 if self.approval_gate is None or approval is None:
                     return UpdateOutcome(
                         UpdateState.AWAITING_APPROVAL,
-                        "Major update is staged but requires companion biometric approval.",
+                        "Update is staged but requires explicit companion biometric approval.",
                         checkpoint,
                     )
-                self.approval_gate.verify_and_consume(plan, approval)
+                if type(self.approval_gate) is not UpdateApprovalGate:
+                    raise TypeError("approval_gate must be UpdateApprovalGate or None")
+                # Invoke the concrete verifier so a subclass cannot replace the
+                # one-shot signature/challenge checks with a no-op.
+                UpdateApprovalGate.verify_and_consume(
+                    self.approval_gate, plan, approval,
+                )
 
         self._staged.pop(plan.digest(), None)
         self._approval_requests.pop(plan.digest(), None)

@@ -1,10 +1,12 @@
 """Single-host SQLite journal; never a source of executable authority."""
 from datetime import datetime, timezone
 from enum import Enum
+import errno
 import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import threading
 from uuid import uuid4
 
@@ -30,32 +32,153 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _reject_windows_reparse_path(path: Path) -> None:
+    """Reject junctions/symlinks at every existing component of a state path."""
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if _is_reparse_point(current):
+            raise ValueError("Mission state must not traverse Windows reparse points.")
+
+
+def _harden_windows_directory(path: Path) -> None:
+    """Protect mission state so only this Windows user and SYSTEM inherit access."""
+    try:
+        import ntsecuritycon
+        import win32api
+        import win32con
+        import win32security
+
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        owner = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        system = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid, None)
+        acl = win32security.ACL()
+        inheritance = win32security.CONTAINER_INHERIT_ACE | win32security.OBJECT_INHERIT_ACE
+        for sid in (owner, system):
+            acl.AddAccessAllowedAceEx(
+                win32security.ACL_REVISION_DS,
+                inheritance,
+                ntsecuritycon.FILE_ALL_ACCESS,
+                sid,
+            )
+        win32security.SetNamedSecurityInfo(
+            str(path),
+            win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION
+            | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            acl,
+            None,
+        )
+    except (ImportError, OSError) as exc:
+        raise RuntimeError("Could not establish a private Windows mission directory.") from exc
+
+
+def _open_host_lease(path: Path) -> int:
+    if os.name == "posix":
+        import fcntl
+
+        lease = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lease
+        except Exception:
+            os.close(lease)
+            raise
+
+    if os.name == "nt":
+        import msvcrt
+
+        if _is_reparse_point(path):
+            raise ValueError("Mission host lease must not be a Windows reparse point.")
+        lease = os.open(path, os.O_CREAT | os.O_RDWR | os.O_BINARY)
+        try:
+            if not stat.S_ISREG(os.fstat(lease).st_mode) or _is_reparse_point(path):
+                raise ValueError("Mission host lease must be a regular local file.")
+            if os.fstat(lease).st_size == 0:
+                os.write(lease, b"\0")
+                os.fsync(lease)
+            os.lseek(lease, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(lease, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                if exc.errno in {errno.EACCES, errno.EDEADLK, errno.EAGAIN}:
+                    raise BlockingIOError(errno.EWOULDBLOCK, "Mission host lease is already held.") from exc
+                raise
+            return lease
+        except Exception:
+            os.close(lease)
+            raise
+
+    raise RuntimeError("Durable mission host is not certified on this platform.")
+
+
+def _close_host_lease(lease: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            os.lseek(lease, 0, os.SEEK_SET)
+            msvcrt.locking(lease, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            # Closing the descriptor still releases a Windows byte-range lock.
+            pass
+    os.close(lease)
+
+
+def _create_database_file(path: Path) -> None:
+    if os.name == "posix":
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    elif os.name == "nt":
+        if _is_reparse_point(path):
+            raise ValueError("Mission database must not be a Windows reparse point.")
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_BINARY)
+    else:
+        raise RuntimeError("Durable mission host is not certified on this platform.")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Mission database must be a regular local file.")
+        if os.name == "nt" and _is_reparse_point(path):
+            raise ValueError("Mission database must not be a Windows reparse point.")
+    finally:
+        os.close(fd)
+
+
 class MissionStore:
     MAX_ACTIVE = 32
     MAX_TOTAL = 1000
     MAX_ATTEMPTS = 16
 
     def __init__(self, directory):
-        # Windows file-lock/reparse certification is a separate gate.
-        if os.name != "posix":
-            raise RuntimeError("Durable mission host is not certified on this platform.")
-        import fcntl
         self.directory = Path(directory).absolute()
         if self.directory.resolve() != self.directory:
             raise ValueError("Mission state must not traverse symbolic links.")
         if self.directory.is_relative_to(Path(__file__).resolve().parents[1]):
             raise ValueError("Mission state must be outside application source.")
         self.directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-        if self.directory.stat().st_mode & 0o077:
-            raise ValueError("Mission directory must be private (mode 0700).")
+        if os.name == "posix":
+            if self.directory.stat().st_mode & 0o077:
+                raise ValueError("Mission directory must be private (mode 0700).")
+        elif os.name == "nt":
+            _reject_windows_reparse_path(self.directory)
+            _harden_windows_directory(self.directory)
+        else:
+            raise RuntimeError("Durable mission host is not certified on this platform.")
         self._guard = threading.RLock()
         self._closed = False
-        self._lease = os.open(self.directory / "host.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        self._lease = _open_host_lease(self.directory / "host.lock")
         try:
-            fcntl.flock(self._lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
             path = self.directory / "missions.sqlite"
-            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-            os.close(fd)
+            _create_database_file(path)
             self._db = sqlite3.connect(path, timeout=2, check_same_thread=False)
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA journal_mode=WAL")
@@ -84,7 +207,7 @@ class MissionStore:
         except Exception:
             if hasattr(self, "_db"):
                 self._db.close()
-            os.close(self._lease)
+            _close_host_lease(self._lease)
             raise
 
     def _event(self, mid, sequence, state, stamp):
@@ -94,7 +217,7 @@ class MissionStore:
         with self._guard:
             if not self._closed:
                 self._db.close()
-                os.close(self._lease)
+                _close_host_lease(self._lease)
                 self._closed = True
 
     def _row(self, owner, mid):

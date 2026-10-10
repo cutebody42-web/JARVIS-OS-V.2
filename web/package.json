@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
-    "tauri": "npx --yes @tauri-apps/cli@2.12.0"
+    "tauri": "tauri"
   },
   "dependencies": {
     "@fontsource-variable/jetbrains-mono": "latest",
@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "latest",
+    "@tauri-apps/cli": "2.12.0",
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",

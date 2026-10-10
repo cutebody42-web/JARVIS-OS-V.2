@@ -28,6 +28,22 @@ SUPPORTED_SCHEMA_VERSIONS = {1, 2}
 _DEVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """A SQLite transaction context that also releases its OS handle.
+
+    ``sqlite3.Connection.__exit__`` commits or rolls back but deliberately does
+    not close the connection. NEXUS opens short-lived connections throughout
+    its stores, so that default leaks Windows file handles and can pin local.db
+    until garbage collection. Keep normal transaction semantics, then close.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class ClockRelation(str, Enum):
     BEFORE = "before"
     AFTER = "after"
@@ -238,7 +254,11 @@ class EventStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=30)
+        connection = sqlite3.connect(
+            self.db_path,
+            timeout=30,
+            factory=_ClosingConnection,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")

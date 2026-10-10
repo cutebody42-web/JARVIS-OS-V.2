@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import subprocess
@@ -50,7 +50,7 @@ class CgroupMemoryBudget:
 
 def _probe_cgroup_memory(
     *,
-    read_text: Callable[[Path], str] | None = None,
+    read_text: Callable[[PurePosixPath], str] | None = None,
     platform_name: str | None = None,
 ) -> CgroupMemoryBudget:
     """Read Linux cgroup hard limits and remaining allocation headroom.
@@ -61,17 +61,20 @@ def _probe_cgroup_memory(
     """
     if (platform_name or platform.system()) != "Linux":
         return CgroupMemoryBudget()
-    read = read_text or (lambda path: path.read_text(encoding="ascii"))
-    roots = {"v2": Path("/sys/fs/cgroup"), "v1": Path("/sys/fs/cgroup/memory")}
+    read = read_text or (lambda path: Path(path).read_text(encoding="ascii"))
+    roots = {
+        "v2": PurePosixPath("/sys/fs/cgroup"),
+        "v1": PurePosixPath("/sys/fs/cgroup/memory"),
+    }
     relative = {"v2": "", "v1": ""}
     warnings: list[str] = []
     try:
-        for line in read(Path("/proc/self/cgroup")).splitlines():
+        for line in read(PurePosixPath("/proc/self/cgroup")).splitlines():
             parts = line.split(":", 2)
             if len(parts) != 3:
                 continue
             mode = "v2" if parts[:2] == ["0", ""] else "v1" if "memory" in parts[1].split(",") else None
-            if mode and ".." not in Path(parts[2]).parts:
+            if mode and ".." not in PurePosixPath(parts[2]).parts:
                 relative[mode] = parts[2].lstrip("/")
     except (OSError, UnicodeError):
         # Namespace roots often expose the effective limit directly even when

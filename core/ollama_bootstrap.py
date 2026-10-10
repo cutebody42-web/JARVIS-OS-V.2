@@ -40,6 +40,7 @@ from core.scratch_activation import (
 Progress = Callable[[str, float, str], None]
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 # A model directory is a server setting, not a per-request/CLI setting. Keep
 # ownership of servers we start so a later directory change can restart only
@@ -55,7 +56,7 @@ def _ollama_environment(
     parsed = urlparse(base_url)
     if (
         parsed.scheme != "http"
-        or parsed.hostname != "127.0.0.1"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
         or parsed.username is not None
         or parsed.password is not None
         or parsed.path not in {"", "/"}
@@ -71,7 +72,8 @@ def _ollama_environment(
         raise OllamaBootstrapError("JARVIS Ollama endpoint has an invalid port.")
 
     env = os.environ.copy()
-    env["OLLAMA_HOST"] = f"127.0.0.1:{port}"
+    host = "[::1]" if parsed.hostname == "::1" else "127.0.0.1"
+    env["OLLAMA_HOST"] = f"{host}:{port}"
     if model_store is not None:
         store = Path(model_store).expanduser()
         if not store.is_absolute():
@@ -84,6 +86,9 @@ def _ollama_environment(
 class BrainModelSpec:
     alias: str
     base: str
+    base_digest: str
+    weights_digest: str
+    modelfile_sha256: str
     role: str
     min_ram_gb: float
     parameters_b: float
@@ -114,7 +119,7 @@ def load_brain_manifest() -> tuple[BrainModelSpec, ...]:
     except (OSError, json.JSONDecodeError) as exc:
         raise OllamaBootstrapError("JARVIS Brain model manifest is unavailable.") from exc
 
-    if value.get("schema_version") != 1 or not isinstance(value.get("models"), list):
+    if value.get("schema_version") != 2 or not isinstance(value.get("models"), list):
         raise OllamaBootstrapError("JARVIS Brain model manifest is invalid.")
 
     specs = []
@@ -123,12 +128,21 @@ def load_brain_manifest() -> tuple[BrainModelSpec, ...]:
             raise OllamaBootstrapError("JARVIS Brain model manifest is invalid.")
         alias = item.get("alias")
         base = item.get("base")
+        base_digest = item.get("base_digest")
+        weights_digest = item.get("weights_digest")
+        modelfile_sha256 = item.get("modelfile_sha256")
         role = item.get("role")
         min_ram = item.get("min_ram_gb")
         parameters_b = item.get("parameters_b")
         if (
             not isinstance(alias, str)
             or not isinstance(base, str)
+            or not isinstance(base_digest, str)
+            or _SHA256_RE.fullmatch(base_digest) is None
+            or not isinstance(weights_digest, str)
+            or _SHA256_RE.fullmatch(weights_digest) is None
+            or not isinstance(modelfile_sha256, str)
+            or _SHA256_RE.fullmatch(modelfile_sha256) is None
             or not isinstance(role, str)
             or isinstance(min_ram, bool)
             or not isinstance(min_ram, (int, float))
@@ -141,8 +155,33 @@ def load_brain_manifest() -> tuple[BrainModelSpec, ...]:
         modelfile = resource_path("models", f"{alias}.Modelfile")
         if not modelfile.is_file():
             raise OllamaBootstrapError(f"Missing Modelfile for {alias}.")
+        try:
+            # Git may materialize CRLF on Windows and LF in release archives.
+            # Pin semantic UTF-8 content so trusted provenance is stable across
+            # those equivalent checkouts, while every other byte still binds.
+            canonical_modelfile = (
+                modelfile.read_text("utf-8")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .encode("utf-8")
+            )
+            actual_modelfile_sha256 = hashlib.sha256(canonical_modelfile).hexdigest()
+        except (OSError, UnicodeError) as exc:
+            raise OllamaBootstrapError(f"Modelfile for {alias} is unreadable.") from exc
+        if actual_modelfile_sha256 != modelfile_sha256:
+            raise OllamaBootstrapError(f"Modelfile integrity check failed for {alias}.")
         specs.append(
-            BrainModelSpec(alias, base, role, float(min_ram), float(parameters_b), modelfile)
+            BrainModelSpec(
+                alias,
+                base,
+                base_digest,
+                weights_digest,
+                modelfile_sha256,
+                role,
+                float(min_ram),
+                float(parameters_b),
+                modelfile,
+            )
         )
     return tuple(specs)
 
@@ -189,6 +228,8 @@ def install_ollama_windows(*, runner=subprocess.run) -> str:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=900,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -306,6 +347,8 @@ def _run_ollama(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3600,
             **kwargs,
         )
@@ -326,6 +369,21 @@ def parameter_size_b(value: str) -> float:
         raise ValueError("unsupported Ollama parameter size")
     amount = float(match.group(1))
     return amount if match.group(2).upper() == "B" else amount / 1000.0
+
+
+def _parameter_size_matches(body: object, expected_parameters_b: float) -> bool:
+    try:
+        details = body.get("details") if isinstance(body, dict) else None
+        label = details.get("parameter_size") if isinstance(details, dict) else None
+        actual = parameter_size_b(label)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    # The human-readable size is rounded, so allow a small difference from the
+    # advertised family size. A sub-billion model cannot satisfy a 1B core.
+    if expected_parameters_b >= 1.0 and actual < 1.0:
+        return False
+    tolerance = max(0.15, expected_parameters_b * 0.20)
+    return abs(actual - expected_parameters_b) <= tolerance
 
 
 def model_matches_manifest(
@@ -354,18 +412,149 @@ def model_matches_manifest(
         )
         response.raise_for_status()
         body = response.json()
-        details = body.get("details") if isinstance(body, dict) else None
-        label = details.get("parameter_size") if isinstance(details, dict) else None
-        actual = parameter_size_b(label)
     except Exception:
         return False
+    return _parameter_size_matches(body, expected_parameters_b)
 
-    # The human-readable size is rounded, so allow a small difference from the
-    # advertised family size. A sub-billion model cannot satisfy a 1B core.
-    if expected_parameters_b >= 1.0 and actual < 1.0:
+
+def _installed_model_digest(
+    model: str,
+    *,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    request_get=requests.get,
+) -> str | None:
+    """Return one exact local Ollama manifest digest, never a fuzzy name match."""
+    try:
+        response = request_get(base_url + "/api/tags", timeout=10)
+        response.raise_for_status()
+        body = response.json()
+        values = body.get("models") if isinstance(body, dict) else None
+        if not isinstance(values, list):
+            return None
+        accepted = {model}
+        if ":" not in model:
+            accepted.add(model + ":latest")
+        matches = [
+            item for item in values
+            if isinstance(item, dict)
+            and item.get("name", item.get("model")) in accepted
+        ]
+        if len(matches) != 1:
+            return None
+        digest = matches[0].get("digest")
+        if not isinstance(digest, str):
+            return None
+        digest = digest.removeprefix("sha256:")
+        return digest if _SHA256_RE.fullmatch(digest) else None
+    except Exception:
+        return None
+
+
+def _modelfile_expectations(path: Path) -> tuple[str, dict[str, str]]:
+    text = path.read_text("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    match = re.search(r'^SYSTEM\s+"""\n(.*?)\n"""\s*$', text, re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise OllamaBootstrapError(f"Modelfile for {path.stem} has no canonical SYSTEM block.")
+    system = "\n" + match.group(1) + "\n"
+    parameters: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("PARAMETER "):
+            continue
+        parts = line.split(None, 2)
+        if len(parts) != 3 or parts[1] in parameters:
+            raise OllamaBootstrapError(f"Modelfile for {path.stem} has invalid parameters.")
+        parameters[parts[1]] = parts[2].strip()
+    if not parameters:
+        raise OllamaBootstrapError(f"Modelfile for {path.stem} has no parameters.")
+    return system, parameters
+
+
+def model_matches_pinned_spec(
+    spec: BrainModelSpec,
+    *,
+    base_url: str = DEFAULT_OLLAMA_URL,
+    request_post=requests.post,
+    request_get=requests.get,
+) -> bool:
+    """Verify weights, inherited prompt surface, and JARVIS customization.
+
+    Mutable registry tags and parameter-size-only checks are insufficient for
+    a trusted local brain. The shipped manifest pins the registry manifest,
+    tensor layer and Modelfile. A deliberately activated scratch Core is the
+    sole exception; its private receipt already binds its exact alias digest.
+    """
+    if spec.alias == CORE_ALIAS:
+        try:
+            assert_activation_unlocked(base_url)
+            receipt = read_receipt(base_url)
+            if receipt is not None:
+                verify_receipt_runtime(
+                    receipt,
+                    base_url,
+                    request_get=request_get,
+                    request_post=request_post,
+                )
+                return True
+        except (ScratchActivationError, OSError):
+            return False
+
+    if _installed_model_digest(
+        spec.base, base_url=base_url, request_get=request_get,
+    ) != spec.base_digest:
         return False
-    tolerance = max(0.15, expected_parameters_b * 0.20)
-    return abs(actual - expected_parameters_b) <= tolerance
+    if _installed_model_digest(
+        spec.alias, base_url=base_url, request_get=request_get,
+    ) is None:
+        return False
+
+    try:
+        alias_response = request_post(
+            base_url + "/api/show", json={"model": spec.alias}, timeout=10,
+        )
+        alias_response.raise_for_status()
+        alias_body = alias_response.json()
+        base_response = request_post(
+            base_url + "/api/show", json={"model": spec.base}, timeout=10,
+        )
+        base_response.raise_for_status()
+        base_body = base_response.json()
+        if not isinstance(alias_body, dict) or not isinstance(base_body, dict):
+            return False
+        if not _parameter_size_matches(alias_body, spec.parameters_b):
+            return False
+        details = alias_body.get("details")
+        if not isinstance(details, dict) or details.get("parent_model") != spec.base:
+            return False
+        capabilities = alias_body.get("capabilities")
+        if not isinstance(capabilities, list) or "completion" not in capabilities:
+            return False
+        # Template and licenses must be inherited verbatim from the pinned base.
+        if alias_body.get("template") != base_body.get("template"):
+            return False
+        if alias_body.get("license") != base_body.get("license"):
+            return False
+        expected_system, expected_parameters = _modelfile_expectations(spec.modelfile)
+        system = alias_body.get("system")
+        if not isinstance(system, str) or system.replace("\r\n", "\n") != expected_system:
+            return False
+        raw_parameters = alias_body.get("parameters")
+        if not isinstance(raw_parameters, str):
+            return False
+        actual_parameters: dict[str, str] = {}
+        for line in raw_parameters.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                actual_parameters[parts[0]] = parts[1].strip()
+        if any(actual_parameters.get(key) != value for key, value in expected_parameters.items()):
+            return False
+        marker = "sha256-" + spec.weights_digest
+        if marker not in str(alias_body.get("modelfile", "")):
+            return False
+        if marker not in str(base_body.get("modelfile", "")):
+            return False
+    except Exception:
+        return False
+    return True
 
 
 _IMPORT_ALIAS_RE = re.compile(r"jarvis-import-[a-z0-9][a-z0-9-]{0,63}")
@@ -508,6 +697,8 @@ def installed_model_names(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             **kwargs,
         )
@@ -606,9 +797,8 @@ def provision_brain_models(
                     continue
             except (ScratchActivationError, OSError) as error:
                 raise OllamaBootstrapError(f"Scratch Core activation requires inspection: {error}") from error
-        if spec.alias in existing and model_matches_manifest(
-            spec.alias,
-            spec.parameters_b,
+        if spec.alias in existing and model_matches_pinned_spec(
+            spec,
             base_url=base_url,
         ):
             _emit(progress, "models", base_percent, f"{spec.alias} already ready")
@@ -623,6 +813,11 @@ def provision_brain_models(
             model_store=model_store,
             runner=runner,
         )
+        if _installed_model_digest(spec.base, base_url=base_url) != spec.base_digest:
+            raise OllamaBootstrapError(
+                f"{spec.base} does not match JARVIS's pinned model provenance. "
+                "The mutable registry tag changed; review and approve a manifest update before use."
+            )
         if spec.alias == CORE_ALIAS:
             # Recheck after a potentially long pull, before changing the alias.
             try:
@@ -638,9 +833,9 @@ def provision_brain_models(
             model_store=model_store,
             runner=runner,
         )
-        if not model_matches_manifest(spec.alias, spec.parameters_b, base_url=base_url):
+        if not model_matches_pinned_spec(spec, base_url=base_url):
             raise OllamaBootstrapError(
-                f"{spec.alias} was created but its parameter size could not be verified."
+                f"{spec.alias} was created but its pinned provenance could not be verified."
             )
         completed_aliases.append(spec.alias)
         _emit(

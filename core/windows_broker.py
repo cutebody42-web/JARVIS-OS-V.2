@@ -10,6 +10,7 @@ Physical Windows execution adapters remain separately certifiable.
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -243,7 +244,7 @@ class BrokerReplayStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS broker_permits (
@@ -265,7 +266,7 @@ class BrokerReplayStore:
 
     def begin(self, permit: BrokerPermit) -> BrokerResult | None:
         now = _utc_now().isoformat().replace("+00:00", "Z")
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute(
                 "SELECT * FROM broker_permits WHERE permit_id=? OR nonce=?",
@@ -301,7 +302,7 @@ class BrokerReplayStore:
     def finish(self, result: BrokerResult) -> None:
         state = "completed" if result.status is BrokerStatus.SUCCEEDED else "failed"
         now = _utc_now().isoformat().replace("+00:00", "Z")
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """
                 UPDATE broker_permits

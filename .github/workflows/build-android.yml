@@ -87,7 +87,7 @@ jobs:
         working-directory: web
         env:
           CI: "true"
-        run: npx --yes @tauri-apps/cli@2.12.0 android init
+        run: npx --no-install tauri android init
 
       - name: Pin generated Android SDK to stable runner platform
         working-directory: web
@@ -103,7 +103,7 @@ jobs:
         working-directory: web
         env:
           CI: "true"
-        run: npx --yes @tauri-apps/cli@2.12.0 android build --debug --apk --target aarch64
+        run: npx --no-install tauri android build --debug --apk --target aarch64
 
       - name: Collect APK and provenance
         shell: bash

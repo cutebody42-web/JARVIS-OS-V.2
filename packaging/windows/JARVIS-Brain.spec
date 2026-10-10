@@ -64,7 +64,11 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,
+    # Keep the inherited authentication pipe available as sys.stdin. A windowed
+    # PyInstaller bootloader replaces standard streams with None on Windows.
+    # tauri-plugin-shell 2.4 launches sidecars with CREATE_NO_WINDOW, so this
+    # console-subsystem executable still runs without showing a console window.
+    console=True,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,

@@ -277,7 +277,12 @@ class ArchitectureAndOutputTests(unittest.TestCase):
     def test_symlink_does_not_bypass_private_output_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             link = Path(directory) / "repository-link"
-            link.symlink_to(REPOSITORY, target_is_directory=True)
+            try:
+                link.symlink_to(REPOSITORY, target_is_directory=True)
+            except OSError as error:
+                if getattr(error, "winerror", None) == 1314:
+                    self.skipTest("Windows account cannot create symbolic links")
+                raise
             with self.assertRaisesRegex(PipelineError, "outside"):
                 private_output(link / "weights")
             self.assertEqual(private_output(Path(directory) / "valid-output"), Path(directory) / "valid-output")

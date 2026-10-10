@@ -3,7 +3,7 @@ import threading
 import unittest
 import uuid
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
@@ -105,6 +105,72 @@ class HostedApiTests(unittest.TestCase):
         finally:
             with SessionLocal.begin() as db:
                 db.execute(delete(User).where(User.id == other_id))
+
+    def test_chat_keeps_stored_history_and_memory_out_of_cloud_request(self):
+        raw_key = "AIza" + "C" * 35
+        configured = self.client.post(
+            "/me/gemini-key",
+            headers=self.headers,
+            json={"api_key": raw_key, "validate": False},
+        )
+        self.assertEqual(configured.status_code, 200, configured.text)
+
+        from api.repositories import add_chat_message, replace_user_memory
+        from google import genai
+
+        replace_user_memory(self.user_id, {
+            "identity": {"name": {"value": "PRIVATE_DURABLE_MEMORY_MARKER"}}
+        })
+        add_chat_message(self.user_id, "user", "PRIVATE_HISTORY_MARKER")
+
+        client = Mock()
+        client.models.generate_content.return_value = SimpleNamespace(text="cloud answer")
+        context = Mock(
+            __enter__=Mock(return_value=client),
+            __exit__=Mock(return_value=False),
+        )
+        with patch.object(genai, "Client", return_value=context) as constructor:
+            response = self.client.post(
+                "/chat",
+                headers=self.headers,
+                json={
+                    "message": "Current cloud-eligible request",
+                    "cloud_shareable_context": "PUBLIC_OWNER_APPROVED_CONTEXT",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["response"], "cloud answer")
+        self.assertEqual(constructor.call_args.kwargs["api_key"], raw_key)
+        outbound = client.models.generate_content.call_args.kwargs["contents"]
+        self.assertIn("Current cloud-eligible request", outbound)
+        self.assertIn("PUBLIC_OWNER_APPROVED_CONTEXT", outbound)
+        self.assertNotIn("PRIVATE_HISTORY_MARKER", outbound)
+        self.assertNotIn("PRIVATE_DURABLE_MEMORY_MARKER", outbound)
+        context.__exit__.assert_called_once()
+
+    def test_chat_blocks_credential_shaped_content_before_cloud_client(self):
+        raw_key = "AIza" + "D" * 35
+        configured = self.client.post(
+            "/me/gemini-key",
+            headers=self.headers,
+            json={"api_key": raw_key, "validate": False},
+        )
+        self.assertEqual(configured.status_code, 200, configured.text)
+
+        from google import genai
+
+        with patch.object(genai, "Client") as client:
+            response = self.client.post(
+                "/chat",
+                headers=self.headers,
+                json={"message": "DATABASE_PASSWORD=owner-private-value-123456"},
+            )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("likely credential material", response.json()["detail"])
+        self.assertNotIn("owner-private", response.text)
+        client.assert_not_called()
 
     def test_status_and_cloud_actions_are_authenticated(self):
         self.assertEqual(self.client.get("/status").status_code, 401)

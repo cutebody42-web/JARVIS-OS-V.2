@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hmac
 import re
 from typing import Callable
 from uuid import uuid4
@@ -168,6 +169,7 @@ class OwnerApprovalManager:
         peer_id: str,
         approved: bool,
         user_verified: bool,
+        action_digest: str | None = None,
     ) -> OwnerApproval:
         if user_verified is not True:
             raise PermissionError("Companion approval requires local biometric verification.")
@@ -177,6 +179,7 @@ class OwnerApprovalManager:
             raise ValueError("approval_id is required")
         if not isinstance(peer_id, str) or not peer_id:
             raise ValueError("peer_id is required")
+        digest = self._digest(action_digest) if action_digest is not None else None
         now = self._now()
         with self.store._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -197,6 +200,9 @@ class OwnerApprovalManager:
             if current.state != "pending":
                 db.rollback()
                 raise PermissionError(f"approval request is already {current.state}")
+            if digest is not None and not hmac.compare_digest(current.action_digest, digest):
+                db.rollback()
+                raise PermissionError("approval decision is bound to a different action")
             state = "approved" if approved else "rejected"
             db.execute(
                 """

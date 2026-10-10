@@ -14,8 +14,6 @@ pub struct BrainState(Mutex<BrainLifecycle>);
 #[derive(Default)]
 struct BrainLifecycle {
     connection: Option<BrainConnection>,
-    #[cfg(desktop)]
-    child: Option<tauri_plugin_shell::process::CommandChild>,
     starts: u8,
     stopping: bool,
 }
@@ -46,8 +44,6 @@ impl BrainLifecycle {
         // A late event from an old child must not clear a newer connection.
         if self.connection.as_ref().is_some_and(|value| value.token == token) {
             self.connection = None;
-            #[cfg(desktop)]
-            { self.child = None; }
         }
     }
 }
@@ -137,22 +133,31 @@ pub fn ensure_brain_sidecar(
         .args([
             "--port",
             port_arg.as_str(),
-            "--ui-token",
-            token.as_str(),
+            "--ui-token-stdin",
             "--parent-pid",
             parent_pid.as_str(),
         ]);
 
-    let (mut events, child) = command
+    let (mut events, mut child) = command
         .spawn()
         .map_err(|error| format!("Could not start JARVIS Brain: {error}"))?;
+    let token_frame = format!("{token}\n");
+    if let Err(error) = child.write(token_frame.as_bytes()) {
+        // A sidecar without its bearer token can never become healthy. Reap it
+        // immediately instead of leaving a secret-waiting orphan process.
+        let _ = child.kill();
+        return Err(format!("Could not initialize JARVIS Brain authentication: {error}"));
+    }
+    // tauri-plugin-shell 2.4 has no close-stdin API. Dropping CommandChild is
+    // the supported way to close its private PipeWriter; the event receiver's
+    // separate SharedChild reference keeps termination monitoring alive.
+    drop(child);
 
     let connection = BrainConnection {
         endpoint: format!("http://127.0.0.1:{port}"),
         token,
     };
     guard.starts += 1;
-    guard.child = Some(child);
     guard.connection = Some(connection.clone());
     let watched_token = connection.token.clone();
     let watched_app = app.clone();

@@ -95,7 +95,9 @@ class QAModeSafetyTests(unittest.TestCase):
             args={"receiver": "Nobody", "message_text": "test", "platform": "iMessage"},
         )
         response = asyncio.run(jarvis._execute_tool(call))
-        self.assertIn("QA SAFETY BLOCK", response.response["result"])
+        self.assertEqual(response.response["receipt"]["authorization_decision"], "DENY")
+        self.assertEqual(response.response["receipt"]["status"], "denied")
+        self.assertIn("denied", response.response["result"].lower())
 
     def test_live_dispatch_is_blocked_until_ui_is_operationally_ready(self):
         import main
@@ -294,8 +296,6 @@ class QAModeSafetyTests(unittest.TestCase):
         jarvis = main.JarvisLive.__new__(main.JarvisLive)
         jarvis.voice_name = "charon"
         with (
-            patch.object(main, "load_memory", return_value={}),
-            patch.object(main, "format_memory_for_prompt", return_value=""),
             patch.object(main, "_load_system_prompt", return_value="test prompt"),
         ):
             config = jarvis._build_config()

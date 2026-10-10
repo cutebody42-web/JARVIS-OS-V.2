@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 from urllib.parse import urlparse
 import uuid
@@ -29,6 +30,99 @@ _RECEIPT_LIMIT = 65_536
 
 class ScratchActivationError(ValueError):
     pass
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _reject_windows_reparse_path(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if _is_reparse_point(current):
+            raise ScratchActivationError(
+                "Scratch activation state must not traverse Windows reparse points."
+            )
+
+
+def _harden_windows_path(path: Path, *, directory: bool) -> None:
+    """Allow only the current Windows owner and SYSTEM on activation state."""
+    try:
+        import ntsecuritycon
+        import win32api
+        import win32con
+        import win32security
+
+        token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+        )
+        owner = win32security.GetTokenInformation(
+            token, win32security.TokenUser
+        )[0]
+        system = win32security.CreateWellKnownSid(
+            win32security.WinLocalSystemSid, None
+        )
+        acl = win32security.ACL()
+        inheritance = (
+            win32security.CONTAINER_INHERIT_ACE
+            | win32security.OBJECT_INHERIT_ACE
+            if directory
+            else 0
+        )
+        for sid in (owner, system):
+            acl.AddAccessAllowedAceEx(
+                win32security.ACL_REVISION_DS,
+                inheritance,
+                ntsecuritycon.FILE_ALL_ACCESS,
+                sid,
+            )
+        win32security.SetNamedSecurityInfo(
+            str(path),
+            win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION
+            | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            acl,
+            None,
+        )
+    except (ImportError, OSError) as error:
+        raise ScratchActivationError(
+            "Could not establish private Windows scratch activation state."
+        ) from error
+
+
+def _prepare_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "posix":
+        path.chmod(0o700)
+    elif os.name == "nt":
+        _reject_windows_reparse_path(path.absolute())
+        _harden_windows_path(path, directory=True)
+    else:
+        raise ScratchActivationError(
+            "Scratch activation state is not certified on this platform."
+        )
+
+
+def _protect_private_file(path: Path) -> None:
+    if _is_reparse_point(path) or not path.is_file() or path.stat().st_nlink != 1:
+        raise ScratchActivationError(
+            "Scratch activation state must be a single-link regular file."
+        )
+    if os.name == "posix":
+        path.chmod(0o600)
+    elif os.name == "nt":
+        _harden_windows_path(path, directory=False)
+    else:
+        raise ScratchActivationError(
+            "Scratch activation state is not certified on this platform."
+        )
 
 
 def activation_endpoint(value: str) -> str:
@@ -68,7 +162,7 @@ def assert_activation_unlocked(base_url: str, *, directory: Path | None = None) 
 @contextmanager
 def activation_lock(base_url: str, *, directory: Path | None = None):
     path = activation_lock_path(base_url, directory=directory)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _prepare_private_directory(path.parent)
     token = uuid.uuid4().hex
     content = json.dumps({"schema_version": 1, "endpoint": activation_endpoint(base_url),
                           "pid": os.getpid(), "token": token}) + "\n"
@@ -83,6 +177,7 @@ def activation_lock(base_url: str, *, directory: Path | None = None):
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+        _protect_private_file(path)
         yield lease
     finally:
         # Never remove another command's lock, even after an unexpected change.
@@ -158,7 +253,7 @@ def restore_receipt_snapshot(previous: dict | None, attempted: dict | None, base
 
 def _atomic_private_json(receipt: dict, base_url: str, *, directory: Path | None = None) -> Path:
     path = receipt_path(base_url, directory=directory)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _prepare_private_directory(path.parent)
     descriptor, temporary = tempfile.mkstemp(prefix=".activation-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -167,6 +262,7 @@ def _atomic_private_json(receipt: dict, base_url: str, *, directory: Path | None
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        _protect_private_file(path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

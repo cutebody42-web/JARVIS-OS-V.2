@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -71,6 +72,8 @@ class LocalEmbeddingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(LocalEmbeddingError):
                 LocalOnnxEmbeddingProvider(Path(td) / "missing")
+        with self.assertRaisesRegex(LocalEmbeddingError, "absolute"):
+            LocalOnnxEmbeddingProvider(Path("relative-model"))
 
     def test_manifest_confines_model_files_to_owner_directory(self):
         with tempfile.TemporaryDirectory() as td:
@@ -80,6 +83,47 @@ class LocalEmbeddingTests(unittest.TestCase):
             model = _make_model(root, model_file="../outside.onnx")
             with self.assertRaises(LocalEmbeddingError):
                 LocalOnnxEmbeddingProvider(model)
+
+    def test_manifest_and_model_files_are_bounded_regular_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            model = _make_model(root)
+            (model / "jarvis-embedding.json").write_text(" " * 65_537, encoding="utf-8")
+            with self.assertRaisesRegex(LocalEmbeddingError, "64 KiB"):
+                LocalOnnxEmbeddingProvider(model)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            model = _make_model(root)
+            target = root / "outside-tokenizer.json"
+            target.write_text("{}", encoding="utf-8")
+            tokenizer = model / "tokenizer.json"
+            tokenizer.unlink()
+            try:
+                tokenizer.symlink_to(target)
+            except OSError:
+                self.skipTest("symbolic links are unavailable")
+            with self.assertRaisesRegex(LocalEmbeddingError, "symbolic link|reparse point"):
+                LocalOnnxEmbeddingProvider(model)
+
+    def test_runtime_rejects_models_on_mapped_network_drives(self):
+        with tempfile.TemporaryDirectory() as td:
+            model = _make_model(Path(td))
+            with mock.patch("core.local_embedding._windows_drive_type", return_value=4):
+                with self.assertRaisesRegex(LocalEmbeddingError, "local fixed drive"):
+                    LocalOnnxEmbeddingProvider(model)
+
+    def test_model_asset_change_before_lazy_load_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            model = _make_model(Path(td))
+            provider = LocalOnnxEmbeddingProvider(
+                model,
+                session_factory=lambda _: _Session(),
+                tokenizer_factory=lambda _: _Tokenizer(),
+            )
+            (model / "model.onnx").write_bytes(b"changed-model")
+            with self.assertRaisesRegex(LocalEmbeddingError, "changed"):
+                provider.embed("owner memory")
 
     def test_runtime_is_lazy_local_and_normalizes_embeddings(self):
         with tempfile.TemporaryDirectory() as td:
@@ -108,7 +152,7 @@ class LocalEmbeddingTests(unittest.TestCase):
             self.assertAlmostEqual(math.sqrt(sum(value * value for value in vector)), 1.0, places=6)
             self.assertEqual(session_paths, [(model / "model.onnx").resolve()])
             self.assertEqual(tokenizer_paths, [(model / "tokenizer.json").resolve()])
-            self.assertIsNone(session.calls[0][0])
+            self.assertEqual(session.calls[0][0], ["last_hidden_state"])
             self.assertEqual(provider.info.model_id, "owner/test-embed")
             self.assertEqual(provider.info.dimension, 3)
             self.assertTrue(provider.info.local_only)
@@ -161,6 +205,21 @@ class LocalEmbeddingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 provider.embed("bounded local inference")
             self.assertFalse(provider.loaded)
+
+    def test_runtime_rejects_mismatched_or_oversized_output(self):
+        class WrongBatchSession(_Session):
+            def run(self, requested_outputs, payload):
+                return [np.zeros((2, 1, self.dimension), dtype=np.float32)]
+
+        with tempfile.TemporaryDirectory() as td:
+            model = _make_model(Path(td))
+            provider = LocalOnnxEmbeddingProvider(
+                model,
+                session_factory=lambda _: WrongBatchSession(),
+                tokenizer_factory=lambda _: _Tokenizer(),
+            )
+            with self.assertRaisesRegex(LocalEmbeddingError, "token shape"):
+                provider.embed("bounded output")
 
 
 if __name__ == "__main__":

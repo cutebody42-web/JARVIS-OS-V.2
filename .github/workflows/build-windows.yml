@@ -108,12 +108,12 @@ jobs:
       - name: Generate branded platform icons
         working-directory: web
         shell: pwsh
-        run: npx --yes @tauri-apps/cli@2.12.0 icon src-tauri/jarvis-icon.svg
+        run: npx --no-install tauri icon src-tauri/jarvis-icon.svg
 
       - name: Build one-click Tauri NSIS installer
         working-directory: web
         shell: pwsh
-        run: npx --yes @tauri-apps/cli@2.12.0 build --bundles nsis
+        run: npx --no-install tauri build --bundles nsis
 
       - name: Collect installer and provenance
         shell: pwsh

@@ -353,16 +353,20 @@ jobs:
           "VCPKG_DEFAULT_TRIPLET=x64-windows" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "SODIUM_USE_PKG_CONFIG=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "VCPKGRS_DYNAMIC=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $sodiumDll = Join-Path $vcpkgRoot "installed\x64-windows\bin\libsodium.dll"
+          if (-not (Test-Path $sodiumDll)) { throw "vcpkg did not provide libsodium.dll" }
+          New-Item -ItemType Directory -Force "web/src-tauri/resources" | Out-Null
+          Copy-Item $sodiumDll "web/src-tauri/resources/libsodium.dll" -Force
 
       - name: Generate Windows icons
         working-directory: web
         shell: pwsh
-        run: npx --yes @tauri-apps/cli@2.12.0 icon src-tauri/jarvis-icon.svg
+        run: npx --no-install tauri icon src-tauri/jarvis-icon.svg
 
       - name: Build real NSIS installer
         working-directory: web
         shell: pwsh
-        run: npx --yes @tauri-apps/cli@2.12.0 build --bundles nsis
+        run: npx --no-install tauri build --bundles nsis
 
       - name: Silent-install and launch desktop product
         shell: pwsh
@@ -496,7 +500,7 @@ jobs:
         working-directory: web
         env:
           CI: "true"
-        run: npx --yes @tauri-apps/cli@2.12.0 android init
+        run: npx --no-install tauri android init
 
       - name: Pin generated SDK to API 36
         working-directory: web
@@ -511,7 +515,7 @@ jobs:
         working-directory: web
         env:
           CI: "true"
-        run: npx --yes @tauri-apps/cli@2.12.0 android build --debug --apk --target x86_64
+        run: npx --no-install tauri android build --debug --apk --target x86_64
 
       - name: Collect emulator APK
         shell: bash
